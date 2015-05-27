@@ -1,0 +1,7 @@
+language: node_js
+node_js:
+  - "0.12"
+
+script:
+  - "mocha --compilers coffee:coffee-script/register spec/specs.coffee"
+  - "coffee src/lisp.coffee -f spec/test.lisp"
