@@ -11,14 +11,13 @@ lisp = require './lisp-lang'
 # tail-rec via trampoline
 # eval fn
 # go/core.async messaging
-# quote via '
+# quote via '(expr arg...)
 # call/cc
-
 
 env = lisp.topLevel()
 
 locateFile = (name) ->
-  __dirname + '/' + name
+  process.cwd() + '/' + name
 
 loadFile = (path, cont) ->
   data = fs.readFileSync path
@@ -50,7 +49,7 @@ try
   if argv['debug']? 
     lisp.evaluate('(define *DEBUG* #t)', env)
 
-  loadFile locateFile('stdlib.lisp')
+  loadFile locateFile('src/stdlib.lisp')
   
   if argv['f']?
     loadFile(locateFile(argv['f']))
