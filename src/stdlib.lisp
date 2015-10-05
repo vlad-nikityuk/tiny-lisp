@@ -3,19 +3,19 @@
 ;; (defn _add (a b) (+ a b))
 (define macro/defn
   (lambda (ast)
-    (if (eq? (car ast) (quote defn))
+    (if (eq? (car ast) 'defn)
 	(begin
 	 (define body (cdr ast))
 	 (define name (car body))
 	 (define args (car (cdr body)))
 	 (define expr (car (cdr (cdr body))))
-	 (list (quote define) name (list (quote lambda) args expr)))
+	 (list 'define name (list 'lambda args expr)))
       ast)))
 
 (defn not (x) (if x #f #t))
 ;; ------------- UTILS ----------------------------------------
-(define print (js/eval (quote console.log)))
-(define pi (js/eval (quote Math.PI)))
+(define print (js/eval 'console.log))
+(define pi (js/eval 'Math.PI))
 
 (defn trace (x) (begin (print x) x))
 
@@ -25,12 +25,8 @@
 (if *DEBUG*
     (define macro/trace trace))
 ;; ------------ LISTS ----------------------------------------
-;; (empty? 0) => true
-;; (empty? 1) => false
 (defn empty? (lst) (eq? (len lst) 0))
-
-;; doesn't pass the (list? (quote ())) test
-(defn list? (lst) (not (eq? (car lst) nil)))
+(define list? (js/eval 'Array.isArray))
 
 (defn iterate (lst f)
   (if (not (empty? lst))
@@ -39,21 +35,25 @@
        (iterate (cdr lst) f))))
 
 (defn reduce (lst f memo)
-    (if (empty? lst) memo
-      (reduce (cdr lst) f (f (car lst) memo))))
+  (if (empty? lst) memo
+    (reduce (cdr lst) f (f (car lst) memo))))
 
 (defn r/reduce (lst f memo)
-    (if (empty? lst) memo
-      (f (car lst) (r/reduce (cdr lst) f memo))))
+  (if (empty? lst) memo
+    (f (car lst) (r/reduce (cdr lst) f memo))))
+
+;; (and doesn't work here for some reason, using (&&
+;; (iterate (zip '(1 2 3) '(4 5 6)) print)
+(defn zip (ll1 ll2)
+  (if (&& (empty? ll1) (empty? ll2)) nil
+    (cons (list (car ll1) (car ll2))
+	  (zip (cdr ll1) (cdr ll2)))))
 
 (defn concat (l1 l2)
   (r/reduce l1 cons l2))
 
 (defn map (xs f)
-    (r/reduce xs (lambda (x m) (cons (f x) m)) (list)))
-
-;(defn tr/map (f)
-;  (
+  (r/reduce xs (lambda (x m) (cons (f x) m)) (list)))
 
 ;; Linked lists
 (defn c/cons (v lst)
@@ -71,12 +71,22 @@
 (define green (js/eval 'colors.green))
 
 ;;-------------- UNIT TESTS -----------------------------------
-(define assert (js/eval (quote console.assert)))
-(define *TESTS* (quote ()))
+(define assert (js/eval 'console.assert))
+(define *TESTS* '())
+
+(defn equal? (a1 a2)
+  (if (&& (list? a1) (list? a2))
+      (r/reduce (zip a1 a2) (lambda (x m)
+			      (begin
+			       (define v1 (car x))
+			       (define v2 (car (cdr x)))
+			       (eq? v1 v2)))
+		#t)
+    (eq? a1 a2)))
 
 (define macro/deftest
   (lambda (ast)
-    (if (eq? (car ast) (quote deftest))
+    (if (eq? (car ast) 'deftest)
 	(begin
 	 (define body (cdr ast))
 	 (define name (car body))
@@ -85,12 +95,15 @@
 	 (define test-definition (list (quote list) (list (quote quote) name) name))
 	 (define tests-var (quote *TESTS*))
 	 (list (quote begin)
-	       (list (quote define) name (list (quote lambda) (quote ()) test))
-	       (list (quote set!) tests-var
-		     (list (quote concat) tests-var (list (quote list) test-definition)))))
+	       (list 'define name (list 'lambda '() test))
+	       (list 'set! tests-var
+		     (list 'concat tests-var (list 'list test-definition)))))
       ast)))
 
-;;(patch-asserts (quote (deftest failing-test (assert (eq? #f #t)))) (quote failing-test) (quote (+ 1 2)))
+;;(patch-asserts (quote
+;; ast  (deftest failing-test (assert (eq? #f #t))))
+;; name (quote failing-test)
+;; expr (quote (+ 1 2)))
 (defn patch-asserts (ast test-name assertion-expr)
   (begin
    (defn patch-assert (_ast_)
@@ -101,7 +114,13 @@
 	  (define messages (cdr body))
 
 	  (define q-str (quote quote))
-	  ;;(assert test-exp (quote test:) (quote test-name) (quote expression:) (quote assertion-expr) messages..)
+	  ;(assert test-exp
+	  ;	  (quote test:)
+	  ;	  (quote test-name)
+	  ;	  (quote expression:)
+	  ;	  (quote assertion-expr)
+	  ;	  messages..)
+	  
 	  (concat (list (quote assert)
 			assertion-expr
 			(list q-str (quote test:))

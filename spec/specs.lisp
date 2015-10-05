@@ -5,18 +5,48 @@
 
 
 ;; eq? tests
-(deftest eq?-zero-is-zero
+(deftest eq?--zero-is-zero
   (assert (eq? 0 0)))
 
-(deftest eq?-nil-is-nil
+(deftest eq?--nil-is-nil
   (assert (eq? nil nil)))
 
-(deftest eq?-empty-list-is-nil
-  (assert (eq? nil '())))
+(deftest eq?--empty-list-is-nil
+  (assert (eq? nil '()) ))
 
-;;(deftest failing-test
-;;  (assert (eq? #f #t)))
+
+;; empty?
+(deftest empty?--true
+  (begin
+   (define res (empty? '()))
+   (assert (eq? #t res))))
+
+(deftest empty?--false
+  (begin
+   (define res (empty? '(1 2)))
+   (assert (eq? #f res))))
+
+
+;; list?
+(deftest list?--empty
+  (begin
+   (define res (list? '()))
+   (assert (eq? #t res))))
+
+(deftest list?--with-elements
+  (begin
+   (define res (list? '(1 2 3)))
+   (assert (eq? #t res))))
+
+(deftest list?--non-list
+  (begin
+   (define res (list? 1))
+   (assert (eq? #f res))))
+
+(deftest concat--arrays
+  (begin
+   (define res (concat '(4 5 6) '(1 2 3)))
+   (assert (equal? '(4 5 6 1 2 3) res))))
+  
 
 (run-tests)
-
-;; (it (quote nil-should-be-nil) (lambda ()))
