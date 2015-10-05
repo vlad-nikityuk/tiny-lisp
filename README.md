@@ -21,4 +21,4 @@ Run:
 Some tests:
 	
 	$ mocha --compilers coffee:coffee-script/register spec/specs.coffee
-	$ coffee src/lisp.coffee -f spec/test.lisp
+	$ coffee src/lisp.coffee -f spec/specs.lisp

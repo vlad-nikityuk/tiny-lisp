@@ -7,12 +7,13 @@ lisp = require './lisp-lang'
 
 # tests / fix bugs
 # load custom files -- from non-local path
-
 # tail-rec via trampoline
 # eval fn
 # go/core.async messaging
-# quote via '(expr arg...)
 # call/cc
+
+# DONE quote via '(expr arg...)
+
 
 env = lisp.topLevel()
 
@@ -46,11 +47,11 @@ repl = () ->
   rl.prompt()
 
 try
-  if argv['debug']? 
+  if argv['debug']?
     lisp.evaluate('(define *DEBUG* #t)', env)
 
   loadFile locateFile('src/stdlib.lisp')
-  
+
   if argv['f']?
     loadFile(locateFile(argv['f']))
   else

@@ -1,5 +1,7 @@
 tokenize = (program) ->
-  program.replace(/;.*\n/g, "").replace(/[\n\t]/g, ' ')
+  program
+    .replace(/\'([\w\.\*\!\?\:\d]+|\(.*\))/g, "(quote $1)")
+    .replace(/;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
     .split(" ").filter (x) -> !!x
 parse = (tokens) ->
@@ -11,7 +13,7 @@ parse = (tokens) ->
   result_list = []
   throw new Error("Syntax error, closing parenthesis at the beginning of the expression") if first is ")"
   if first is "("
-    result_list.push parse(tokens)  while tokens[0] isnt ")"
+    result_list.push parse(tokens) while tokens[0] isnt ")" and tokens.length isnt 0
     tokens.shift()
     result_list
   else
@@ -63,7 +65,7 @@ _eval = (ast, scope) ->
     (inMacro=true;node=(rootScope(m)(node) or node);inMacro=false) \
      for m in Object.keys(rootScope()) when m.indexOf("macro/") is 0
   if (typeof node is "string") then str()
-  else if not (node instanceof Array) then sym()
+  else if not Array.isArray(node) then sym()
   else
     switch node[0]
       when 'quote' then quote()
@@ -78,15 +80,14 @@ exports.evaluate = (program, scope) -> _eval parse(tokenize(program)), scope
 exports.topLevel = ->
   initial =
     nil: null, "#t": true, "#f": false
-    "eq?": (a, b) -> a is b # or [] == []
-    "and": '&&'
-    "or": '||'
+    "eq?": (els...) -> els.map(x -> ) #a is b 
+    "and": '&&', "or": '||'
     "car": (lst) -> (lst or [])[0]
     "cdr": (lst) -> (lst or [])[1..]
     "len": (lst) -> (lst or []).length
     "cons": (v, lst) -> [v].concat(lst or [])
     "list": (els...) -> els
-    "js/eval": (prg) -> @eval(prg) 
+    "js/eval": (prg) -> @eval(prg)
     "bind": (f, args...) -> args = Function::bind.apply(f, args)
     "trampoline": (f) -> f = f.apply(f.context, f.args) while f? instanceof Function; f
   (initial[op] = new Function("return Array.prototype.slice.call(arguments,1).reduce(function(x,a){return x "+op+" a;},arguments[0]);")\

@@ -1,6 +1,6 @@
 ;; deftest
 ;; 1. unfolds to (define (lambda ... ))
-;; 2. adds itself to *GLOBAL* test list
+;; 2. adds itself to *TESTS* test list
 ;; 3. Adds expr: and test: to assert call
 
 (deftest zero-is-zero
@@ -19,3 +19,4 @@
 
 (run-tests)
 
+;; (it (quote nil-should-be-nil) (lambda ()))
