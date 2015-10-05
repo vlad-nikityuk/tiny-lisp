@@ -1,19 +1,20 @@
+isEmpty = (arr) -> Array.isArray(arr) and arr.length == 0
 tokenize = (program) ->
   program
-    .replace(/\'([\w\.\*\!\?\:\d]+|\(.*\))/g, "(quote $1)")
+    .replace(/\'([\w\d\.\*\:\?\!]+|\([\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
     .replace(/;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
     .split(" ").filter (x) -> !!x
 parse = (tokens) ->
+  return if isEmpty tokens
   atom = (val) ->
     num = parseFloat(val)
     (if isNaN(num) then val else num)
-  throw new Error("Parse error, expression is empty.") if !!tokens.length and tokens.length is 0
   first = tokens.shift()
   result_list = []
   throw new Error("Syntax error, closing parenthesis at the beginning of the expression") if first is ")"
   if first is "("
-    result_list.push parse(tokens) while tokens[0] isnt ")" and tokens.length isnt 0
+    result_list.push parse(tokens) while tokens[0] isnt ")" and tokens.length != 0
     tokens.shift()
     result_list
   else
@@ -23,7 +24,7 @@ createScope = (parent, init) ->
   _sc = (name, val) ->
     if not name? then locals
     else if name? and not val?
-      if locals[name]? then locals[name]
+      if name of locals then locals[name]
       else if parent? then parent(name)
     else if name? and val?
       locals[name] = val
@@ -79,9 +80,8 @@ _eval = (ast, scope) ->
 exports.evaluate = (program, scope) -> _eval parse(tokenize(program)), scope
 exports.topLevel = ->
   initial =
-    nil: null, "#t": true, "#f": false
-    "eq?": (els...) -> els.map(x -> ) #a is b 
-    "and": '&&', "or": '||'
+    "nil": null, "#t": true, "#f": false, "and": '&&', "or": '||'
+    "eq?": (els...) -> els.map((el) -> if isEmpty el then null else el).reduce ((acc,el,i,a) -> (el is a[0]) && acc), true
     "car": (lst) -> (lst or [])[0]
     "cdr": (lst) -> (lst or [])[1..]
     "len": (lst) -> (lst or []).length

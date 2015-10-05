@@ -65,6 +65,11 @@
 (defn c/tail (lst)
   (lst (lambda (h t) t)))
 
+;;-------------- COLORS -----------------------------------
+
+(define red (js/eval 'colors.red))
+(define green (js/eval 'colors.green))
+
 ;;-------------- UNIT TESTS -----------------------------------
 (define assert (js/eval (quote console.assert)))
 (define *TESTS* (quote ()))
@@ -121,5 +126,4 @@
 	      (define name (car test))
 	      (define test-fn (car (cdr test)))
 	      (test-fn)
-	      (print (quote ✓) name)))))
-
+	      (print (green (quote ✓)) name)))))

@@ -1,20 +1,16 @@
-
 fs = require 'fs'
 colors = require 'colors/safe'
 argv = require('minimist')(process.argv.slice(2));
 domain = require 'domain'
 lisp = require './lisp-lang'
 
-# tests / fix bugs
 # load custom files -- from non-local path
 # tail-rec via trampoline
 # eval fn
 # go/core.async messaging
 # call/cc
 
-# DONE quote via '(expr arg...)
-
-
+global.colors = colors
 env = lisp.topLevel()
 
 locateFile = (name) ->

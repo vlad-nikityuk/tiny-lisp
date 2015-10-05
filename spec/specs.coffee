@@ -8,18 +8,18 @@ describe "toy lisp", ->
     env = lisp.topLevel()
 
   describe "parsing", ->
-    xit "should be able to eval (()", ->
-      lisp.evaluate "(()", env
+    it "should be able to eval (()", ->
+      chai.expect(-> lisp.evaluate("(()", env)).to.throw()
 
     it "should handle single-line comments", ->
       lisp.evaluate(";here's comment\n(- 1 1)\n", env).should.equal 0
 
     it "should be able to evaluate statements with new lines and tabs", ->
-      lisp.evaluate("(begin (print 1)\t\n (print 3) \n 1)", env).should.equal 1
+      lisp.evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal 1
 
   describe "evaluation", ->
-    it "should make (eq? nil (cdr (list 3)))) to be true", ->
-      r = lisp.evaluate("(eq? nil (cdr (list 3))))", env)
+    it "should make (eq? nil '()) to be true", ->
+      r = lisp.evaluate("(eq? nil '())", env)
       r.should.equal true
 
     it "should pass for (cons 1 (cons 2 nil))", ->
