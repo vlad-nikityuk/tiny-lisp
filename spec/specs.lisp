@@ -28,25 +28,36 @@
 
 
 ;; list?
-(deftest list?--empty
+(deftest list?-empty
   (begin
    (define res (list? '()))
    (assert (eq? #t res))))
 
-(deftest list?--with-elements
+(deftest list?-with-elements
   (begin
    (define res (list? '(1 2 3)))
    (assert (eq? #t res))))
 
-(deftest list?--non-list
+(deftest list?-non-list
   (begin
    (define res (list? 1))
    (assert (eq? #f res))))
 
-(deftest concat--arrays
+(deftest concat-arrays
   (begin
    (define res (concat '(4 5 6) '(1 2 3)))
    (assert (equal? '(4 5 6 1 2 3) res))))
-  
+
+(deftest first-returns-head-of-list
+  (begin
+   (define lst '(4 5 6))
+   (define fst (first lst))
+   (assert (equal? fst 4))))
+
+(deftest rest-returns-tail-of-list-SHOULD-FAIL
+  (begin
+   (define lst '(4 5 6))
+   (define rst (rest lst))
+   (assert (equal? rst '(5 6 7 8)))))
 
 (run-tests)
