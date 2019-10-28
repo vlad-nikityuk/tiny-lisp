@@ -15,8 +15,8 @@ Prerequisites:
 
 Run:
 
-	$ coffee src/lisp.coffee
+	$ $(npm bin)/coffee src/lisp.coffee
 
 Some tests:
-	
+
 	$ npm test
