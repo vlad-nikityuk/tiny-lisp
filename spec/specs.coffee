@@ -8,14 +8,25 @@ describe "toy lisp", ->
     env = lisp.topLevel()
 
   describe "parsing", ->
-    it "should be able to eval (()", ->
+    it "should NOT be able to eval (()", ->
       chai.expect(-> lisp.evaluate("(()", env)).to.throw()
+
+    # it "should NOT be able to eval ())", ->
+    #   chai.expect(-> lisp.evaluate("(define first-returns-head-of-list (lambda () (begin (eq? 4 4)))))", env)).to.throw()
 
     it "should handle single-line comments", ->
       lisp.evaluate(";here's comment\n(- 1 1)\n", env).should.equal 0
 
     it "should be able to evaluate statements with new lines and tabs", ->
       lisp.evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal 1
+
+    it "should support quotes", ->
+      lisp.evaluate("'(1)", env).should.eql [1]
+
+    it "should support - in quotations", ->
+      lisp.evaluate("'hello-world", env).should.equal "hello-world"
+      lisp.evaluate("'(hello-world)", env).should.eql ["hello-world"]
+      lisp.evaluate("'(hello-world 1)", env).should.eql ["hello-world", 1]
 
   describe "evaluation", ->
     it "should make (eq? nil '()) to be true", ->

@@ -1,7 +1,7 @@
 isEmpty = (arr) -> Array.isArray(arr) and arr.length == 0
 tokenize = (program) ->
   program
-    .replace(/\'([\w\d\.\*\:\?\!]+|\([\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
+    .replace(/\'([\-\w\d\.\*\:\?\!]+|\([\-\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
     .replace(/;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
     .split(" ").filter (x) -> !!x
