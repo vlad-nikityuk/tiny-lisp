@@ -73,4 +73,12 @@
     (pass)
     (error 'oh-dear)))
 
+(deftest partial-functions
+  (begin
+    (defn add (a b)
+      (+ a b))
+    (define add-one (partial add '(1) ))
+    (define two (add-one 1))
+    (assert (eq? two 2))))
+
 (run-tests)

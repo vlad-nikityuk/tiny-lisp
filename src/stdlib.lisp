@@ -157,3 +157,5 @@
 	      (test-fn)
 	      (print (green 'PASS) name)))))
 
+(defn partial (fn args)
+  (js/bind fn (cons nil args))

@@ -90,7 +90,7 @@ exports.topLevel = ->
     "error": (msg) -> throw Error(msg)
     "try": (fn, fail) -> try return fn() catch e then return fail(e)
     "js/eval": (prg) -> @eval(prg)
-    "bind": (f, args...) -> args = Function::bind.apply(f, args)
+    "js/bind": (f, args) -> Function::bind.apply(f, args)
     "trampoline": (f) -> f = f.apply(f.context, f.args) while f? instanceof Function; f
   (initial[op] = new Function("return Array.prototype.slice.call(arguments,1).reduce(function(x,a){return x "+op+" a;},arguments[0]);")\
    for op in ['+','-','/','>','<','>=','<=','&&','||'])
