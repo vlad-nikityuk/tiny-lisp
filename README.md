@@ -11,7 +11,6 @@ Based on original article [norvig.com/lispy.html](http://norvig.com/lispy.html).
 
 Prerequisites:
 
-	$ npm install coffee-script mocha -g
 	$ npm install
 
 Run:
@@ -20,5 +19,4 @@ Run:
 
 Some tests:
 	
-	$ mocha --compilers coffee:coffee-script/register spec/specs.coffee
-	$ coffee src/lisp.coffee -f spec/specs.lisp
+	$ npm test
