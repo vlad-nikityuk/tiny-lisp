@@ -1,10 +1,6 @@
 language: node_js
 node_js:
-  - "0.12"
-
-before_install:
-  - npm install
+  - 7
 
 script:
-  - "`npm bin`/mocha --require coffeescript/register spec/specs.coffee"
-  - "`npm bin`/coffee src/lisp.coffee -f spec/specs.lisp"
+  - npm test
