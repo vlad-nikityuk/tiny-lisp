@@ -92,8 +92,8 @@
 	 (define name (car body))
 	 (define test (car (cdr body)))
 	 ;; test-name ; test-fn pair
-	 (define test-definition (list (quote list) (list (quote quote) name) name))
-	 (define tests-var (quote *TESTS*))
+	 (define test-definition (list 'list (list 'quote name) name))
+	 (define tests-var '*TESTS*)
 	 (list (quote begin)
 	       (list 'define name (list 'lambda '() test))
 	       (list 'set! tests-var
@@ -107,36 +107,36 @@
 (defn patch-asserts (ast test-name assertion-expr)
   (begin
    (defn patch-assert (_ast_)
-     (if (eq? (car _ast_) (quote assert))
+     (if (eq? (car _ast_) 'assert)
 	 (begin
 	  (define body (cdr _ast_))
 	  (define expr (car body))
 	  (define messages (cdr body))
 
-	  (define q-str (quote quote))
+	  (define q-str 'quote)
 	  ;(assert test-exp
 	  ;	  (quote test:)
 	  ;	  (quote test-name)
 	  ;	  (quote expression:)
 	  ;	  (quote assertion-expr)
 	  ;	  messages..)
-	  
-	  (concat (list (quote assert)
+
+	  (concat (list 'assert
 			assertion-expr
-			(list q-str (quote test:))
+			(list q-str 'test:)
 			(list q-str test-name)
-			(list q-str (quote expression:))
+			(list q-str 'expression:)
 			(list q-str assertion-expr))
 		  messages)
        _ast_)))
-   
+
    (defn patch-rec (_ast_)
      (begin
       (define _new_ast_ (patch-assert _ast_))
       (if (list? _new_ast_)
-	  (map _new_ast_ patch-rec)
-	_new_ast_)))
-   (patch-rec ast)))
+	      (map _new_ast_ patch-rec)
+	      _new_ast_)))
+  (patch-rec ast)))
 
 (defn run-tests ()
   (iterate *TESTS*
@@ -145,4 +145,5 @@
 	      (define name (car test))
 	      (define test-fn (car (cdr test)))
 	      (test-fn)
-	      (print (green (quote ✓)) name)))))
+	      (print (green 'PASS) name)))))
+
