@@ -80,13 +80,15 @@ _eval = (ast, scope) ->
 exports.evaluate = (program, scope) -> _eval parse(tokenize(program)), scope
 exports.topLevel = ->
   initial =
-    "nil": null, "#t": true, "#f": false #, "and": '&&', "or": '||'
+    "nil": null, "#t": true, "#f": false
     "eq?": (els...) -> els.map((el) -> if isEmpty el then null else el).reduce ((acc,el,i,a) -> (el is a[0]) && acc), true
     "car": (lst) -> (lst or [])[0]
     "cdr": (lst) -> (lst or [])[1..]
     "len": (lst) -> (lst or []).length
     "cons": (v, lst) -> [v].concat(lst or [])
     "list": (els...) -> els
+    "error": (msg) -> throw Error(msg)
+    "try": (fn, fail) -> try return fn() catch e then return fail(e)
     "js/eval": (prg) -> @eval(prg)
     "bind": (f, args...) -> args = Function::bind.apply(f, args)
     "trampoline": (f) -> f = f.apply(f.context, f.args) while f? instanceof Function; f

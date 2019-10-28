@@ -48,16 +48,29 @@
    (define res (concat '(4 5 6) '(1 2 3)))
    (assert (equal? '(4 5 6 1 2 3) res))))
 
+(deftest equality
+  (begin
+    (assert (eq? #t #t)
+    (assert (eq? 4 4)))))
+
 (deftest first-returns-head-of-list
   (begin
    (define lst '(4 5 6))
    (define fst (first lst))
-   (assert (equal? fst 4))))
+   (assert (eq? fst 4)))
+)
 
-(deftest rest-returns-tail-of-list-SHOULD-FAIL
-  (begin
-   (define lst '(4 5 6))
-   (define rst (rest lst))
-   (assert (equal? rst '(5 6 7 8)))))
+(deftest begin-should-return-last-expr
+  (assert (eq? 4 (begin 1 2 3 4))))
+
+(deftest assert-fails-on-false-expr
+  (if
+    (eq?
+      (try
+        (lambda () (begin (assert #f) #f))
+        (lambda (e) #t))
+      #t)
+    (pass)
+    (error 'oh-dear)))
 
 (run-tests)
