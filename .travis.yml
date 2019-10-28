@@ -3,8 +3,8 @@ node_js:
   - "0.12"
 
 before_install:
-  - npm install -g coffee-script mocha
-  
+  - npm install
+
 script:
-  - "mocha --compilers coffee:coffee-script/register spec/specs.coffee"
-  - "coffee src/lisp.coffee -f spec/specs.lisp"
+  - "`npm bin`/mocha --require coffeescript/register spec/specs.coffee"
+  - "`npm bin`/coffee src/lisp.coffee -f spec/specs.lisp"
