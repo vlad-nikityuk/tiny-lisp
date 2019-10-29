@@ -42,6 +42,9 @@ describe "toy lisp", ->
     it "should pass all parameters", ->
         lisp.evaluate("(- 1 1)", env).should.equal 0
 
+    it "should support strings", ->
+      lisp.evaluate('(+ "foo " "bar")', env).should.equal "foo bar"
+
     it "should not evaluate defined symbols to undefined", ->
         res = lisp.evaluate("cons", env)
         res.should.not.equal undefined
