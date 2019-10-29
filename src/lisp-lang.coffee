@@ -4,12 +4,12 @@ tokenize = (program) ->
     .replace(/\'([\-\w\d\.\*\:\?\!]+|\([\-\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
     .replace(/;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
-    .split(" ").filter (x) -> !!x
+    .match(/\".*?\"|[^\s]+/g).filter((x) -> !!x)
 parse = (tokens) ->
   return if isEmpty tokens
   atom = (val) ->
     num = parseFloat(val)
-    (if isNaN(num) then val else num)
+    (if !isNaN(num) then num else val)
   first = tokens.shift()
   result_list = []
   throw new Error("Syntax error, closing parenthesis at the beginning of the expression") if first is ")"
@@ -33,8 +33,8 @@ createScope = (parent, init) ->
   _sc
 inMacro = false
 _eval = (ast, scope) ->
-  str = -> scope node
-  sym = -> node
+  lit = -> if typeof node is "string" then node.slice(1,-1) else node
+  identifier = -> scope node
   quote = -> node[1]
   _if = ->
     [_, test, conseq, alt] = node
@@ -65,8 +65,8 @@ _eval = (ast, scope) ->
   unless inMacro
     (inMacro=true;node=(rootScope(m)(node) or node);inMacro=false) \
      for m in Object.keys(rootScope()) when m.indexOf("macro/") is 0
-  if (typeof node is "string") then str()
-  else if not Array.isArray(node) then sym()
+  if (typeof node is "string" and node[0]!='"') then identifier()
+  else if not Array.isArray(node) then lit()
   else
     switch node[0]
       when 'quote' then quote()
@@ -76,9 +76,8 @@ _eval = (ast, scope) ->
       when 'lambda' then lambda()
       when 'begin' then begin()
       else fn()
-@exports = @exports or {}
-exports.evaluate = (program, scope) -> _eval parse(tokenize(program)), scope
-exports.topLevel = ->
+evaluate = (program, scope) -> _eval parse(tokenize(program)), scope
+topLevel = ->
   initial =
     "nil": null, "#t": true, "#f": false
     "eq?": (els...) -> els.map((el) -> if isEmpty el then null else el).reduce ((acc,el,i,a) -> (el is a[0]) && acc), true
@@ -95,3 +94,4 @@ exports.topLevel = ->
   (initial[op] = new Function("return Array.prototype.slice.call(arguments,1).reduce(function(x,a){return x "+op+" a;},arguments[0]);")\
    for op in ['+','-','/','>','<','>=','<=','&&','||'])
   createScope null, initial
+module.exports = {parse: parse, tokenize: tokenize, evaluate: evaluate, topLevel: topLevel}
