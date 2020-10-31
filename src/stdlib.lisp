@@ -15,6 +15,34 @@
         (list "define" name (list "lambda" args expr)))
       ast)))
 
+
+(define patch-rec-trampoline
+  ;; if list?
+  ;;    if (name ..)
+  ;;    -> return mapped via self
+  (lambda (ast name)
+    (if (list? ast)
+      (if (eq? name (first ast))
+        ;; ast: (a 1 2 3)
+        ;; res: (lambda () (a 1 2 3))
+        (list "lambda" '() ast)
+        (map ast patch-rec-trampoline))
+      ast)))
+
+(define macro/defrec
+  (lambda (ast)
+    (if (eq? (first ast) "defrec")
+      (begin
+        (define body (rest ast))
+        (define name (first body))
+        ;; (print name)
+        (define args (first (rest body)))
+        (define expr (patch-rec-trampoline (first (rest (rest body))) name))
+        (list "define" name (list "trampoline" (list "lambda" args expr))))
+      )
+      ast))
+
+
 (defn not (x) (if x #f #t))
 ;; ------------- UTILS ----------------------------------------
 (define print (js/eval "console.log"))
