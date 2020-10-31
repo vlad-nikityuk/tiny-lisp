@@ -1,4 +1,5 @@
 fs = require 'fs'
+resolve = require('path').resolve
 colors = require 'colors/safe'
 argv = require('minimist')(process.argv.slice(2));
 domain = require 'domain'
@@ -7,9 +8,6 @@ lisp = require './lisp-lang'
 
 global.colors = colors
 env = lisp.topLevel()
-
-locateFile = (name) ->
-  process.cwd() + '/' + name
 
 loadFile = (path, cont) ->
   data = fs.readFileSync path
@@ -25,8 +23,9 @@ repl = () ->
   rl.on 'line', (line) ->
     program = line.trim()
     try
-      result = lisp.evaluate(program, env)
-      console.log colors.green(result)
+      if program != ''
+        result = lisp.evaluate(program, env)
+        console.log colors.green(result)
     catch e
       console.log colors.red(e.stack)
     finally
@@ -41,10 +40,10 @@ try
   if argv['debug']?
     lisp.evaluate('(define *DEBUG* #t)', env)
 
-  loadFile locateFile('src/stdlib.lisp')
+  loadFile resolve('src/stdlib.lisp')
 
   if argv['f']?
-    loadFile(locateFile(argv['f']))
+    loadFile(resolve(argv['f']))
   else
     repl()
 catch e
