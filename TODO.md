@@ -1,4 +1,3 @@
-- FIX "should NOT be able to eval ())"
 - patch-asserts
 - tail-rec via trampoline (https://blog.logrocket.com/using-trampolines-to-manage-large-recursive-loops-in-javascript-d8c9db095ae3/)
 

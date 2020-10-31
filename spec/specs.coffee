@@ -11,8 +11,8 @@ describe "toy lisp", ->
     it "should NOT be able to eval (()", ->
       chai.expect(-> lisp.evaluate("(()", env)).to.throw()
 
-    # it "should NOT be able to eval ())", ->
-    #   chai.expect(-> lisp.evaluate("(define first-returns-head-of-list (lambda () (begin (eq? 4 4)))))", env)).to.throw()
+    it "should NOT be able to eval ())", ->
+      chai.expect(-> lisp.evaluate("())", env)).to.throw()
 
     it "should handle single-line comments", ->
       lisp.evaluate(";here's comment\n(- 1 1)\n", env).should.equal 0
