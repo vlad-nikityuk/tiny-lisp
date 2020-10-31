@@ -1,26 +1,26 @@
+(define first car)
+(define rest cdr)
+
 ;; shorthand for defining functions
 ;; (defn name args expr) -> (define name (lambda args expr))
 ;; (defn _add (a b) (+ a b))
 (define macro/defn
   (lambda (ast)
-    (if (eq? (car ast) 'defn)
+    (if (eq? (first ast) "defn")
       (begin
-        (define body (cdr ast))
-        (define name (car body))
-        (define args (car (cdr body)))
-        (define expr (car (cdr (cdr body))))
-        (list 'define name (list 'lambda args expr)))
+        (define body (rest ast))
+        (define name (first body))
+        (define args (first (rest body)))
+        (define expr (first (rest (rest body))))
+        (list "define" name (list "lambda" args expr)))
       ast)))
 
 (defn not (x) (if x #f #t))
 ;; ------------- UTILS ----------------------------------------
-(define print (js/eval 'console.log))
-(define pi (js/eval 'Math.PI))
+(define print (js/eval "console.log"))
+(define pi (js/eval "Math.PI"))
 
 (defn trace (x) (begin (print x) x))
-
-(define first car)
-(define rest cdr)
 
 (defn pass () 0)
 ;; -----------------------------------------------------------
@@ -28,28 +28,28 @@
     (define macro/trace trace))
 ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
-(define list? (js/eval 'Array.isArray))
+(define list? (js/eval "Array.isArray"))
 
 (defn iterate (lst f)
   (if (not (empty? lst))
     (begin
-      (f (car lst))
-      (iterate (cdr lst) f))))
+      (f (first lst))
+      (iterate (rest lst) f))))
 
 (defn reduce (lst f memo)
   (if (empty? lst) memo
-    (reduce (cdr lst) f (f (car lst) memo))))
+    (reduce (rest lst) f (f (first lst) memo))))
 
 (defn r/reduce (lst f memo)
   (if (empty? lst) memo
-    (f (car lst) (r/reduce (cdr lst) f memo))))
+    (f (first lst) (r/reduce (rest lst) f memo))))
 
 ;; (and doesn't work here for some reason, using (&&
 ;; (iterate (zip '(1 2 3) '(4 5 6)) print)
 (defn zip (ll1 ll2)
   (if (&& (empty? ll1) (empty? ll2)) nil
-    (cons (list (car ll1) (car ll2))
-	  (zip (cdr ll1) (cdr ll2)))))
+    (cons (list (first ll1) (first ll2))
+	  (zip (rest ll1) (rest ll2)))))
 
 (defn concat (l1 l2)
   (r/reduce l1 cons l2))
@@ -69,14 +69,14 @@
 
 ;;-------------- COLORS -----------------------------------
 
-(define red (js/eval 'colors.red))
-(define green (js/eval 'colors.green))
+(define red (js/eval "colors.red"))
+(define green (js/eval "colors.green"))
 
 ;;-------------- UNIT TESTS -----------------------------------
 (defn assert (expr)
   (if (eq? #f expr)
     (begin
-      (error 'assertion-failed)
+      (error "assertion-failed")
       #f)
     #t))
 
@@ -86,26 +86,26 @@
   (if (&& (list? a1) (list? a2))
       (r/reduce (zip a1 a2) (lambda (x m)
 			      (begin
-			       (define v1 (car x))
-			       (define v2 (car (cdr x)))
+			       (define v1 (first x))
+			       (define v2 (first (rest x)))
 			       (eq? v1 v2)))
 		#t)
     (eq? a1 a2)))
 
 (define macro/deftest
   (lambda (ast)
-    (if (eq? (car ast) 'deftest)
+    (if (eq? (first ast) "deftest")
       (begin
-        (define body (cdr ast))
-        (define name (car body))
-        (define test (car (cdr body)))
+        (define body (rest ast))
+        (define name (first body))
+        (define test (first (rest body)))
         ;; test-name ; test-fn pair
-        (define test-definition (list 'list (list 'quote name) name))
-        (define tests-var '*TESTS*)
+        (define test-definition (list "list" (list "quote" name) name))
+        (define tests-var "*TESTS*")
         (list (quote begin)
-          (list 'define name (list 'lambda '() test))
-          (list 'set! tests-var
-            (list 'concat tests-var (list 'list test-definition)))))
+          (list "define" name (list "lambda" '() test))
+          (list "set!" tests-var
+            (list "concat" tests-var (list "list" test-definition)))))
       ast)))
 
 ;;(patch-asserts (quote
@@ -115,12 +115,12 @@
 (defn patch-asserts (ast test-name assertion-expr)
   (begin
     (defn patch-assert (_ast_)
-      (if (eq? (car _ast_) 'assert)
+      (if (eq? (first _ast_) "assert")
         (begin
-          (define body (cdr _ast_))
-          (define expr (car body))
-          (define messages (cdr body))
-          (define q-str 'quote)
+          (define body (rest _ast_))
+          (define expr (first body))
+          (define messages (rest body))
+          (define q-str "quote")
           ;(assert test-exp
           ;	  (quote test:)
           ;	  (quote test-name)
@@ -130,11 +130,11 @@
 
           (concat
             (list
-              'assert
+              "assert"
               assertion-expr
-              (list q-str 'test:)
+              (list q-str "test:")
               (list q-str test-name)
-              (list q-str 'expression:)
+              (list q-str "expression:")
               (list q-str assertion-expr))
             messages)
 
@@ -152,10 +152,10 @@
   (iterate *TESTS*
 	   (lambda (test)
 	     (begin
-	      (define name (car test))
-	      (define test-fn (car (cdr test)))
+	      (define name (first test))
+	      (define test-fn (first (rest test)))
 	      (test-fn)
-	      (print (green 'PASS) name)))))
+	      (print (green "PASS") name)))))
 
 (defn partial (fn args)
   (js/bind fn (cons nil args))
