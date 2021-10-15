@@ -1,8 +1,6 @@
 Toy lisp interpreter
 ===
 
-![Build Status](https://travis-ci.org/vlad-nikityuk/toy-lisp.svg?branch=master)
-
 Created *just for fun*.
 
 ~100 lines of coffeescript code.
