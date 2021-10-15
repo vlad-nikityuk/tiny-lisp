@@ -29,6 +29,57 @@
         (map ast patch-rec-trampoline))
       ast)))
 
+(defn not (x) (if x #f #t))
+;; ------------- UTILS ----------------------------------------
+(define print (js/eval "console.log"))
+(define pi (js/eval "Math.PI"))
+
+(defn trace (x) (begin (print x) x))
+
+(defn pass () 0)
+;; ------------ LISTS ----------------------------------------
+(defn empty? (lst) (eq? (len lst) 0))
+(define list? (js/eval "Array.isArray"))
+
+;; (at lst idx)
+(define at
+  (js/eval "(function(lst,idx){ return lst[idx];})"))
+
+(defn iterate (lst f)
+  (if (not (empty? lst))
+    (begin
+      (f (first lst))
+      (iterate (rest lst) f))))
+
+(define map
+  (js/eval "(function(lst,fn){ return lst.map(fn);})"))
+
+(defn l/reduce (lst f memo)
+  (if (empty? lst) memo
+    (reduce (rest lst) f (f (first lst) memo))))
+
+(defn r/reduce (lst f memo)
+  (if (empty? lst) memo
+    (f (first lst) (r/reduce (rest lst) f memo))))
+
+(define reduce
+  (js/eval "(function(lst,fn,memo){ return lst.reduce(fn, memo);})"))
+
+;; (and doesn't work here for some reason, using (&&
+;; (iterate (zip '(1 2 3) '(4 5 6)) print)
+(defn zip (ll1 ll2)
+  (if (&& (empty? ll1) (empty? ll2)) nil
+    (cons
+      (list (first ll1) (first ll2))
+	    (zip (rest ll1) (rest ll2)))))
+
+(defn concat (l1 l2)
+  (r/reduce l1 cons l2))
+
+;; -----------------------------------------------------------
+;; (define macro/trace trace)
+;; -----------------------------------------------------------
+
 (define macro/defrec
   (lambda (ast)
     (if (eq? (first ast) "defrec")
@@ -41,49 +92,6 @@
         (list "define" name (list "trampoline" (list "lambda" args expr))))
       )
       ast))
-
-
-(defn not (x) (if x #f #t))
-;; ------------- UTILS ----------------------------------------
-(define print (js/eval "console.log"))
-(define pi (js/eval "Math.PI"))
-
-(defn trace (x) (begin (print x) x))
-
-(defn pass () 0)
-;; -----------------------------------------------------------
-(if *DEBUG*
-    (define macro/trace trace))
-;; ------------ LISTS ----------------------------------------
-(defn empty? (lst) (eq? (len lst) 0))
-(define list? (js/eval "Array.isArray"))
-
-(defn iterate (lst f)
-  (if (not (empty? lst))
-    (begin
-      (f (first lst))
-      (iterate (rest lst) f))))
-
-(defn reduce (lst f memo)
-  (if (empty? lst) memo
-    (reduce (rest lst) f (f (first lst) memo))))
-
-(defn r/reduce (lst f memo)
-  (if (empty? lst) memo
-    (f (first lst) (r/reduce (rest lst) f memo))))
-
-;; (and doesn't work here for some reason, using (&&
-;; (iterate (zip '(1 2 3) '(4 5 6)) print)
-(defn zip (ll1 ll2)
-  (if (&& (empty? ll1) (empty? ll2)) nil
-    (cons (list (first ll1) (first ll2))
-	  (zip (rest ll1) (rest ll2)))))
-
-(defn concat (l1 l2)
-  (r/reduce l1 cons l2))
-
-(defn map (xs f)
-  (r/reduce xs (lambda (x m) (cons (f x) m)) (list)))
 
 ;; Linked lists
 (defn c/cons (v lst)
@@ -119,6 +127,10 @@
 			       (eq? v1 v2)))
 		#t)
     (eq? a1 a2)))
+
+(define macro/xdeftest
+  (lambda (ast)
+    (if (eq? (first ast) "xdeftest") '(pass) ast)))
 
 (define macro/deftest
   (lambda (ast)
@@ -165,7 +177,6 @@
               (list q-str "expression:")
               (list q-str assertion-expr))
             messages)
-
           _ast_)))
 
    (defn patch-rec (_ast_)

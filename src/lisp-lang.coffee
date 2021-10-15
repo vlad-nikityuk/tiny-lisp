@@ -2,7 +2,7 @@ isEmpty = (arr) -> Array.isArray(arr) and arr.length == 0
 tokenize = (program) ->
   program
     .replace(/\'([\-\w\d\.\*\:\?\!]+|\([\-\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
-    .replace(/;.*\n/g, "").replace(/[\n\t]/g, " ")
+    .replace(/;;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
     .match(/\".*?\"|[^\s]+/g).filter((x) -> !!x)
 parse = (tokens) ->
@@ -12,7 +12,7 @@ parse = (tokens) ->
     (if !isNaN(num) then num else val)
   first = tokens.shift()
   result_list = []
-  throw new Error("Syntax error, closing parenthesis at the beginning of the expression") if first is ")"
+  throw new Error("ToyLisp: Syntax error, closing parenthesis at the beginning of the expression") if first is ")"
   if first is "("
     result_list.push parse(tokens) while tokens[0] isnt ")" and tokens.length != 0
     tokens.shift()
@@ -58,7 +58,7 @@ _eval = (ast, scope) ->
   fn = ->
     proc = _eval(node[0], scope)
     args = node[1..].map((arg) -> _eval(arg, scope))
-    throw new Error('Function ' + node[0] + ' is not defined') if not proc?
+    throw new Error('ToyLisp: Function ' + node[0] + ' is not defined') if not proc?
     proc.apply null, args
   node = ast
   rootScope = scope.root()

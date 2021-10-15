@@ -73,6 +73,14 @@
     (pass)
     (error 'oh-dear)))
 
+(deftest at-returns-by-idx
+  (begin
+   (define lst '(4 5 6))
+   (assert (eq? (at lst 0) 4))
+   (assert (eq? (at lst 1) 5))
+   (assert (eq? (at lst 2) 6))
+  ))
+
 (deftest partial-functions
   (begin
     (defn add (a b)
@@ -89,7 +97,7 @@
 (deftest trampoline-rec
   (assert (eq? 6 (sum-below 3 0))))
 
-;; (deftest trampoline-rec-big
-;;   (assert (eq? 5000050000 (sum-below 100000 0))))
+(xdeftest trampoline-rec-big
+  (assert (eq? 5000050000 (sum-below 100000 0))))
 
 (run-tests)
