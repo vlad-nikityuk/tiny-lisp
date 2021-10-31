@@ -2,7 +2,7 @@ const fs = require('fs')
 const { resolve } = require('path')
 const colors = require('colors/safe')
 const argv = require('minimist')(process.argv.slice(2))
-const { topLevel, evaluate } = require('./lisp_lang')
+const { topLevel, evaluate } = require('lisp_lang')
 
 // @ts-ignore
 global['colors'] = colors
