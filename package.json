@@ -9,13 +9,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@types/node": "^16.11.6",
     "@types/chai": "^4.2.22",
     "@types/mocha": "^9.0.0",
+    "@types/node": "^16.11.6",
     "chai": "^2.3.0",
-    "mocha": "^8.4.0",
-    "ts-node": "^10.4.0",
     "colors": "^1.0.3",
-    "minimist": "^1.1.1"
+    "minimist": "^1.1.1",
+    "mocha": "^8.4.0",
+    "ts-node": "^10.4.0"
   }
 }
