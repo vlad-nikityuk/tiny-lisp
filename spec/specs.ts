@@ -15,7 +15,7 @@ describe("toy lisp", () => {
             expect(() => evaluate("())", env)).to.throw())
 
         it("should handle single-line comments", () =>
-            evaluate("here's comment\n(- 1 1)\n", env).should.equal(0))
+            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0))
 
         it("should be able to evaluate statements with new lines and tabs", () =>
             evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal(1))
