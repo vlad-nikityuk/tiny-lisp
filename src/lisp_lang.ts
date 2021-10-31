@@ -4,7 +4,6 @@ const tokenize = program => program
     .replace(/;;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
     .match(/\".*?\"|[^\s]+/g).filter(x => !!x)
-
 function parse(tokens) {
     if (isEmpty(tokens)) return
     function atom(val) {
@@ -68,9 +67,7 @@ function _eval(ast, scope) {
         default: return fn()
     }
 }
-
 export function evaluate(program, scope) { return _eval(parse(tokenize(program)), scope)}
-
 export function topLevel() {
     const initial = {
         "nil": null, "#t": true, "#f": false,
@@ -84,11 +81,10 @@ export function topLevel() {
         "try"(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
         "js/eval"(prg) { return global.eval(prg) },
         "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
-        "trampoline"(f) {
-            while (f instanceof Function) {
-                f = f.apply(f.context, f.args)
-            }
-            return f
+        "trampoline": f => (...args) => {
+            let result = f.bind(null, ...args)
+            while (typeof result === 'function') result = result()
+            return result
         }
     }
     for (let op of ['+', '-', '/', '>', '<', '>=', '<=', '&&', '||']) {

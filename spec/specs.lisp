@@ -89,14 +89,14 @@
     (define two (add-one 1))
     (assert (eq? two 2))))
 
-;;(defrec sum-below (x sum)
-;;  (if (eq? x 0)
-;;    sum
-;;    (sum-below (- x 1) (+ sum x))))
-;;
-;;(deftest trampoline-rec
-;;  (assert (eq? 6 (sum-below 3 0))))
-;;
+(defrec sum-below (x sum)
+ (if (eq? x 0)
+   sum
+   (sum-below (- x 1) (+ sum x))))
+
+(deftest trampoline-rec
+ (assert (eq? 6 (sum-below 3 0))))
+
 ;;(xdeftest trampoline-rec-big
 ;;  (assert (eq? 5000050000 (sum-below 100000 0))))
 
