@@ -1,19 +1,20 @@
 {
-  "name": "lisp",
-  "version": "0.0.0",
+  "name": "toy-lisp",
+  "version": "0.0.1",
   "description": "",
-  "main": "lisp.js",
+  "main": "lisp.ts",
   "scripts": {
-    "test": "$(npm bin)/mocha --require coffeescript/register spec/specs.coffee && $(npm bin)/coffee src/lisp.coffee -f spec/specs.lisp"
+    "test": "$(npm bin)/mocha --require ts-node/register spec/specs.ts && $(npm bin)/ts-node src/lisp.ts -f spec/specs.lisp"
   },
   "author": "",
   "license": "ISC",
-  "devDependencies": {
-    "chai": "^2.3.0",
-    "mocha": "^8.2.0"
-  },
   "dependencies": {
-    "coffeescript": "^2.4.1",
+    "@types/node": "^16.11.6",
+    "@types/chai": "^4.2.22",
+    "@types/mocha": "^9.0.0",
+    "chai": "^2.3.0",
+    "mocha": "^8.4.0",
+    "ts-node": "^10.4.0",
     "colors": "^1.0.3",
     "minimist": "^1.1.1"
   }
