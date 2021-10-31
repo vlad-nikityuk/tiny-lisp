@@ -86,7 +86,6 @@
       (begin
         (define body (rest ast))
         (define name (first body))
-        ;; (print name)
         (define args (first (rest body)))
         (define expr (patch-rec-trampoline (first (rest (rest body))) name))
         (list "define" name (list "trampoline" (list "lambda" args expr))))
