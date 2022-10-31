@@ -15,6 +15,7 @@
         (list "define" name (list "lambda" args expr)))
       ast)))
 
+(defn not (x) (if x #f #t))
 
 (define patch-rec-trampoline
   ;; if list?
@@ -28,16 +29,12 @@
         (list "lambda" '() ast)
         (map ast patch-rec-trampoline))
       ast)))
-
-(defn not (x) (if x #f #t))
 ;; ------------- UTILS ----------------------------------------
 (define print (js/eval "console.log"))
 (define pi (js/eval "Math.PI"))
-
 (defn trace (x) (begin (print x) x))
-
 (defn pass () 0)
-;; ------------ LISTS ----------------------------------------
+;; ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
 (define list? (js/eval "Array.isArray"))
 
@@ -196,4 +193,4 @@
 	      (print (green "PASS") name)))))
 
 (defn partial (fn args)
-  (js/bind fn (cons nil args))
+  (js/bind fn (cons nil args)))

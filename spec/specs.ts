@@ -14,8 +14,9 @@ describe("toy lisp", () => {
         it("should NOT be able to eval ())", () =>
             expect(() => evaluate("())", env)).to.throw())
 
-        it("should handle single-line comments", () =>
-            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0))
+        it("should handle single-line comments", () => {
+            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0)
+        })
 
         it("should be able to evaluate statements with new lines and tabs", () =>
             evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal(1))
@@ -47,12 +48,8 @@ describe("toy lisp", () => {
             evaluate('(+ "foo " "bar")', env).should.equal("foo bar"))
 
         it("should not evaluate defined symbols to undefined", () => {
-            const res = evaluate("cons", env)
-            res.should.not.equal(undefined)
-        })
-
-        describe("scoping", function() {
-            // TBD
+            evaluate("cons", env).should.not.equal(undefined)
         })
     })
+
 })
