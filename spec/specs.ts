@@ -14,8 +14,9 @@ describe("toy lisp", () => {
         it("should NOT be able to eval ())", () =>
             expect(() => evaluate("())", env)).to.throw())
 
-        it("should handle single-line comments", () =>
-            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0))
+        it("should handle single-line comments", () => {
+            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0)
+        })
 
         it("should be able to evaluate statements with new lines and tabs", () =>
             evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal(1))
@@ -37,7 +38,7 @@ describe("toy lisp", () => {
         it("should pass for (cons 1 (cons 2 nil))", () =>
             evaluate("(cons 1 (cons 2 nil))", env))
 
-        xit("should pass 0 as 0 but not undefined", () =>
+        it("should pass 0 as 0 but not undefined", () =>
             evaluate("((lambda (x) x) 0)", env).should.equal(0))
 
         it("should pass all parameters", () =>
@@ -47,8 +48,7 @@ describe("toy lisp", () => {
             evaluate('(+ "foo " "bar")', env).should.equal("foo bar"))
 
         it("should not evaluate defined symbols to undefined", () => {
-            const res = evaluate("cons", env)
-            res.should.not.equal(undefined)
+            evaluate("cons", env).should.not.equal(undefined)
         })
     })
 
