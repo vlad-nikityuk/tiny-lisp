@@ -97,7 +97,7 @@
 (deftest trampoline-rec
  (assert (eq? 6 (sum-below 3 0))))
 
-(xdeftest trampoline-rec-big
- (assert (eq? 5000050000 (sum-below 100000 0))))
+;; (deftest trampoline-rec-big
+;;  (assert (eq? 5000050000 (sum-below 100000 0))))
 
 (run-tests)
