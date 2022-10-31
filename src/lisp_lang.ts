@@ -27,94 +27,45 @@ function createScope(parent, init?) {
     _sc.find = name => locals[name] != null ? _sc : parent != null ? parent.find(name) : null
     return _sc
 }
-
 let inMacro = false
 function _evalRec(node, scope, cont) {
     const rootScope = scope.root()
     if (!inMacro)
-        for (let m of Array.from(Object.keys(rootScope())))
-            if (m.indexOf("macro/") === 0) {
-                inMacro = true;
-                node = (rootScope(m)(node) || node);
-                inMacro = false
-            }
-
-    if ((typeof node === "string") && (node[0] !== '"')) {
-        return cont(scope(node))
-    }
-    else if (!Array.isArray(node)) {
-        return cont(typeof node === "string" ? node.slice(1, -1) : node)
-    }
-    else switch (node[0]) {
-        case 'quote': {
-            return cont(node[1])
-        }
-        case 'if': {
-            return _evalRec(node[1], scope, cond => cond
-                    ? _evalRec(node[2], scope, cont)
-                    : _evalRec(node[3], scope, cont)
-            )
-        }
-        case 'define': {
-            return _evalRec(node[2], scope, x => {
-                scope(node[1], x)
-                return cont()
-            })
-        }
-        case 'set!': {
-            return _evalRec(node[2], scope, x => {
-                scope.find(node[1])?.(node[1], x)
-                return cont()
-            })
-        }
-        case 'lambda': {
-            return cont((...args) => {
+        Object.keys(rootScope()).filter(k => k.indexOf("macro/") === 0).forEach(m => {
+            inMacro = true; node = (rootScope(m)(node) || node); inMacro = false
+        })
+    if ((typeof node === "string") && (node[0] !== '"')) return cont(scope(node))
+    if (!Array.isArray(node)) return cont(typeof node === "string" ? node.slice(1, -1) : node)
+    switch (node[0]) {
+        case 'quote': return cont(node[1])
+        case 'if': return _evalRec(node[1], scope, cond => cond ? _evalRec(node[2], scope, cont): _evalRec(node[3], scope, cont))
+        case 'define': return _evalRec(node[2], scope, x => { scope(node[1], x); return cont(x) })
+        case 'set!': return _evalRec(node[2], scope, x => { scope.find(node[1])?.(node[1], x); return cont(x) })
+        case 'lambda': return cont((...args) => {
                 const subScope = createScope(scope)
                 args.forEach((arg, i) => subScope(node[1][i], arg))
-                var r = _evalRec(node[2], subScope, x => x)
-                return r
+                return _evalRec(node[2], subScope, x => x)
             })
-        }
         case 'begin': {
-            var ops = Array.from(node.slice(1));
-            if (ops.length > 0) {
-                var funcs = ops.map((v, i, _) => () => _evalRec(v, scope, funcs[i+1]));
-                funcs[funcs.length - 1] = () => _evalRec(ops[funcs.length - 1], scope, x => {
-                    return cont(x)
-                })
-                return funcs[0]()
-            }
-            return cont()
+            const ops = node.slice(1)
+            if (ops.length == 0) return cont()
+            const funcs = ops.map((v, i, _) => () => _evalRec(v, scope, funcs[i + 1]));
+            funcs[funcs.length - 1] = () => _evalRec(ops[funcs.length - 1], scope, x => { return cont(x)})
+            return funcs[0]()
         }
-        default: {
+        default:
             return _evalRec(node[0], scope, proc => {
-                if ((proc == null)) throw new Error('ToyLisp: Function ' + node[0] + ' is not defined')
-                var argsExprs = node.slice(1)
-                if (argsExprs.length > 0) {
-                    var args = argsExprs.map(_ => null)
-                    var funcs = argsExprs.map((v, i, _) => () => _evalRec(v, scope, r => {
-                        args[i] = r
-                        return funcs[i+1]();
-                    }));
-                    funcs[funcs.length - 1] = () => _evalRec(argsExprs[argsExprs.length - 1], scope, r => {
-                        args[argsExprs.length - 1] = r
-                        var res = proc.apply(null, args);
-                        return cont(res);
-                    });
-                    return funcs[0]()
-                }
-
-                return cont(proc.apply(null, []));
+                if (proc == null) throw new Error('ToyLisp: Function ' + node[0] + ' is not defined')
+                const argsExprs = node.slice(1)
+                if (argsExprs.length == 0) return cont(proc.apply(null, []));
+                const args = new Array(argsExprs.length);
+                const funcs = argsExprs.map((v, i, _) => () => _evalRec(v, scope, r => { args[i] = r; return funcs[i+1](); }))
+                funcs[funcs.length - 1] = () => _evalRec(argsExprs[argsExprs.length - 1], scope, r => { args[argsExprs.length - 1] = r; return cont(proc.apply(null, args));})
+                return funcs[0]()
             })
-        }
     }
 }
-export function evaluate(program, scope) {
-    let toks = tokenize(program)
-    let ast = parse(toks)
-
-    return _evalRec(ast, scope, x => x)
-}
+export const evaluate = (program, scope) => _evalRec(parse(tokenize(program)), scope, x => x)
 export function topLevel() {
     const initial = {
         "nil": null, "#t": true, "#f": false,
