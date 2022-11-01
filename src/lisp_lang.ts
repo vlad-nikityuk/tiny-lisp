@@ -70,16 +70,16 @@ export function topLevel() {
     const initial = {
         "nil": null, "#t": true, "#f": false,
         "eq?"(...els) { return els.map(el => isEmpty(el) ? null : el).reduce(((acc, el, i, a) => (el === a[0]) && acc), true) },
-        "car"(lst) { return (lst || [])[0] },
-        "cdr"(lst) { return (lst || []).slice(1) },
-        "len"(lst) { return (lst || []).length },
-        "cons"(v, lst) { return [v].concat(lst || []) },
-        "list"(...els) { return els },
-        "error"(msg) { throw Error(msg) },
-        "try"(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
+        car(lst) { return (lst || [])[0] },
+        cdr(lst) { return (lst || []).slice(1) },
+        len(lst) { return (lst || []).length },
+        cons(v, lst) { return [v].concat(lst || []) },
+        list(...els) { return els },
+        error(msg) { throw Error(msg) },
+        try(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
         "js/eval"(prg) { return global.eval(prg) },
         "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
-        "trampoline": (f) => (...args) => {
+        trampoline: (f) => (...args) => {
             let result = f.bind(null, ...args)
             while (typeof result === 'function') {
                 result = result()
