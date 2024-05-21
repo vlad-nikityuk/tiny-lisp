@@ -1,4 +1,4 @@
-Toy lisp interpreter
+Tiny lisp interpreter
 ===
 
 Created *just for fun*.
