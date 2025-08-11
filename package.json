@@ -1,23 +1,25 @@
 {
   "name": "toy-lisp",
-  "version": "0.0.1",
-  "description": "",
-  "main": "lisp.ts",
+  "version": "0.0.2",
+  "description": "A minimalistic Lisp interpreter",
+  "type": "module",
+  "main": "dist/lisp.js",
   "scripts": {
-    "test": "$(npm bin)/mocha --require ts-node/register spec/specs.ts && $(npm bin)/ts-node src/lisp.ts -f spec/specs.lisp"
+    "build": "tsc",
+    "start": "tsx src/lisp.ts",
+    "test": "node --test --import tsx/esm spec/specs.ts && tsx src/lisp.ts -f spec/specs.lisp"
   },
   "author": "",
   "license": "ISC",
+  "packageManager": "pnpm@9.7.0",
   "dependencies": {
-    "@types/chai": "^4.2.22",
-    "@types/mocha": "^9.0.0",
-    "@types/node": "^16.11.6",
-    "ansi-regex": ">=5.0.1",
-    "chai": "^2.3.0",
-    "colors": "^1.0.3",
-    "minimist": "^1.1.1",
-    "mocha": "^10.1.0",
-    "ts-node": "^10.4.0",
-    "typescript": "^4.8.4"
+    "colors": "^1.4.0",
+    "minimist": "^1.2.8"
+  },
+  "devDependencies": {
+    "@types/minimist": "^1.2.5",
+    "@types/node": "^22.1.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
   }
 }

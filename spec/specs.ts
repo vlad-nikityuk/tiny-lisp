@@ -1,55 +1,53 @@
-const {expect, should} = require("chai")
-const {topLevel, evaluate} = require("../src/lisp_lang")
-
-should()
+import {test, describe, beforeEach} from 'node:test'
+import assert from 'node:assert'
+import {topLevel, evaluate} from "../src/lisp_lang.js"
 
 describe("toy lisp", () => {
-    let env = 0
+    let env: any
     beforeEach(() => env = topLevel())
 
     describe("parsing", () => {
-        it("should NOT be able to eval (()", () =>
-            expect(() => evaluate("(()", env)).to.throw())
+        test("should NOT be able to eval (()", () =>
+            assert.throws(() => evaluate("(()", env)))
 
-        it("should NOT be able to eval ())", () =>
-            expect(() => evaluate("())", env)).to.throw())
+        test("should NOT be able to eval ())", () =>
+            assert.throws(() => evaluate("())", env)))
 
-        it("should handle single-line comments", () => {
-            evaluate(";;here's comment\n(- 1 1)\n", env).should.equal(0)
+        test("should handle single-line comments", () => {
+            assert.strictEqual(evaluate(";;here's comment\n(- 1 1)\n", env), 0)
         })
 
-        it("should be able to evaluate statements with new lines and tabs", () =>
-            evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env).should.equal(1))
+        test("should be able to evaluate statements with new lines and tabs", () =>
+            assert.strictEqual(evaluate("(begin (len '())\t\n (len '(1)) \n 1)", env), 1))
 
-        it("should support quotes", () =>
-            evaluate("'(1)", env).should.eql([1]))
+        test("should support quotes", () =>
+            assert.deepStrictEqual(evaluate("'(1)", env), [1]))
 
-        it("should support - in quotations", () => {
-            evaluate("'hello-world", env).should.equal("hello-world")
-            evaluate("'(hello-world)", env).should.eql(["hello-world"])
-            evaluate("'(hello-world 1)", env).should.eql(["hello-world", 1])
+        test("should support - in quotations", () => {
+            assert.strictEqual(evaluate("'hello-world", env), "hello-world")
+            assert.deepStrictEqual(evaluate("'(hello-world)", env), ["hello-world"])
+            assert.deepStrictEqual(evaluate("'(hello-world 1)", env), ["hello-world", 1])
         })
     })
 
     describe("evaluation", () => {
-        it("should make (eq? nil '()) to be true", () =>
-            evaluate("(eq? nil '())", env).should.equal(true))
+        test("should make (eq? nil '()) to be true", () =>
+            assert.strictEqual(evaluate("(eq? nil '())", env), true))
 
-        it("should pass for (cons 1 (cons 2 nil))", () =>
+        test("should pass for (cons 1 (cons 2 nil))", () =>
             evaluate("(cons 1 (cons 2 nil))", env))
 
-        it("should pass 0 as 0 but not undefined", () =>
-            evaluate("((lambda (x) x) 0)", env).should.equal(0))
+        test("should pass 0 as 0 but not undefined", () =>
+            assert.strictEqual(evaluate("((lambda (x) x) 0)", env), 0))
 
-        it("should pass all parameters", () =>
-            evaluate("(- 1 1)", env).should.equal(0))
+        test("should pass all parameters", () =>
+            assert.strictEqual(evaluate("(- 1 1)", env), 0))
 
-        it("should support strings", () =>
-            evaluate('(+ "foo " "bar")', env).should.equal("foo bar"))
+        test("should support strings", () =>
+            assert.strictEqual(evaluate('(+ "foo " "bar")', env), "foo bar"))
 
-        it("should not evaluate defined symbols to undefined", () => {
-            evaluate("cons", env).should.not.equal(undefined)
+        test("should not evaluate defined symbols to undefined", () => {
+            assert.notStrictEqual(evaluate("cons", env), undefined)
         })
     })
-
 })

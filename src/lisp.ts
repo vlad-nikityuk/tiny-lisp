@@ -1,20 +1,32 @@
-const fs = require('fs')
-const { resolve } = require('path')
-const colors = require('colors/safe')
-const argv = require('minimist')(process.argv.slice(2))
-const { topLevel, evaluate } = require('./lisp_lang')
+import fs from 'fs'
+import { resolve } from 'path'
+import colors from 'colors/safe'
+import minimist from 'minimist'
+import { topLevel, evaluate } from './lisp_lang.js'
+
+const argv = minimist(process.argv.slice(2))
 
 // @ts-ignore
 global['colors'] = colors
 const env = topLevel()
 
-const loadFile = function(path) {
+const loadFile = function(path: string) {
     const data = fs.readFileSync(path)
     return evaluate('(begin ' + data.toString() + ')', env)
 };
 
-function repl() {
-    const rl = require('readline').createInterface({
+function formatOutput(result: any): string {
+    if (Array.isArray(result)) {
+        return "(" + result.map(formatOutput).join(" ") + ")";
+    } else if (typeof result === "function") {
+        return "<function>"
+    }
+    return String(result);
+}
+
+async function repl() {
+    const readline = await import('readline')
+    const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
     })
@@ -24,7 +36,7 @@ function repl() {
         try {
             if (program !== '') {
                 const result = evaluate(program, env)
-                return console.log(colors.green(result))
+                return console.log(colors.green(formatOutput(result)))
             }
         } catch (e) {
             return console.log(colors.red(e.stack))
@@ -38,14 +50,17 @@ function repl() {
 }
 
 try {
-    if (argv['debug'] != null) evaluate('(define *DEBUG* #t)', env)
+    if (argv['debug'] != null) {
+        evaluate('(define *DEBUG* #t)', env)
+        console.log(colors.yellow('Debug mode enabled'))
+    }
 
     loadFile(resolve('src/stdlib.lisp'))
 
     if (argv['f'] != null) loadFile(resolve(argv['f']))
-    else repl()
+    else await repl()
 
-} catch (error) {
+} catch (error: any) {
     console.error(colors.red(error.stack))
     process.exit(1)
 }

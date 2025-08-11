@@ -17,18 +17,14 @@
 
 (defn not (x) (if x #f #t))
 
-(define patch-rec-trampoline
-  ;; if list?
-  ;;    if (name ..)
-  ;;    -> return mapped via self
-  (lambda (ast name)
-    (if (list? ast)
-      (if (eq? name (first ast))
-        ;; ast: (a 1 2 3)
-        ;; res: (lambda () (a 1 2 3))
-        (list "lambda" '() ast)
-        (map ast patch-rec-trampoline))
-      ast)))
+(defn patch-rec-trampoline (ast name)
+  (if (list? ast)
+    (if (eq? name (first ast))
+      ;; ast: (a 1 2 3)
+      ;; res: (lambda () (a 1 2 3))
+      (list "lambda" '() ast)
+      (map ast (lambda (x) (patch-rec-trampoline x name))))
+    ast))
 ;; ------------- UTILS ----------------------------------------
 (define print (js/eval "console.log"))
 (define pi (js/eval "Math.PI"))
@@ -86,8 +82,7 @@
         (define args (first (rest body)))
         (define expr (patch-rec-trampoline (first (rest (rest body))) name))
         (list "define" name (list "trampoline" (list "lambda" args expr))))
-      )
-      ast))
+      ast)))
 
 ;; Linked lists
 (defn c/cons (v lst)

@@ -1,12 +1,12 @@
-const isEmpty = arr => Array.isArray(arr) && (arr.length === 0)
-const tokenize = program => program
+const isEmpty = (arr: any[]): boolean => Array.isArray(arr) && (arr.length === 0)
+const tokenize = (program: string): string[] => program
     .replace(/\'([\-\w\d\.\*\:\?\!]+|\([\-\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
     .replace(/;;.*\n/g, "").replace(/[\n\t]/g, " ")
     .replace(/\(/g, " ( ").replace(/\)/g, " ) ")
-    .match(/\".*?\"|[^\s]+/g).filter(x => !!x)
-function parse(tokens) {
+    .match(/\".*?\"|[^\s]+/g)?.filter(x => !!x) || []
+function parse(tokens: string[]): any {
     if (isEmpty(tokens)) return
-    function atom(val) {
+    function atom(val: string): any {
         const num = parseFloat(val)
         return isNaN(num) ? val : num
     }
@@ -18,17 +18,17 @@ function parse(tokens) {
         }
         tokens.shift()
         return result_list
-    } else return atom(first)
+    } else return atom(first!)
 }
-function createScope(parent, init?) {
+function createScope(parent: any, init?: any): any {
     const locals = init || {}
-    const _sc = (name, val) => (name == null) ? locals : (val == null) ? name in locals ? locals[name] : parent != null ? parent(name) : null : (locals[name] = val)
+    const _sc = (name: any, val?: any) => (name == null) ? locals : (val == null) ? name in locals ? locals[name] : parent != null ? parent(name) : null : (locals[name] = val)
     _sc.root = () => parent != null ? parent.root() : _sc
-    _sc.find = name => locals[name] != null ? _sc : parent != null ? parent.find(name) : null
+    _sc.find = (name: any) => locals[name] != null ? _sc : parent != null ? parent.find(name) : null
     return _sc
 }
 let inMacro = false
-function _evalRec(node, scope, cont) {
+function _evalRec(node: any, scope: any, cont: any): any {
     const rootScope = scope.root()
     if (!inMacro)
         Object.keys(rootScope()).filter(k => k.indexOf("macro/") === 0).forEach(m => {
@@ -65,8 +65,8 @@ function _evalRec(node, scope, cont) {
             })
     }
 }
-export const evaluate = (program, scope) => _evalRec(parse(tokenize(program)), scope, x => x)
-export function topLevel() {
+export const evaluate = (program: string, scope: any) => _evalRec(parse(tokenize(program)), scope, (x: any) => x)
+export function topLevel(): any {
     const initial = {
         "nil": null, "#t": true, "#f": false,
         "eq?"(...els) { return els.map(el => isEmpty(el) ? null : el).reduce(((acc, el, i, a) => (el === a[0]) && acc), true) },
@@ -87,7 +87,9 @@ export function topLevel() {
             return result
         }
     }
-    for (let op of ['+', '-', '/', '>', '<', '>=', '<=', '&&', '||']) {
+    // TODO: Fix + operator to force numeric addition instead of string concatenation
+    // when used with reduce. Currently (reduce '(1 2 3 4) + 0) does string concat
+    for (let op of ['+', '-', '*', '/', '>', '<', '>=', '<=', '&&', '||']) {
         initial[op] = new Function("return Array.prototype.slice.call(arguments,1).reduce(function(x,a){return x " + op + " a;},arguments[0]);")
     }
     return createScope(null, initial)
