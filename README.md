@@ -174,7 +174,4 @@ Check out `src/stdlib.lisp` for comprehensive examples of:
 - Testing framework implementation
 - JavaScript interop patterns
 
-## License
-
-ISC
 
