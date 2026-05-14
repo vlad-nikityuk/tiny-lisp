@@ -79,12 +79,22 @@ export function topLevel(): any {
         try(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
         "js/eval"(prg) { return global.eval(prg) },
         "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
-        trampoline: (f) => (...args) => {
-            let result = f.bind(null, ...args)
-            while (typeof result === 'function') {
-                result = result()
+        trampoline: (f) => {
+            let active = false
+            const wrapped = (...args) => {
+                if (active) return () => f(...args)
+                active = true
+                try {
+                    let result = f(...args)
+                    while (typeof result === 'function') {
+                        result = result()
+                    }
+                    return result
+                } finally {
+                    active = false
+                }
             }
-            return result
+            return wrapped
         }
     }
     // TODO: Fix + operator to force numeric addition instead of string concatenation
