@@ -13,7 +13,6 @@ function parse(tokens: string[]): any {
     const first = tokens[0]
     if (first === ")") { tokens.shift(); throw new Error("ToyLisp: Syntax error, closing parenthesis at the beginning of the expression") }
     if (first !== "(") { tokens.shift(); return atom(first!) }
-    // Iterative list parsing — explicit stack so nesting depth is O(1) on the JS call stack
     tokens.shift()
     const stack: any[][] = []
     let current: any[] = []
@@ -34,12 +33,8 @@ function createScope(parent: any, init?: any): any {
     return _sc
 }
 let inMacro = false
-
-// Tagged thunk — distinct from user lambdas so the trampoline loop can't confuse them
 class Thunk { constructor(readonly run: () => any) {} }
 const thunk = (f: () => any) => new Thunk(f)
-
-// Returns a Thunk or a final value — never recurses directly into itself
 function _evalStep(node: any, scope: any, cont: any): any {
     const rootScope = scope.root()
     if (!inMacro)
@@ -50,46 +45,23 @@ function _evalStep(node: any, scope: any, cont: any): any {
     if (!Array.isArray(node)) return cont(typeof node === "string" ? node.slice(1, -1) : node)
     switch (node[0]) {
         case 'quote': return cont(node[1])
-        case 'if': return thunk(() => _evalStep(node[1], scope, cond =>
-            cond ? thunk(() => _evalStep(node[2], scope, cont))
-                 : thunk(() => _evalStep(node[3], scope, cont))))
+        case 'if': return thunk(() => _evalStep(node[1], scope, cond => cond ? thunk(() => _evalStep(node[2], scope, cont)) : thunk(() => _evalStep(node[3], scope, cont))))
         case 'define': return thunk(() => _evalStep(node[2], scope, x => { scope(node[1], x); return cont(x) }))
         case 'set!': return thunk(() => _evalStep(node[2], scope, x => { scope.find(node[1])?.(node[1], x); return cont(x) }))
-        case 'lambda': return cont((...args) => {
-                const subScope = createScope(scope)
-                args.forEach((arg, i) => subScope(node[1][i], arg))
-                return _evalRec(node[2], subScope, x => x)
-            })
-        case 'begin': {
-            const ops = node.slice(1)
-            if (ops.length == 0) return cont()
-            const evalSeq = (i: number): any => i < ops.length - 1
-                ? thunk(() => _evalStep(ops[i], scope, _ => evalSeq(i + 1)))
-                : thunk(() => _evalStep(ops[i], scope, cont))
-            return evalSeq(0)
-        }
+        case 'lambda': return cont((...args) => { const s = createScope(scope); args.forEach((a, i) => s(node[1][i], a)); return _evalRec(node[2], s, x => x) })
+        case 'begin': { const ops = node.slice(1); if (ops.length == 0) return cont(); const ev = (i: number): any => i < ops.length - 1 ? thunk(() => _evalStep(ops[i], scope, _ => ev(i + 1))) : thunk(() => _evalStep(ops[i], scope, cont)); return ev(0) }
         default:
             return thunk(() => _evalStep(node[0], scope, proc => {
                 if (proc == null) throw new Error('ToyLisp: Function ' + node[0] + ' is not defined')
                 const argsExprs = node.slice(1)
                 if (argsExprs.length == 0) return cont(proc.apply(null, []))
                 const args = new Array(argsExprs.length)
-                const evalArgs = (i: number): any => thunk(() => _evalStep(argsExprs[i], scope, r => {
-                    args[i] = r
-                    return i < argsExprs.length - 1 ? evalArgs(i + 1) : cont(proc.apply(null, args))
-                }))
+                const evalArgs = (i: number): any => thunk(() => _evalStep(argsExprs[i], scope, r => { args[i] = r; return i < argsExprs.length - 1 ? evalArgs(i + 1) : cont(proc.apply(null, args)) }))
                 return evalArgs(0)
             }))
     }
 }
-
-// Trampoline runner — bounces thunks iteratively so expression nesting depth is O(1) stack
-function _evalRec(node: any, scope: any, cont: any): any {
-    let r: any = _evalStep(node, scope, cont)
-    while (r instanceof Thunk) r = r.run()
-    return r
-}
-
+function _evalRec(node: any, scope: any, cont: any): any { let r: any = _evalStep(node, scope, cont); while (r instanceof Thunk) r = r.run(); return r }
 export const evaluate = (program: string, scope: any) => _evalRec(parse(tokenize(program)), scope, (x: any) => x)
 export function topLevel(): any {
     const initial = {

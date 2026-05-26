@@ -18,3 +18,8 @@ jobs:
       - run: npm install -g pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - name: Enforce lisp_lang.ts <= 100 LOC
+        run: |
+          lines=$(wc -l < src/lisp_lang.ts)
+          echo "lisp_lang.ts: $lines lines"
+          [ "$lines" -le 100 ] || { echo "FAIL: lisp_lang.ts exceeds 100 lines ($lines)"; exit 1; }
