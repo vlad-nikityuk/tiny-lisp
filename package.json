@@ -3,11 +3,11 @@
   "version": "0.0.2",
   "description": "A minimalistic Lisp interpreter",
   "type": "module",
-  "main": "dist/lisp.js",
+  "main": "dist/lisp_lang.js",
   "scripts": {
     "build": "tsc",
-    "start": "tsx src/lisp.ts",
-    "test": "node --test --import tsx/esm spec/specs.ts && tsx src/lisp.ts -f spec/specs.lisp"
+    "start": "tsx src/lisp_lang.ts",
+    "test": "node --test --import tsx/esm spec/specs.ts && tsx src/lisp_lang.ts -f spec/specs.lisp"
   },
   "author": "",
   "license": "ISC",

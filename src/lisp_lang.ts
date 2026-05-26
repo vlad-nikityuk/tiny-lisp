@@ -1,3 +1,8 @@
+import fs from 'fs'
+import { resolve } from 'path'
+import { fileURLToPath } from 'url'
+import colors from 'colors/safe'
+import minimist from 'minimist'
 const isEmpty = (arr: any[]): boolean => Array.isArray(arr) && (arr.length === 0)
 const tokenize = (program: string): string[] => program
     .replace(/\'([\-\w\d\.\*\:\?\!]+|\([\-\s\w\d\.\*\:\?\!]*\))/g, "(quote $1)")
@@ -6,19 +11,12 @@ const tokenize = (program: string): string[] => program
     .match(/\".*?\"|[^\s]+/g)?.filter(x => !!x) || []
 function parse(tokens: string[]): any {
     if (isEmpty(tokens)) return
-    function atom(val: string): any {
-        const num = parseFloat(val)
-        return isNaN(num) ? val : num
-    }
-    const first = tokens.shift(), result_list = []
+    const atom = (v: string) => { const n = parseFloat(v); return isNaN(n) ? v : n }
+    const first = tokens.shift(), list: any[] = []
     if (first === ")") throw new Error("ToyLisp: Syntax error, closing parenthesis at the beginning of the expression")
-    if (first === "(") {
-        while ((tokens[0] !== ")") && (tokens.length !== 0)) {
-            result_list.push(parse(tokens))
-        }
-        tokens.shift()
-        return result_list
-    } else return atom(first!)
+    if (first !== "(") return atom(first!)
+    while ((tokens[0] !== ")") && (tokens.length !== 0)) list.push(parse(tokens))
+    tokens.shift(); return list
 }
 function createScope(parent: any, init?: any): any {
     const locals = init || {}
@@ -70,21 +68,31 @@ export function topLevel(): any {
     const initial = {
         "nil": null, "#t": true, "#f": false,
         "eq?"(...els) { return els.map(el => isEmpty(el) ? null : el).reduce(((acc, el, i, a) => (el === a[0]) && acc), true) },
-        car(lst) { return (lst || [])[0] },
-        cdr(lst) { return (lst || []).slice(1) },
-        len(lst) { return (lst || []).length },
-        cons(v, lst) { return [v].concat(lst || []) },
-        list(...els) { return els },
-        error(msg) { throw Error(msg) },
-        try(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
-        "js/eval"(prg) { return global.eval(prg) },
-        "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
+        car(lst) { return (lst || [])[0] }, cdr(lst) { return (lst || []).slice(1) },
+        len(lst) { return (lst || []).length }, cons(v, lst) { return [v].concat(lst || []) }, list(...els) { return els },
+        error(msg) { throw Error(msg) }, try(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
+        "js/eval"(prg) { return global.eval(prg) }, "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
         trampoline: (f) => { let a = false; return (...args) => { if (a) return () => f(...args); a = true; try { let r = f(...args); while (typeof r === 'function') r = r(); return r } finally { a = false } } }
     }
-    // TODO: Fix + operator to force numeric addition instead of string concatenation
-    // when used with reduce. Currently (reduce '(1 2 3 4) + 0) does string concat
-    for (let op of ['+', '-', '*', '/', '>', '<', '>=', '<=', '&&', '||']) {
+    for (let op of ['+', '-', '*', '/', '>', '<', '>=', '<=', '&&', '||'])
         initial[op] = new Function("return Array.prototype.slice.call(arguments,1).reduce(function(x,a){return x " + op + " a;},arguments[0]);")
-    }
     return createScope(null, initial)
+}
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+    // @ts-ignore
+    global['colors'] = colors
+    const argv = minimist(process.argv.slice(2))
+    const env = topLevel()
+    const loadFile = (path: string) => evaluate('(begin ' + fs.readFileSync(path) + ')', env)
+    const fmt = (r: any): string => Array.isArray(r) ? "(" + r.map(fmt).join(" ") + ")" : typeof r === "function" ? "<function>" : String(r)
+    const repl = async () => {
+        const { createInterface } = await import('readline')
+        const rl = createInterface({ input: process.stdin, output: process.stdout })
+        rl.setPrompt('#> ')
+        rl.on('line', line => { try { if (line.trim()) console.log(colors.green(fmt(evaluate(line.trim(), env)))) } catch(e) { console.log(colors.red(e.stack)) } finally { rl.prompt() } })
+        rl.on('close', () => process.exit(0)); rl.prompt()
+    }
+    try { if (argv['debug'] != null) { evaluate('(define *DEBUG* #t)', env); console.log(colors.yellow('Debug mode enabled')) }
+        loadFile(resolve('src/stdlib.lisp')); await (argv['f'] != null ? loadFile(resolve(argv['f'])) : repl())
+    } catch (e: any) { console.error(colors.red(e.stack)); process.exit(1) }
 }
