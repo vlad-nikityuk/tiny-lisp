@@ -79,13 +79,7 @@ export function topLevel(): any {
         try(fn, fail) { try { return fn() } catch (e) { return fail(e) }},
         "js/eval"(prg) { return global.eval(prg) },
         "js/bind"(f, args) { return Function.prototype.bind.apply(f, args) },
-        trampoline: (f) => (...args) => {
-            let result = f.bind(null, ...args)
-            while (typeof result === 'function') {
-                result = result()
-            }
-            return result
-        }
+        trampoline: (f) => { let a = false; return (...args) => { if (a) return () => f(...args); a = true; try { let r = f(...args); while (typeof r === 'function') r = r(); return r } finally { a = false } } }
     }
     // TODO: Fix + operator to force numeric addition instead of string concatenation
     // when used with reduce. Currently (reduce '(1 2 3 4) + 0) does string concat
