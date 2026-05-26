@@ -1,6 +1,6 @@
 import {test, describe, beforeEach} from 'node:test'
 import assert from 'node:assert'
-import {topLevel, evaluate} from "../src/lisp_lang.js"
+import {topLevel, evaluate} from "../src/lisp.js"
 
 describe("toy lisp", () => {
     let env: any
