@@ -30,6 +30,20 @@ describe("toy lisp", () => {
         })
     })
 
+    describe("stack safety", () => {
+        test("should handle deeply nested if expressions without stack overflow", () => {
+            let expr = "42"
+            for (let i = 0; i < 10000; i++) expr = `(if #t ${expr} 0)`
+            assert.strictEqual(evaluate(expr, env), 42)
+        })
+
+        test("should handle deeply nested begin expressions without stack overflow", () => {
+            let expr = "42"
+            for (let i = 0; i < 10000; i++) expr = `(begin ${expr})`
+            assert.strictEqual(evaluate(expr, env), 42)
+        })
+    })
+
     describe("evaluation", () => {
         test("should make (eq? nil '()) to be true", () =>
             assert.strictEqual(evaluate("(eq? nil '())", env), true))
