@@ -15,13 +15,13 @@ pnpm build            # compile TypeScript to dist/
 
 There is no separate lint command. TypeScript strict mode is enforced via `tsconfig.json`.
 
-The test suite runs two suites in sequence: `node --test` on `spec/specs.ts` (TypeScript unit tests), then `tsx src/lisp_lang.ts -f spec/specs.lisp` (Lisp integration tests that call `run-tests`).
+The test suite runs two suites in sequence: `node --test` on `spec/specs.ts` (TypeScript unit tests), then `tsx src/lisp.ts -f spec/specs.lisp` (Lisp integration tests that call `run-tests`).
 
 ## Architecture
 
 The interpreter lives in one TypeScript file plus two Lisp files:
 
-**`src/lisp_lang.ts`** — the entire language engine and CLI entry point (~98 lines):
+**`src/lisp.ts`** — the entire language engine and CLI entry point (~98 lines):
 - `tokenize`: regex-based tokenizer; expands `'x` shorthand to `(quote x)` and strips `;;` comments
 - `parse`: recursive descent parser; returns nested JS arrays as the AST (lists) or primitives (atoms)
 - `createScope`: creates lexically-scoped environments as closures; `scope(name)` reads, `scope(name, val)` writes, `scope.root()` walks to the global env, `scope.find(name)` locates the defining scope for `set!`
