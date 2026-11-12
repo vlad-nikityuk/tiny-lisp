@@ -1,8 +1,6 @@
 # Tiny Lisp
 
-a tiny Lisp that doesn't blow the stack
-
-Written just for fun, inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
+A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
 
 ```lisp
 (defn fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))
