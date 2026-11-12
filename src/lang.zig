@@ -72,6 +72,7 @@ pub fn eval(node: V, env: *Env) E!V {
                     continue :ev;
                 },
                 .define, .@"set!" => {
+                    if (a.len < 2) return fail(str("ToyLisp: {s} needs a name", .{@tagName(k.kind)}));
                     ks.items.len -= 1; const s = name(a[1]);
                     if (k.kind == .define) set(e, s, v) else if (lookup(e, s)) |p| { gc.rel(ptr(p.*)); p.* = rv(v); }
                 },

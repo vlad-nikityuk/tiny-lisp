@@ -6,6 +6,8 @@ import re, subprocess, sys
 ERROR = object()
 CASES = [
     ("(()", ERROR),
+    ("(define)", ERROR),
+    ("(set!)", ERROR),
     ("())", ERROR),
     ("(begin (len '())\t (len '(1))  1)", "1"),
     ("'(1)", "(1)"),

@@ -310,12 +310,12 @@ fn trampRun(s: *Fn, a: []const V) E!V {
     if (s.i != 0) return .{ .f = nf(thunk, s.d0, list(a, a.len)) };
     var m = gc.mark();
     s.i = 1;
+    defer s.i = 0; // also when the body raises an error
     var r = try lang.call(s.d0, a);
     while (r == .f or r == .lam) {
         r = try lang.call(r, &.{});
         m = gc.resweep(m, r, null);
     }
-    s.i = 0;
     return r;
 }
 

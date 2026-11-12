@@ -359,4 +359,19 @@
     (defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
     (assert (eq? 1000 (deep 1000)))))
 
+;; ---------------------------------------------------------------
+;; regressions
+
+(deftest tail--defrec-works-again-after-a-caught-error
+  (begin
+    (defrec guarded (n) (if (< n 1) (error "boom") n))
+    (assert (eq? "boom" (try (lambda () (guarded 0)) (lambda (e) e))))
+    (assert (eq? 5 (guarded 5)))))
+
+(deftest errors--define-and-set-need-a-name
+  (begin
+    (assert (eq? "caught" (try (lambda () (define)) (lambda (e) "caught"))))
+    (assert (eq? "caught" (try (lambda () (set!)) (lambda (e) "caught"))))
+    (assert (eq? nil nil))))
+
 (run-tests)

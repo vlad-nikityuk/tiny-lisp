@@ -180,7 +180,8 @@ A failing `assert` raises `assertion-failed`, which stops the run with a non-zer
 
 | File | |
 |---|---|
-| `src/lang.zig` | the language: values, parser, scopes, evaluator, primitives |
+| `src/lang.zig` | the evaluator (explicit-stack machine, ≤ 100 lines) |
+| `src/runtime.zig` | values, printer, parser, scopes, primitives, trampoline |
 | `src/repl.zig` | command line and REPL |
 | `src/gc.zig` | memory management |
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
