@@ -1,4 +1,4 @@
-tiny-lisp: src/repl.zig src/lang.zig src/gc.zig src/stdlib_native.zig
+tiny-lisp: $(wildcard src/*.zig)
 	zig build-exe -OReleaseFast -lc src/repl.zig -femit-bin=$@
 
 safe: # bounds and overflow checks on

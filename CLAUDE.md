@@ -9,12 +9,16 @@ make                       # build ./tiny-lisp (Zig 0.17, ReleaseFast, links lib
 make test                  # spec/repl.py + spec/specs.lisp
 make safe                  # ReleaseSafe build (bounds/overflow checks): ./tiny-lisp-safe
 ./tiny-lisp [-f file.lisp] [--debug]
-zig fmt src/               # keep sources formatted
+zig fmt --check src/       # lang.zig opts out; all other Zig sources stay formatted
 ```
 
 ## Architecture
 
-`src/lang.zig` is the language (values, parser, scopes, evaluator, primitives). `src/repl.zig` is the CLI/REPL: it installs the native stdlib (`src/stdlib_native.zig`), then loads `src/stdlib.lisp` (path relative to the repo root), then runs a file or the REPL. `src/gc.zig` is memory management. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `lang.errv`. Primitives (`+ - car cons try ...`) are one function, `prim`, dispatched on the `Op` enum.
+`src/lang.zig` is the explicit-stack evaluator (`eval`, plus `call` for native callbacks) and the public language API. Keep it at **100 lines or fewer**, including comments and blank lines: it starts with `// zig fmt: off`, groups related statements, and keeps short section comments. Keep names meaningful and the total source small; move support code rather than hiding evaluator control flow.
+
+`src/runtime.zig` holds values and their iterative printer, reference-counted constructors, the iterative parser, scopes and macro registration, primitives, the trampoline, and root-scope initialization. It calls back through `lang.call` and raises errors through `lang.errv`; `lang.zig` re-exports the support API used by other modules. Primitives (`+ - car cons try ...`) are one function, `prim`, dispatched on the `Op` enum. All Zig files other than `lang.zig` use normal `zig fmt` formatting.
+
+`src/repl.zig` is the CLI/REPL: it installs the native stdlib (`src/stdlib_native.zig`), then loads `src/stdlib.lisp` (path relative to the repo root), then runs a file or the REPL. `src/gc.zig` is memory management. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `lang.errv`.
 
 **Evaluator**: explicit-stack machine, no native recursion per Lisp call or nesting level. Pending work is a frame on the global `ks` stack (`if` waiting for its condition, `begin` mid-sequence, `define`/`set!` waiting for the value, application collecting arguments on the operand stack `vs`). Tail positions (if branches, last of begin, lambda bodies) replace the current state instead of pushing a frame. Parser, printer and freeing are iterative too. The only native recursion left is natives calling back into Lisp (`map`, `reduce`, `try`, `partial`, macro expansion, trampoline): one `eval` re-entry per callback, capped at 8,000 (the 8 MB stack overflows at ~11k) with a catchable `ToyLisp: recursion too deep` error. On an error, each `eval` unwinds its own frames (`errdefer` restores `ks`/`vs`, `defer` restores `depth`/`in_macro`), so `try` and the REPL need no cleanup.
 
