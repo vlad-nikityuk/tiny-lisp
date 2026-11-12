@@ -1,43 +1,24 @@
 # Tiny Lisp Interpreter
 
-A minimalistic Lisp interpreter implemented in TypeScript, featuring macro support, tail-call optimization, and a comprehensive standard library.
+A minimalistic Lisp interpreter in C, featuring macro support, tail-call optimization, and a small standard library.
 
-Created *just for fun* and educational purposes.
+Created *just for fun* and educational purposes. The interpreter (`src/lisp.c`) is at most 100 lines, based on [norvig.com/lispy.html](http://norvig.com/lispy.html).
 
-~100 lines of core TypeScript code, based on [norvig.com/lispy.html](http://norvig.com/lispy.html).
+## Layout
 
-## Installation
-
-```bash
-pnpm install
-```
+- `src/lisp.c`: parser, evaluator, primitives, REPL
+- `src/gc.c`: memory management (reference counts + per-call regions)
+- `src/stdlib_native.c` + `src/stdlib.lisp`: standard library (native part, Lisp part)
+- `spec/specs.lisp`: Lisp test suite; `spec/repl.py`: REPL-driven tests
 
 ## Usage
 
-### Interactive REPL
-Start the interactive REPL to experiment with Lisp expressions:
-
 ```bash
-pnpm start
-```
-
-### Run Lisp Files
-Execute Lisp files directly:
-
-```bash
-pnpm start -f your-file.lisp
-```
-
-### Debug Mode
-Enable debug mode for detailed execution tracing:
-
-```bash
-pnpm start --debug
-```
-
-### Run Tests
-```bash
-pnpm test
+make                         # build ./tiny-lisp
+./tiny-lisp                  # REPL
+./tiny-lisp -f file.lisp     # run a file
+./tiny-lisp --debug          # set *DEBUG* to #t
+make test                    # run all tests
 ```
 
 ## Language Features
@@ -118,17 +99,6 @@ Efficient recursive functions that don't blow the stack:
 (c/tail lst)  ; => (c/cons 2 nil)
 ```
 
-#### JavaScript Interoperability
-```lisp
-;; Call JavaScript functions
-(define alert (js/eval "console.log"))
-(alert "Hello from Lisp!")
-
-;; Access JavaScript objects
-(define pi (js/eval "Math.PI"))
-(define random (js/eval "Math.random"))
-```
-
 #### Testing Framework
 ```lisp
 ;; Define unit tests
@@ -159,19 +129,8 @@ Efficient recursive functions that don't blow the stack:
 
 ## Architecture
 
-- **Parser**: Tokenizes and parses S-expressions
-- **Evaluator**: Continuation-passing style evaluator with macro expansion
-- **Environment**: Lexically scoped variable bindings
-- **Stdlib**: Rich standard library with macros and utility functions
-- **Trampoline**: Eliminates tail-call stack growth (Note: Limited by evaluator's own recursion depth due to CPS implementation)
-
-## Examples
-
-Check out `src/stdlib.lisp` for comprehensive examples of:
-- Macro definitions (`defn`, `deftest`, `defrec`)
-- Recursive algorithms with trampoline optimization
-- List processing utilities
-- Testing framework implementation
-- JavaScript interop patterns
-
-
+- **Parser**: iterative S-expression parser
+- **Evaluator**: explicit-stack machine. Pending work (`if`, `begin`, `define`, argument evaluation) lives in heap frames and tail calls replace the current state, so recursion depth is limited by memory, not the C stack
+- **Macros**: every `macro/*` function in the root scope rewrites each AST node before evaluation
+- **Memory**: heap reference counts plus per-call allocation regions, no tracing GC
+- **Stdlib**: see `src/stdlib.lisp` for `defn`, `defrec`, `deftest`, list utilities and Church lists

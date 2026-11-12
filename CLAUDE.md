@@ -5,51 +5,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-pnpm install          # install dependencies
-pnpm test             # run all tests (TypeScript unit tests + Lisp integration tests)
-pnpm start            # start interactive REPL
-pnpm start -f <file>  # run a .lisp file
-pnpm start --debug    # REPL with debug mode (sets *DEBUG* #t in env)
-pnpm build            # compile TypeScript to dist/
+make                       # build ./tiny-lisp
+make test                  # spec/repl.py + spec/specs.lisp + the 100-line check on src/lisp.c
+make asan                  # AddressSanitizer build: ./tiny-lisp-asan
+./tiny-lisp [-f file.lisp] [--debug]
 ```
-
-There is no separate lint command. TypeScript strict mode is enforced via `tsconfig.json`.
-
-The test suite runs two suites in sequence: `node --test` on `spec/specs.ts` (TypeScript unit tests), then `tsx src/lisp.ts -f spec/specs.lisp` (Lisp integration tests that call `run-tests`).
 
 ## Architecture
 
-The interpreter lives in one TypeScript file plus two Lisp files:
+`src/lisp.c` must stay **<= 100 lines** (enforced by `make test` and CI). It `#include`s `src/gc.c` and `src/stdlib_native.c`, which are not counted. The CLI installs the native stdlib, then loads `src/stdlib.lisp` (path relative to the repo root).
 
-**`src/lisp.ts`** — the entire language engine and CLI entry point (~98 lines):
-- `tokenize`: regex-based tokenizer; expands `'x` shorthand to `(quote x)` and strips `;;` comments
-- `parse`: recursive descent parser; returns nested JS arrays as the AST (lists) or primitives (atoms)
-- `createScope`: creates lexically-scoped environments as closures; `scope(name)` reads, `scope(name, val)` writes, `scope.root()` walks to the global env, `scope.find(name)` locates the defining scope for `set!`
-- `_evalRec`: CPS (continuation-passing style) evaluator; handles `quote`, `if`, `define`, `set!`, `lambda`, `begin`, and function application; **macro expansion runs on every node before evaluation** by iterating all `macro/`-prefixed keys on the root scope
-- `topLevel()`: builds the initial global environment with JS-backed primitives (`car`, `cdr`, `cons`, `len`, `list`, `eq?`, arithmetic operators via `new Function`, `js/eval`, `js/bind`, `trampoline`)
-- CLI block (guarded by `fileURLToPath(import.meta.url) === process.argv[1]` so it only runs when invoked directly, not when imported by tests): loads `src/stdlib.lisp`, starts the REPL or runs a file; colors output green/red/yellow
+**Evaluator**: explicit-stack machine, no C recursion per Lisp call or nesting level. Pending work is a frame on the global `ks` stack (`if` waiting for its condition, `begin` mid-sequence, `define`/`set!` waiting for the value, application collecting arguments on the operand stack `vs`). Tail positions (if branches, last of begin, lambda bodies) replace the current state instead of pushing a frame. Parser, printer and freeing are iterative too. The only C recursion left is natives calling back into Lisp (`map`, `reduce`, `try`, `partial`, macro expansion, trampoline): one `eval` re-entry per callback, capped at 12,000 with a catchable `ToyLisp: recursion too deep` error. Errors use `setjmp`/`longjmp`; `try` and the REPL restore `kn`/`vn`/`depth`.
 
-**`src/stdlib.lisp`** — standard library written in Lisp itself:
-- Defines macros: `macro/defn` (function definition shorthand), `macro/defrec` (tail-recursive function via trampoline), `macro/deftest`/`macro/xdeftest` (test registration)
-- List utilities: `map` (delegates to `Array.prototype.map`), `reduce` (delegates to `Array.prototype.reduce`), `l/reduce`/`r/reduce` (Lisp-native left/right reduce), `zip`, `concat`, `iterate`, `at`, `empty?`, `list?`
-- Church-encoded linked lists: `c/cons`, `c/head`, `c/tail`
-- Testing framework: `deftest` macro registers tests in `*TESTS*`; `run-tests` iterates and calls each
-- JS interop helpers: `print` (`console.log`), `pi` (`Math.PI`), `red`/`green` (terminal colors from the `colors` global)
+**Memory (`src/gc.c`)**: reference counts of *heap* references + per-call allocation regions. Interface: `gc_alloc(n, kind)`, `gc_perm(n)` (parser symbols/literals, root keys), `gc_raw`/`gc_raw_free` (owned buffers), `ret`/`rel` (count a heap reference), `gc_mark`/`gc_sweep(m, keep, keep2)`. Every frame records a mark; a value returned to a frame is swept against it; tail calls and the trampoline use `gc_resweep`, which keeps only the new body/scope (or result) and hands long-lived survivors (heap-referenced, survived 4 loop sweeps) to the enclosing region. Freeing uses a worklist, never recursion; allocation failure exits with `ToyLisp: out of memory`.
+- Every value stored into the heap (list element, scope slot, global, closure capture, `Fn` data) goes through `RV()`/`ret`; every overwritten heap value through `rel`.
+- Every string a value can point to comes from `mkstr`/`own` (never a C literal or raw malloc).
+- Values held only in frames / the operand stack / C locals are not counted, so never sweep a region they live in.
+- No VLAs sized by data (use the heap).
+- Check changes with `make asan` and run both test suites on `./tiny-lisp-asan` (the callback-depth test can overflow under ASan's larger frames).
 
-**`spec/specs.lisp`** — integration tests; ends with `(run-tests)` which executes everything registered via `deftest`
+## Language semantics
 
-**`spec/specs.ts`** — TypeScript unit tests using `node:test`; tests the tokenizer/parser/evaluator directly against `topLevel()` (no stdlib loaded)
+- **Macros**: any root-scope function named `macro/*` is applied to every AST node before evaluation (raw node in, node out). `in_macro` prevents re-entrant expansion. This dominates runtime.
+- Symbols and strings are the same type; string literals stay distinct in the AST (`LIT`) and evaluate to strings.
+- `0` and `""` are falsy, `'()` is truthy; `eq?` treats an empty list as `nil`.
+- `defrec` rewrites self-calls into thunks and wraps the function with the native `trampoline`.
 
-## Key design points
+## Tests
 
-**Macros**: any function defined in the root scope with a `macro/` prefix is applied to every AST node before evaluation. Macros receive the raw AST node and return a (possibly transformed) node. The `inMacro` flag prevents re-entrant macro expansion.
-
-**Trampoline / tail-call optimization**: `trampoline` is a JS-level wrapper in `topLevel`. `defrec` compiles a tail-recursive function by rewriting self-calls into `(lambda () (self-call ...))` (via `patch-rec-trampoline`), then wrapping the whole thing with `trampoline`. This avoids JS stack overflows for deep recursion.
-
-**CPS evaluator limitation**: although the evaluator uses CPS internally, it runs on the JS call stack and is not actually stack-safe for deeply nested expressions — the trampoline only helps for explicit `defrec` functions, not general recursion.
-
-**`js/eval` / `js/bind`**: direct escape hatches into JavaScript; `stdlib.lisp` uses them extensively to wrap native array methods and `console.log`.
-
-**Numbers vs strings**: `atom()` in the parser calls `parseFloat`; anything that doesn't parse as a number stays as a string. String literals (double-quoted) are stored with their quotes and stripped only at evaluation time.
-
-**Known issue**: `+` is string-concatenating when used via the Lisp `reduce` because JS coerces types; `(reduce '(1 2 3) + 0)` returns `"0123"` not `6`.
+Add a case whenever behaviour changes.
+- `spec/specs.lisp`: `deftest` + `assert`, ends with `(run-tests)`; a failing assert exits non-zero. Includes stack-safety tests (100k-deep recursion, deep data, callback depth guard).
+- `spec/repl.py <binary>`: drives the REPL and checks printed results (parsing, printing, errors, 100k-deep nesting).

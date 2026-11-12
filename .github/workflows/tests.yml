@@ -7,19 +7,8 @@ on:
     branches: [ master ]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24.x'
-      - run: npm install -g pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      - name: Enforce lisp.ts <= 100 LOC
-        run: |
-          lines=$(wc -l < src/lisp.ts)
-          echo "lisp.ts: $lines lines"
-          [ "$lines" -le 100 ] || { echo "FAIL: lisp.ts exceeds 100 lines ($lines)"; exit 1; }
+      - uses: actions/checkout@v4
+      - run: make test
