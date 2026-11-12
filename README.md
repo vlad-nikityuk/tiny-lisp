@@ -18,7 +18,7 @@ The evaluator is one file of under 100 lines (`src/lang.zig`), the whole interpr
 
 ## 2. Tiny Lisp is STACK-SAFE.
 
-Pending work lives in heap frames, not on the native stack, so recursion is limited by memory, not by the stack. A non-tail recursion a million calls deep just works (it takes about 260 MB). Tail calls use no memory at all.
+Pending work lives in heap frames, not on the native stack, so recursion is limited by memory and nothing else, even when it goes through `map`, `reduce`, `partial` or `try`. A non-tail recursion a million calls deep just works (it takes about 260 MB). Tail calls use no memory at all.
 
 ```lisp
 (defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
@@ -128,7 +128,7 @@ A failing `assert` raises `assertion-failed` and stops the run with a non-zero e
 
 ### Recursion
 
-Tail calls (the branches of `if`, the last expression of `begin`, a function body) use no memory, so loops written as tail recursion run forever. One limit remains: native functions that call back into Lisp (`map`, `reduce`, `try`, `partial`, macros) use the native stack, so callbacks nested more than 8,000 deep raise a catchable `ToyLisp: recursion too deep` error.
+Tail calls (the branches of `if`, the last expression of `begin`, a function body) use no memory, so loops written as tail recursion run forever. There is no recursion limit other than memory: a `map` callback that recurses, or a `try` nested a hundred thousand deep, works like any other call.
 
 ### Standard library
 
@@ -145,7 +145,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence and arguments being evaluated as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Running every `macro/*` on every node dominates the run time.
+The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Running every `macro/*` on every node dominates the run time.
 
 ## 8. History
 
