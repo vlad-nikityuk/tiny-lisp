@@ -8,33 +8,36 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 (map '(1 2 3) (lambda (x) (* x x)))            ; (1 4 9)
 ```
 
-## 1. Tiny Lisp is SMALL.
+- It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
+- It is small: the evaluator is one file of 100 lines (`src/lang.zig`) and the whole interpreter is about 780 lines of Zig, with no dependencies beyond libc.
+- It is fast: about 5× faster than the original TypeScript version, using 2–3 MB of memory (see Performance).
+- It has macros: any function named `macro/…` rewrites every expression before it runs.
+- It has tail-call optimization and is stack safe: recursion is limited only by memory.
+- It has a minimalistic GC: reference counts for heap references plus per-call allocation regions, with no tracing collector. Reference cycles are not freed.
 
-The evaluator is one file of under 100 lines (`src/lang.zig`), the whole interpreter about 740 lines of Zig. Values, parser, scopes, macros, tail calls, closures, errors, a test framework and a standard library, with no dependencies beyond libc.
+## Stack safety
 
-## 2. Tiny Lisp is STACK-SAFE.
-
-Pending work lives in heap frames, not on the native stack, so recursion is limited by memory and nothing else, even when it goes through `map`, `reduce`, `partial` or `try`. A non-tail recursion a million calls deep just works (it takes about 260 MB). Tail calls use no memory at all.
+Pending work lives in heap frames, not on the native stack, so recursion is limited by memory and nothing else, even when it goes through `map`, `reduce`, `partial` or `try`. A non-tail recursion a million calls deep works (it takes about 260 MB). Tail calls use no memory.
 
 ```lisp
 (defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
 (deep 1000000)                                 ; 1000000
 ```
 
-## 3. Tiny Lisp is FAST, and light.
+## Performance
 
-Memory is managed with reference counts plus per-call allocation regions: no tracing GC, and a program that churns through garbage stays flat at 2–3 MB.
+Memory is managed with reference counts plus per-call allocation regions, with no tracing GC. A program that churns through garbage stays at 2–3 MB.
 
-| | TypeScript on Node.js | Tiny Lisp (Zig) |
+| | TypeScript/Node.js | Zig |
 |---|---|---|
-| fib 22 | 2.29 s | **0.44 s** (5×) |
-| 100k-step `defrec` loop | 5.01 s | **1.02 s** (5×) |
-| allocation-heavy churn | 6.59 s | **1.34 s** (5×) |
-| peak memory | 51–146 MB | **2–3 MB** |
+| fib 22 | 2.29 s | 0.44 s (5×) |
+| 100k-step `defrec` loop | 5.01 s | 1.02 s (5×) |
+| allocation-heavy churn | 6.59 s | 1.34 s (5×) |
+| peak memory | 51–146 MB | 2–3 MB |
 
 Apple Silicon, median of 5 runs, measured on the original TypeScript version (see `git log`).
 
-## 4. Tiny Lisp has MACROS.
+## Macros
 
 A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it. `defn`, `defrec` and `deftest` are macros written in Lisp (`src/stdlib.lisp`).
 
@@ -48,7 +51,7 @@ A macro is a function named `macro/…`. Before any expression runs, every macro
 (unless #f (print "runs"))
 ```
 
-## 5. Get started.
+## Get started
 
 You need [Zig 0.17](https://ziglang.org/download/).
 
@@ -61,7 +64,7 @@ make test                    # run the tests
 
 Run it from the repository root: it loads `src/stdlib.lisp` on start.
 
-## 6. Guide
+## Guide
 
 ### Values
 
@@ -130,20 +133,20 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 `src/stdlib_native.zig` provides `print list? at map reduce partial`. Everything else (`pi color red green first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
-## 7. Under the hood
+## Under the hood
 
 | File | |
 |---|---|
-| `src/lang.zig` | the evaluator: an explicit-stack machine |
-| `src/runtime.zig` | values, printer, parser, scopes, primitives, trampoline |
+| `src/lang.zig` | the evaluator (an explicit-stack machine) and the parser |
+| `src/runtime.zig` | values, scopes, primitives, trampoline |
 | `src/gc.zig` | memory management |
 | `src/repl.zig` | command line and REPL |
-| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
+| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part), printer |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
 The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Running every `macro/*` on every node dominates the run time.
 
-## 8. History
+## History
 
 1. **CoffeeScript**: the first version.
 2. **TypeScript**: a straight port. For a long time it had no proper tail calls, and macro expansion was recursive, so deep programs overflowed the JavaScript stack.
