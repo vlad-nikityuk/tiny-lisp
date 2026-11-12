@@ -1,4 +1,4 @@
-# Tiny Lisp
+# TinyLisp
 
 A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
 
@@ -9,11 +9,11 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 ```
 
 - It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
-- It is small: the evaluator is one file of 100 lines (`src/lang.zig`) and the whole interpreter is about 780 lines of Zig, with no dependencies beyond libc.
-- It is fast: about 5× faster than the original TypeScript version, using 2–3 MB of memory (see Performance).
+- It is small: the compiler, evaluator and parser are one file of 200 lines (`src/lang.zig`) and the whole interpreter is about 1,100 lines of Zig, with no dependencies beyond libc.
+- It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
 - It has macros: any function named `macro/…` rewrites every expression before it runs.
 - It has tail-call optimization and is stack safe: recursion is limited only by memory.
-- It has a minimalistic GC: reference counts for heap references plus per-call allocation regions, with no tracing collector. Reference cycles are not freed.
+- It has a small mark-sweep GC that runs at one safe point of the evaluator loop. Reference cycles are collected.
 
 ## Stack safety
 
@@ -26,16 +26,16 @@ Pending work lives in heap frames, not on the native stack, so recursion is limi
 
 ## Performance
 
-Memory is managed with reference counts plus per-call allocation regions, with no tracing GC. A program that churns through garbage stays at 2–3 MB.
+Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 4 MB) has been allocated, so a program that churns through garbage stays small.
 
-| | TypeScript/Node.js | Zig |
+`examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class.
+
+| microgpt, 10 steps + 5 samples | Python 3.14 | tinylisp |
 |---|---|---|
-| fib 22 | 2.29 s | 0.44 s (5×) |
-| 100k-step `defrec` loop | 5.01 s | 1.02 s (5×) |
-| allocation-heavy churn | 6.59 s | 1.34 s (5×) |
-| peak memory | 51–146 MB | 2–3 MB |
+| time | 0.93–0.97 s | 0.79 s |
+| peak memory | 55 MB | 55 MB |
 
-Apple Silicon, median of 5 runs, measured on the original TypeScript version (see `git log`).
+Apple Silicon, best of 3 runs.
 
 ## Macros
 
@@ -56,9 +56,9 @@ A macro is a function named `macro/…`. Before any expression runs, every macro
 You need [Zig 0.17](https://ziglang.org/download/).
 
 ```bash
-make                         # build ./tiny-lisp
-./tiny-lisp                  # REPL
-./tiny-lisp -f file.lisp     # run a file
+make                         # build ./tinylisp
+./tinylisp                  # REPL
+./tinylisp -f file.lisp     # run a file
 make test                    # run the tests
 ```
 
@@ -131,25 +131,45 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial`. Everything else (`pi color red green first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print list? at map reduce partial concat read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+
+### Files and strings
+
+`(read-file path)` returns a file's text, `(write-file path text)` replaces it, `(split text sep)` cuts a string into a list (an empty `sep` gives single characters), and `(load path)` evaluates a file's expressions in the caller's scope. Each call opens, uses and closes the file itself, so there are no handles to leak; failures raise errors that `try` catches.
+
+## Examples
+
+Run from the repository root.
+
+- `examples/microgpt.lisp` (with `examples/autograd.lisp`): a port of Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) (scalar autograd, one-layer GPT, Adam, sampling).
 
 ## Under the hood
 
 | File | |
 |---|---|
-| `src/lang.zig` | the evaluator (an explicit-stack machine) and the parser |
-| `src/runtime.zig` | values, scopes, primitives, trampoline |
-| `src/gc.zig` | memory management |
+| `src/lang.zig` | the compiler (AST to typed nodes, expanding macros), the evaluator (an explicit-stack machine over compiled nodes) and the parser |
+| `src/runtime.zig` | values (8-byte, NaN-boxed) and the printer, scopes, primitives, trampoline |
+| `src/gc.zig` | memory management (mark-sweep) |
 | `src/repl.zig` | command line and REPL |
-| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part), printer |
+| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Running every `macro/*` on every node dominates the run time.
+The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed).
 
 ## History
 
 1. **CoffeeScript**: the first version.
 2. **TypeScript**: a straight port. For a long time it had no proper tail calls, and macro expansion was recursive, so deep programs overflowed the JavaScript stack.
 3. **Coding agents**: fixing that became much easier with AI coding agents: a stack-safe evaluator, iterative macro expansion, tests shared across runtimes.
-4. **C**: a rewrite with an explicit-stack evaluator and its own memory management, about 5× faster than the TypeScript version on Node.js.
-5. **Zig**: a 1:1 port of the C version for readability, at the same speed. It replaced C, whose 100-line limit made the code hard to read.
+4. **Zig**: a rewrite with an explicit-stack evaluator and its own memory management, about 5× faster than the TypeScript version on Node.js. The first attempt was in C, but it was less readable than Zig, so the Zig port replaced it.
+
+The first Zig version against the TypeScript one:
+
+| | TypeScript/Node.js | Zig |
+|---|---|---|
+| fib 22 | 2.29 s | 0.44 s (5×) |
+| 100k-step `defrec` loop | 5.01 s | 1.02 s (5×) |
+| allocation-heavy churn | 6.59 s | 1.34 s (5×) |
+| peak memory | 51–146 MB | 2–3 MB |
+
+Apple Silicon, median of 5 runs. Since then the evaluator got a compiler, the memory manager a mark-sweep collector and values shrank to 8 bytes (see Performance).

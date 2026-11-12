@@ -422,4 +422,111 @@
     (assert (eq? "caught" (try (lambda () (set!)) (lambda (e) "caught"))))
     (assert (eq? nil nil))))
 
+;; math, strings and files
+(deftest math--primitives
+  (begin
+    (assert (eq? (exp 0) 1))
+    (assert (eq? (log 1) 0))
+    (assert (eq? (sqrt 9) 3))
+    (assert (eq? (cos 0) 1))
+    (assert (eq? (floor 2.7) 2))
+    (assert (eq? (floor -0.5) -1))))
+
+(deftest split--by-separator-and-characters
+  (begin
+    (assert (equal? (split "a,b,,c" ",") '(a b "" c)))
+    (assert (equal? (split "abc" "") '(a b c)))))
+
+(deftest files--write-read-load
+  (begin
+    (write-file "/tmp/tinylisp-spec.lisp" "(define loaded-by-spec (+ 40 2))")
+    (assert (eq? (read-file "/tmp/tinylisp-spec.lisp") "(define loaded-by-spec (+ 40 2))"))
+    (load "/tmp/tinylisp-spec.lisp")
+    (assert (eq? loaded-by-spec 42))))
+
+(deftest files--errors-can-be-caught
+  (begin
+    (assert (eq? "caught" (try (lambda () (read-file "/nonexistent/file")) (lambda (e) "caught"))))
+    (assert (eq? "caught" (try (lambda () (load "/nonexistent/file")) (lambda (e) "caught"))))))
+
+;; macro expansions are cached per node; redefining a macro must invalidate them
+(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "+" (first (rest ast)) (first (rest ast))) ast)))
+(defn use-twice () (probe 4))
+(define twice-before (use-twice))
+(define twice-again (use-twice))
+(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "*" (first (rest ast)) 10) ast)))
+(define twice-after (use-twice))
+(deftest macros--cache-is-cleared-when-a-macro-changes
+  (begin
+    (assert (eq? twice-before 8))
+    (assert (eq? twice-again 8))
+    (assert (eq? twice-after 40))))
+
+;; compiled code resolves names at run time: a define inside a function can shadow a global that was already used
+(define shadowed 1)
+(defn shadow-later (flag)
+  (begin
+    (define before shadowed)
+    (if flag (define shadowed 2) 0)
+    (list before shadowed)))
+(define shadow-off (shadow-later 0))
+(define shadow-on (shadow-later 1))
+(define shadow-off-again (shadow-later 0))
+(deftest scope--define-after-use-shadows-a-global
+  (begin
+    (assert (equal? shadow-off (list 1 1)))
+    (assert (equal? shadow-on (list 1 2)))
+    (assert (equal? shadow-off-again (list 1 1)))
+    (assert (eq? shadowed 1))))
+
+(define counter 0)
+(defn bump () (set! counter (+ counter 1)))
+(bump)
+(bump)
+(deftest scope--set-reaches-globals-and-closures
+  (begin
+    (assert (eq? counter 2))
+    (define make (lambda (n) (lambda () (begin (set! n (+ n 1)) n))))
+    (define c (make 10))
+    (c)
+    (assert (eq? (c) 12))))
+
+;; values are NaN-boxed: numbers, NaN and the other types must stay apart
+(deftest values--numbers-nan-and-types
+  (begin
+    (assert (eq? (/ 1 4) 0.25))
+    (assert (eq? (- 0 0) 0))
+    (assert (eq? #f (eq? (/ 0 0) (/ 0 0))))
+    (assert (eq? #f (eq? 1 "1")))
+    (assert (eq? #t (list? (list 1))))
+    (assert (eq? #f (list? 1)))
+    (assert (eq? "ab" (+ "a" "b")))
+    (assert (> (* 1e150 1e150) 1e299))
+    (assert (eq? #t (> (* 1e300 1e300) 1e308)))
+    (assert (eq? (len (list 1 2 3)) 3))))
+
+;; vset! stores into a list in place; concat copies once
+(deftest lists--vset-and-concat
+  (begin
+    (define v (list 1 2 3))
+    (assert (eq? 9 (vset! v 1 9)))
+    (assert (equal? v (list 1 9 3)))
+    (assert (eq? "caught" (try (lambda () (vset! v 3 0)) (lambda (e) "caught"))))
+    (assert (equal? (concat (list 1) '() (list 2 3)) (list 1 2 3)))
+    (assert (equal? (concat) '()))))
+
+;; a scope is recycled when its call ends, unless a closure captured it
+(defn make-counter (n) (lambda () (begin (set! n (+ n 1)) n)))
+(defn noise (x) (list x x))
+(deftest scopes--recycled-without-breaking-closures
+  (begin
+    (define c1 (make-counter 10))
+    (define c2 (make-counter 100))
+    (noise 1)
+    (noise 2)
+    (c1)
+    (noise 3)
+    (assert (eq? (c1) 12))
+    (assert (eq? (c2) 101))))
+
 (run-tests)

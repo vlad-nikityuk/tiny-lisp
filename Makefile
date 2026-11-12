@@ -1,14 +1,14 @@
-tiny-lisp: $(wildcard src/*.zig)
-	zig build-exe -OReleaseFast -lc src/repl.zig -femit-bin=$@
+tinylisp: $(wildcard src/*.zig)
+	zig build-exe -OReleaseSafe -lc src/repl.zig -femit-bin=$@
 
-safe: # bounds and overflow checks on
-	zig build-exe -OReleaseSafe -lc src/repl.zig -femit-bin=tiny-lisp-safe
+fast: # no bounds or overflow checks, about 4% faster
+	zig build-exe -OReleaseFast -lc src/repl.zig -femit-bin=tinylisp-fast
 
-test: tiny-lisp
-	python3 spec/repl.py ./tiny-lisp
-	./tiny-lisp -f spec/specs.lisp
+test: tinylisp
+	python3 spec/repl.py ./tinylisp
+	./tinylisp -f spec/specs.lisp
 
 clean:
-	rm -rf tiny-lisp tiny-lisp.o tiny-lisp-safe tiny-lisp-safe.o .zig-cache
+	rm -rf tinylisp tinylisp.o tinylisp-fast tinylisp-fast.o .zig-cache
 
-.PHONY: safe test clean
+.PHONY: fast test clean

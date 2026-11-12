@@ -1,5 +1,5 @@
-tiny-lisp
-tiny-lisp-safe
+tinylisp
+tinylisp-fast
 *.o
 .zig-cache/
 .idea/

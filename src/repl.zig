@@ -16,7 +16,6 @@ fn load(io: std.Io, e: *runtime.Env, path: []const u8) runtime.E!void {
     const program = std.fmt.allocPrint(gpa, "(begin {s}\n)", .{text}) catch gc.oom();
     defer gpa.free(program);
     _ = try lang.eval(try lang.parse(program), e);
-    _ = gc.sweepKeep(0, .nil);
 }
 
 fn die() noreturn {
@@ -36,17 +35,18 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, "--debug")) {
-            runtime.set(e, "*DEBUG*", .{ .b = true });
+            runtime.set(e, "*DEBUG*", runtime.V.boolean(true));
             try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];
     }
+    native.io = init.io;
     native.install(e);
     load(init.io, e, "src/stdlib.lisp") catch die();
     if (file) |f| return load(init.io, e, f) catch die();
     const ibuf = try gpa.alloc(u8, 1 << 24);
     var in: std.Io.File.Reader = .init(.stdin(), init.io, ibuf);
-    while (true) : (_ = gc.sweepKeep(0, .nil)) {
+    while (true) {
         try out.writeAll("#> ");
         try out.flush();
         const line = try in.interface.takeDelimiter('\n') orelse return;
