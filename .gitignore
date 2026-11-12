@@ -4,3 +4,4 @@ tiny-lisp-safe
 .zig-cache/
 .idea/
 *~
+target/

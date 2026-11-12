@@ -180,7 +180,8 @@ A failing `assert` raises `assertion-failed`, which stops the run with a non-zer
 
 | File | |
 |---|---|
-| `src/lisp.zig` | parser, evaluator, primitives, REPL |
+| `src/lang.zig` | the language: values, parser, scopes, evaluator, primitives |
+| `src/repl.zig` | command line and REPL |
 | `src/gc.zig` | memory management |
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |

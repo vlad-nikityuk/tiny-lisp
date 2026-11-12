@@ -1,6 +1,6 @@
 // Native part of the stdlib (installed before src/stdlib.lisp is loaded).
 const std = @import("std");
-const lisp = @import("lisp.zig");
+const lisp = @import("lang.zig");
 const gc = @import("gc.zig");
 const V = lisp.V;
 const Fn = lisp.Fn;

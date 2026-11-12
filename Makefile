@@ -1,8 +1,8 @@
-tiny-lisp: src/lisp.zig src/gc.zig src/stdlib_native.zig
-	zig build-exe -OReleaseFast -lc src/lisp.zig -femit-bin=$@
+tiny-lisp: src/repl.zig src/lang.zig src/gc.zig src/stdlib_native.zig
+	zig build-exe -OReleaseFast -lc src/repl.zig -femit-bin=$@
 
 safe: # bounds and overflow checks on
-	zig build-exe -OReleaseSafe -lc src/lisp.zig -femit-bin=tiny-lisp-safe
+	zig build-exe -OReleaseSafe -lc src/repl.zig -femit-bin=tiny-lisp-safe
 
 test: tiny-lisp
 	python3 spec/repl.py ./tiny-lisp

@@ -1,6 +1,5 @@
 const std = @import("std");
 const gc = @import("gc.zig");
-const native = @import("stdlib_native.zig");
 
 pub const E = error{Lisp}; // the error value itself is in `errv`
 pub const V = union(enum) { // s: symbol or runtime string, lit: string literal from source
@@ -20,11 +19,12 @@ pub const V = union(enum) { // s: symbol or runtime string, lit: string literal 
 pub const Lst = struct { a: []V }; // items are stored inline, right after the struct
 pub const Fn = struct { f: *const fn (*Fn, []const V) E!V, d0: V, d1: V, i: usize = 0 }; // native fn + captured data
 pub const Lam = struct { params: V, body: V, env: *Env };
-pub const Env = struct { p: ?*Env, n: usize, cap: usize, k: [*][*:0]const u8, v: [*]V }; // arrays inline until they grow
+pub const Env = struct { p: ?*Env, vars: []Var, cap: usize }; // vars are stored inline until they outgrow cap; the root scope uses the global table
+pub const Var = struct { k: [*:0]const u8, v: V };
 
 const gpa = std.heap.c_allocator;
 pub var out: *std.Io.Writer = undefined;
-var errv: V = .nil;
+pub var errv: V = .nil;
 var in_macro = false;
 var macros: [64][*:0]const u8 = undefined;
 var nmacros: usize = 0;
@@ -109,12 +109,8 @@ fn eq(a: V, b: V) bool {
     return switch (a) {
         .b => |x| x == b.b,
         .n => |x| x == b.n,
-        .s => |x| streq(x, b.s),
-        .lit => |x| streq(x, b.lit),
-        .l => |x| x == b.l,
-        .f => |x| x == b.f,
-        .lam => |x| x == b.lam,
-        .nil => true,
+        .s, .lit => streq(@ptrCast(ptr(a)), @ptrCast(ptr(b))),
+        else => ptr(a) == ptr(b),
     };
 }
 
@@ -234,42 +230,35 @@ pub fn parse(text: []const u8) E!V {
 }
 
 // ---------------------------------------------------------------- scopes
-const HSIZE = 1 << 13;
-var hk: [HSIZE]?[*:0]const u8 = @splat(null);
-var hv: [HSIZE]V = @splat(.nil);
+var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
+var gv: [1 << 13]V = @splat(.nil);
 
-/// Root scope: global hash table; lambda scopes: small arrays.
 fn slot(e: *Env, k: [*:0]const u8, create: bool) ?*V {
     if (e.p == null) {
         var h: u32 = 2166136261;
-        var c: usize = 0;
-        while (k[c] != 0) : (c += 1) h = (h ^ k[c]) *% 16777619;
-        h &= HSIZE - 1;
-        while (hk[h]) |key| : (h = (h + 1) & (HSIZE - 1)) if (streq(key, k)) return &hv[h];
-        if (!create) return null;
-        hk[h] = k;
-        return &hv[h];
+        var c = k;
+        while (c[0] != 0) : (c += 1) h = (h ^ c[0]) *% 16777619;
+        var i: usize = h & (gk.len - 1);
+        while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (streq(key, k)) return &gv[i];
+        if (create) gk[i] = k;
+        return if (create) &gv[i] else null;
     }
-    var i = e.n;
+    var i = e.vars.len;
     while (i > 0) {
         i -= 1;
-        if (e.k[i] == k or streq(e.k[i], k)) return &e.v[i];
+        const x = &e.vars[i];
+        if (x.k == k or streq(x.k, k)) return &x.v;
     }
     if (!create) return null;
-    if (e.n == e.cap) {
-        e.cap *= 2;
-        const v2: [*]V = @ptrCast(@alignCast(gc.raw(e.cap * (@sizeOf(V) + @sizeOf([*:0]const u8)))));
-        const k2: [*][*:0]const u8 = @ptrCast(v2 + e.cap); // keys follow values
-        @memcpy(v2[0..e.n], e.v[0..e.n]);
-        @memcpy(k2[0..e.n], e.k[0..e.n]);
-        if (e.v != gc.after(V, e)) gc.rawFree(e.v);
-        e.v = v2;
-        e.k = k2;
+    if (e.vars.len == e.cap) {
+        const more = gpa.alloc(Var, e.cap * 2) catch gc.oom();
+        @memcpy(more[0..e.cap], e.vars);
+        if (e.vars.ptr != gc.after(Var, e)) gpa.free(e.vars);
+        e.vars.ptr, e.cap = .{ more.ptr, more.len };
     }
-    e.k[e.n] = k;
-    e.v[e.n] = .nil;
-    e.n += 1;
-    return &e.v[e.n - 1];
+    e.vars.len += 1;
+    e.vars[e.vars.len - 1] = .{ .k = k, .v = .nil };
+    return &e.vars[e.vars.len - 1].v;
 }
 
 fn name(v: V) [*:0]const u8 {
@@ -299,24 +288,16 @@ pub fn set(e: *Env, key: [*:0]const u8, v: V) void {
     s.* = rv(v);
 }
 
-fn newEnv(p: ?*Env, min_cap: usize) *Env {
-    const cap = @max(min_cap, 4);
-    const size = @sizeOf(Env) + cap * (@sizeOf(V) + @sizeOf([*:0]const u8));
-    const e: *Env = @ptrCast(@alignCast(if (p != null) gc.alloc(size, .env) else gc.perm(size)));
-    gc.ret(p);
-    e.* = .{ .p = p, .n = 0, .cap = cap, .v = gc.after(V, e), .k = @ptrCast(gc.after(V, e) + cap) };
-    return e;
-}
-
 fn bind(f: *Lam, a: []const V) *Env {
     const ps = items(f.params);
-    const e = newEnv(f.env, ps.len);
-    for (ps, 0..) |p, i| {
-        e.k[i] = name(p);
-        gc.ret(@ptrCast(@constCast(e.k[i])));
-        e.v[i] = rv(arg(a, i));
+    const cap = @max(ps.len, 4);
+    const e = gc.new(Env, cap * @sizeOf(Var), .env);
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..ps.len], .cap = cap };
+    gc.ret(f.env);
+    for (ps, e.vars, 0..) |p, *x, i| {
+        x.* = .{ .k = name(p), .v = rv(arg(a, i)) };
+        gc.ret(@ptrCast(@constCast(x.k)));
     }
-    e.n = ps.len;
     return e;
 }
 
@@ -387,11 +368,7 @@ pub fn eval(node: V, env: *Env) E!V {
                     continue :ev;
                 }
                 const kind: Frame = if (is(h, "if")) .@"if" else if (is(h, "begin")) .begin else if (is(h, "define") or is(h, "set!")) .define else .apply;
-                const i: usize = switch (kind) {
-                    .apply => 0,
-                    .define => 2,
-                    else => 1,
-                };
+                const i: usize = if (kind == .apply) 0 else if (kind == .define) 2 else 1;
                 gc.push(K, &ks, .{ .kind = kind, .i = i, .base = vs.items.len, .mark = gc.mark(), .l = a, .e = e });
                 x = arg(a, i);
                 continue :ev;
@@ -440,18 +417,19 @@ pub fn eval(node: V, env: *Env) E!V {
                         continue :ev;
                     }
                     const f = vs.items[k.base];
-                    const n = a.len - 1;
-                    var small: [16]V = undefined; // copy: natives may re-enter eval and grow vs
-                    const args: []V = if (n <= small.len) small[0..n] else @as([*]V, @ptrCast(@alignCast(gc.raw(n * @sizeOf(V)))))[0..n];
-                    defer if (n > small.len) gc.rawFree(args.ptr);
-                    @memcpy(args, vs.items[k.base + 1 ..][0..n]);
-                    vs.items.len = k.base;
+                    const args = vs.items[k.base + 1 ..];
                     ks.items.len -= 1;
-                    if (f != .lam) {
-                        v = try call(f, args);
+                    if (f != .lam) { // copy: natives may re-enter eval and grow vs
+                        var small: [16]V = undefined;
+                        const copy = if (args.len <= small.len) small[0..args.len] else gpa.dupe(V, args) catch gc.oom();
+                        defer if (args.len > small.len) gpa.free(copy);
+                        @memcpy(copy, args);
+                        vs.items.len = k.base;
+                        v = try call(f, copy);
                         continue;
                     }
                     e = bind(f.lam, args); // tail call: only x and e stay live
+                    vs.items.len = k.base;
                     x = f.lam.body;
                     const mk = if (ks.items.len > base) &ks.items[ks.items.len - 1].mark else &m0;
                     mk.* = gc.resweep(mk.*, x, e);
@@ -463,166 +441,102 @@ pub fn eval(node: V, env: *Env) E!V {
 }
 
 // ---------------------------------------------------------------- primitives
-fn binop(op: usize, x: V, y: V) V {
+const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", @"try", trampoline };
+
+fn binop(op: Op, x: V, y: V) V {
     const a = num(x);
     const b = num(y);
     return switch (op) {
-        0 => if (x == .s or x == .lit or y == .s or y == .lit) str("{f}{f}", .{ x, y }) else .{ .n = a + b },
-        1 => .{ .n = a - b },
-        2 => .{ .n = a * b },
-        3 => .{ .n = a / b },
-        4 => .{ .b = a > b },
-        5 => .{ .b = a < b },
-        6 => .{ .b = a >= b },
-        7 => .{ .b = a <= b },
-        8 => if (truthy(x)) y else x,
+        .@"+" => if (x == .s or x == .lit or y == .s or y == .lit) str("{f}{f}", .{ x, y }) else .{ .n = a + b },
+        .@"-" => .{ .n = a - b },
+        .@"*" => .{ .n = a * b },
+        .@"/" => .{ .n = a / b },
+        .@">" => .{ .b = a > b },
+        .@"<" => .{ .b = a < b },
+        .@">=" => .{ .b = a >= b },
+        .@"<=" => .{ .b = a <= b },
+        .@"&&" => if (truthy(x)) y else x,
         else => if (truthy(x)) x else y,
     };
 }
 
-const core = struct {
-    fn arith(s: *Fn, a: []const V) E!V {
-        var r = arg(a, 0);
-        for (a[@min(1, a.len)..]) |x| r = binop(s.i, r, x);
+fn prim(s: *Fn, a: []const V) E!V {
+    const op: Op = @fromBackingInt(@intCast(s.i));
+    const x = arg(a, 0);
+    if (@backingInt(op) <= @backingInt(Op.@"||")) { // arithmetic, comparison, && and ||: fold left
+        var r = x;
+        for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
     }
-    fn eqp(_: *Fn, a: []const V) E!V {
-        for (a) |x| if (!eq(x, a[0])) return .{ .b = false };
-        return .{ .b = true };
+    const l = items(if (op == .cons) arg(a, 1) else x);
+    switch (op) {
+        .car => return arg(l, 0),
+        .cdr => return list(l[@min(1, l.len)..], l.len -| 1),
+        .len => return .{ .n = @floatFromInt(l.len) },
+        .list => return list(a, a.len),
+        .@"error" => return fail(x),
+        .trampoline => return .{ .f = nf(trampRun, x, .nil) },
+        .@"eq?" => {
+            for (a) |y| if (!eq(y, x)) return .{ .b = false };
+            return .{ .b = true };
+        },
+        .cons => {
+            const r = list(null, l.len + 1);
+            r.l.a[0] = rv(x);
+            for (l, r.l.a[1..]) |y, *z| z.* = rv(y);
+            return r;
+        },
+        .@"try" => { // on error, drop the frames of the aborted evaluation
+            const im, const k0, const v0, const d0 = .{ in_macro, ks.items.len, vs.items.len, depth };
+            return call(x, &.{}) catch {
+                in_macro, ks.items.len, vs.items.len, depth = .{ im, k0, v0, d0 };
+                return call(arg(a, 1), &.{errv});
+            };
+        },
+        else => unreachable,
     }
-    fn car(_: *Fn, a: []const V) E!V {
-        return arg(items(arg(a, 0)), 0);
+}
+
+// trampoline: nested calls while active return thunks, the outermost runs them
+fn thunk(s: *Fn, _: []const V) E!V {
+    return call(s.d0, s.d1.l.a);
+}
+
+fn trampRun(s: *Fn, a: []const V) E!V {
+    if (s.i != 0) return .{ .f = nf(thunk, s.d0, list(a, a.len)) };
+    var m = gc.mark();
+    s.i = 1;
+    var r = try call(s.d0, a);
+    while (r == .f or r == .lam) {
+        r = try call(r, &.{});
+        m = gc.resweep(m, r, null);
     }
-    fn cdr(_: *Fn, a: []const V) E!V {
-        const l = items(arg(a, 0));
-        return if (l.len > 0) list(l[1..], l.len - 1) else list(null, 0);
-    }
-    fn len(_: *Fn, a: []const V) E!V {
-        return .{ .n = @floatFromInt(items(arg(a, 0)).len) };
-    }
-    fn lst(_: *Fn, a: []const V) E!V {
-        return list(a, a.len);
-    }
-    fn err(_: *Fn, a: []const V) E!V {
-        return fail(arg(a, 0));
-    }
-    fn cons(_: *Fn, a: []const V) E!V {
-        const l = items(arg(a, 1));
-        const r = list(null, l.len + 1);
-        r.l.a[0] = rv(arg(a, 0));
-        for (l, r.l.a[1..]) |x, *y| y.* = rv(x);
-        return r;
-    }
-    fn try_(_: *Fn, a: []const V) E!V { // on error, drop the frames of the aborted evaluation
-        const im = in_macro;
-        const k0 = ks.items.len;
-        const v0 = vs.items.len;
-        const d0 = depth;
-        return call(arg(a, 0), &.{}) catch {
-            in_macro = im;
-            ks.items.len = k0;
-            vs.items.len = v0;
-            depth = d0;
-            return call(arg(a, 1), &.{errv});
-        };
-    }
-    // trampoline: nested calls while active return thunks, the outermost runs them
-    fn thunk(s: *Fn, _: []const V) E!V {
-        return call(s.d0, s.d1.l.a);
-    }
-    fn trampRun(s: *Fn, a: []const V) E!V {
-        if (s.i != 0) return .{ .f = nf(thunk, s.d0, list(a, a.len)) };
-        var m = gc.mark();
-        s.i = 1;
-        var r = try call(s.d0, a);
-        while (r == .f or r == .lam) {
-            r = try call(r, &.{});
-            m = gc.resweep(m, r, null);
-        }
-        s.i = 0;
-        return r;
-    }
-    fn trampoline(_: *Fn, a: []const V) E!V {
-        return .{ .f = nf(trampRun, arg(a, 0), .nil) };
-    }
-};
+    s.i = 0;
+    return r;
+}
 
 pub fn def(e: *Env, k: [*:0]const u8, f: *const fn (*Fn, []const V) E!V) void {
     set(e, k, .{ .f = nf(f, .nil, .nil) });
 }
 
-fn topLevel() *Env {
-    const e = newEnv(null, 0);
+pub fn topLevel() *Env {
+    const e: *Env = @ptrCast(@alignCast(gc.perm(@sizeOf(Env)))); // the root scope lives forever
+    e.* = .{ .p = null, .vars = &.{}, .cap = 0 };
     set(e, "nil", .nil);
     set(e, "#t", .{ .b = true });
     set(e, "#f", .{ .b = false });
-    for ([_][*:0]const u8{ "+", "-", "*", "/", ">", "<", ">=", "<=", "&&", "||" }, 0..) |op, i| {
-        const f = nf(core.arith, .nil, .nil);
-        f.i = i;
-        set(e, op, .{ .f = f });
+    for (std.enums.values(Op)) |op| {
+        const f = nf(prim, .nil, .nil);
+        f.i = @backingInt(op);
+        set(e, @tagName(op), .{ .f = f });
     }
-    def(e, "eq?", core.eqp);
-    def(e, "car", core.car);
-    def(e, "cdr", core.cdr);
-    def(e, "len", core.len);
-    def(e, "cons", core.cons);
-    def(e, "list", core.lst);
-    def(e, "error", core.err);
-    def(e, "try", core.try_);
-    def(e, "trampoline", core.trampoline);
     return e;
 }
 
-// ---------------------------------------------------------------- CLI
-fn load(io: std.Io, e: *Env, path: []const u8) E!void {
-    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch return fail(str("cannot open {s}", .{path}));
-    defer gpa.free(text);
-    const program = std.fmt.allocPrint(gpa, "(begin {s}\n)", .{text}) catch gc.oom();
-    defer gpa.free(program);
-    _ = try eval(try parse(program), e);
-    _ = gc.sweepKeep(0, .nil, null);
-}
-
-fn die() noreturn {
-    out.flush() catch {};
-    std.debug.print("\x1b[31m{f}\x1b[39m\n", .{errv});
-    std.process.exit(1);
-}
-
-pub fn main(init: std.process.Init) !void {
-    var obuf: [4096]u8 = undefined;
-    var ow: std.Io.File.Writer = .init(.stdout(), init.io, &obuf);
-    out = &ow.interface;
-    defer out.flush() catch {};
-    const e = topLevel();
-    var file: ?[]const u8 = null;
-    const args = try init.minimal.args.toSlice(init.arena.allocator());
-    for (args, 0..) |a, i| {
-        if (std.mem.eql(u8, a, "--debug")) {
-            set(e, "*DEBUG*", .{ .b = true });
-            try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
-        }
-        if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];
-    }
-    native.install(e);
-    load(init.io, e, "src/stdlib.lisp") catch die();
-    if (file) |f| return load(init.io, e, f) catch die();
-    const ibuf = try gpa.alloc(u8, 1 << 24);
-    var in: std.Io.File.Reader = .init(.stdin(), init.io, ibuf);
-    while (true) : (_ = gc.sweepKeep(0, .nil, null)) {
-        try out.writeAll("#> ");
-        try out.flush();
-        const line = try in.interface.takeDelimiter('\n') orelse return;
-        const s = std.mem.trimStart(u8, line, " \t\r\n");
-        if (s.len == 0) continue;
-        if (parse(s)) |x| if (eval(x, e)) |v| {
-            try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
-            continue;
-        } else |_| {} else |_| {}
-        in_macro = false;
-        ks.items.len = 0;
-        vs.items.len = 0;
-        depth = 0;
-        try out.print("\x1b[31m{f}\x1b[39m\n", .{errv});
-    }
+/// After an error escaped to the top level: drop the frames of the aborted evaluation.
+pub fn reset() void {
+    in_macro = false;
+    ks.items.len = 0;
+    vs.items.len = 0;
+    depth = 0;
 }

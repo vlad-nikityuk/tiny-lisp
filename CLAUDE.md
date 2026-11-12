@@ -14,7 +14,7 @@ zig fmt src/               # keep sources formatted
 
 ## Architecture
 
-`src/lisp.zig` (values, parser, scopes, evaluator, primitives, CLI) imports `src/gc.zig` and `src/stdlib_native.zig`. The CLI installs the native stdlib, then loads `src/stdlib.lisp` (path relative to the repo root). Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in the global `errv`.
+`src/lang.zig` is the language (values, parser, scopes, evaluator, primitives). `src/repl.zig` is the CLI/REPL: it installs the native stdlib (`src/stdlib_native.zig`), then loads `src/stdlib.lisp` (path relative to the repo root), then runs a file or the REPL. `src/gc.zig` is memory management. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `lang.errv`. Primitives (`+ - car cons try ...`) are one function, `prim`, dispatched on the `Op` enum.
 
 **Evaluator**: explicit-stack machine, no native recursion per Lisp call or nesting level. Pending work is a frame on the global `ks` stack (`if` waiting for its condition, `begin` mid-sequence, `define`/`set!` waiting for the value, application collecting arguments on the operand stack `vs`). Tail positions (if branches, last of begin, lambda bodies) replace the current state instead of pushing a frame. Parser, printer and freeing are iterative too. The only native recursion left is natives calling back into Lisp (`map`, `reduce`, `try`, `partial`, macro expansion, trampoline): one `eval` re-entry per callback, capped at 8,000 (the 8 MB stack overflows at ~11k) with a catchable `ToyLisp: recursion too deep` error. `try` and the REPL restore `ks`/`vs`/`depth`/`in_macro` after an error.
 

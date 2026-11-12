@@ -10,7 +10,7 @@
 //
 // Limitation: reference cycles (e.g. a closure stored in the scope it captures) are never freed.
 const std = @import("std");
-const lisp = @import("lisp.zig");
+const lisp = @import("lang.zig");
 const V = lisp.V;
 
 pub const Kind = enum(i16) { dead = -2, perm = -1, str, list, func, lam, env };
@@ -116,11 +116,11 @@ fn freeObj(h: *H) void {
         .env => {
             const e: *lisp.Env = @ptrCast(@alignCast(p));
             rel(e.p);
-            for (e.k[0..e.n], e.v[0..e.n]) |k, v| {
-                rel(@ptrCast(@constCast(k)));
-                rel(lisp.ptr(v));
+            for (e.vars) |x| {
+                rel(@ptrCast(@constCast(x.k)));
+                rel(lisp.ptr(x.v));
             }
-            if (e.v != after(V, e)) rawFree(e.v);
+            if (e.vars.ptr != after(lisp.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
         },
         else => {},
     }
