@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Drives the REPL and checks each printed result.
-Usage: python3 spec/repl.py <command...>   e.g. python3 spec/repl.py ./tiny-lisp"""
+Usage: python3 spec/repl.py <command...>   e.g. python3 spec/repl.py ./tinylisp"""
 import re, subprocess, sys
 
 ERROR = object()
@@ -52,6 +52,11 @@ CASES = [
     ("(try (lambda () (map '(1) (lambda (x) (error 'deep)))) (lambda (e) (list 'got e)))", "(got deep)"),
     ("(map '(1 2) (lambda (x) (undefined-fn x)))", ERROR),
     ("(map '(1 2) (lambda (x) (* x 10)))", "(10 20)"),
+    ("(list (exp 0) (log 1) (sqrt 16) (cos 0) (floor -0.5))", "(1 0 4 1 -1)"),
+    ('(split "a,b,c" ",")', "(a b c)"),
+    ('(split "abc" "")', "(a b c)"),
+    ('(read-file "/nonexistent/file")', ERROR),
+    ('(load "/nonexistent/file")', ERROR),
     ("((partial map '((1 2))) (lambda (x) (+ x 1)))", "(2 3)"),
 ]
 

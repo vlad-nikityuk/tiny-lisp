@@ -34,6 +34,13 @@
 (defn color (code x) (+ ESC "[" code "m" x ESC "[39m"))
 (defn red (x) (color 31 x))
 (defn green (x) (color 32 x))
+;; Random numbers in [0, 1): a Park-Miller generator, so the same seed gives the same numbers everywhere.
+;; (set! rng-state n) reseeds it.
+(define rng-state 20240607)
+(defn rand ()
+  (begin
+    (set! rng-state (- (* 16807 rng-state) (* 2147483647 (floor (/ (* 16807 rng-state) 2147483647)))))
+    (/ rng-state 2147483647)))
 ;; ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
 
@@ -59,8 +66,6 @@
       (list (first ll1) (first ll2))
 	    (zip (rest ll1) (rest ll2)))))
 
-(defn concat (l1 l2)
-  (r/reduce l1 cons l2))
 
 ;; -----------------------------------------------------------
 ;; (define macro/trace trace)

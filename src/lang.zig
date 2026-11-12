@@ -1,100 +1,200 @@
 // zig fmt: off
-const std = @import("std"); const gc = @import("gc.zig"); const runtime = @import("runtime.zig");
-pub var out: *std.Io.Writer = undefined; pub var errv: runtime.V = .nil; var in_macro = false;
-const M = struct { go: runtime.Go, e: *runtime.Env, m0: usize, base: usize }; // ks[base..] are this run's frames
-fn call(f: runtime.V, x: runtime.V) runtime.E!runtime.V {
-    const b = runtime.vs.items.len; defer runtime.vs.items.len = b;
-    gc.push(runtime.V, &runtime.vs, f); gc.push(runtime.V, &runtime.vs, x); return exec(.{ .apply = b }, undefined);
+// The compiler, the explicit-stack evaluator and the parser.
+const std = @import("std");
+const gc = @import("gc.zig");
+const rt = @import("runtime.zig");
+const V = rt.V; const Node = rt.Node;
+
+pub var out: *std.Io.Writer = undefined;
+pub var errv: V = .nil; // the value of the Lisp error being raised
+
+// ---------------------------------------------------------------- compiler
+// The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
+// runs. Every macro/* runs once per node; a new or redefined one (rt.epoch) makes all nodes compile again. Nodes and symbols
+// are permanent; the AST they came from is pinned (rt.pin).
+var in_macro = false; // while a macro runs, code is not expanded (so expansion nests one level)
+var interned: std.StringHashMapUnmanaged(*rt.Sym) = .empty;
+
+fn make(comptime T: type, n: usize) []T { return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n]; }
+
+fn intern(v: V) *rt.Sym { // equal names are the same symbol, so scopes compare keys by address
+    const name = std.mem.span(if (v.is(.s)) v.asStr() else rt.str("{f}", .{v}).asStr());
+    const entry = interned.getOrPut(std.heap.c_allocator, name) catch gc.oom();
+    if (!entry.found_existing) { // the table's key is the symbol's own name
+        entry.value_ptr.* = &make(rt.Sym, 1)[0]; entry.value_ptr.*.* = .{ .key = rt.mkstr(name, true) }; entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
+    }
+    return entry.value_ptr.*;
 }
-pub fn eval(node: runtime.V, env: *runtime.Env) runtime.E!runtime.V { return exec(.{ .eval = node }, env); }
-fn exec(go: runtime.Go, env: *runtime.Env) runtime.E!runtime.V {
-    var m: M = .{ .go = go, .e = env, .m0 = gc.mark(), .base = runtime.ks.items.len }; const vbase = runtime.vs.items.len;
-    errdefer runtime.ks.items.len, runtime.vs.items.len = .{ m.base, vbase };
-    while (true) return run(&m) catch |err| { m.go = runtime.recover(m.base) orelse return err; continue; };
+
+pub fn stub(v: V) *Node { const n = &make(Node, 1)[0]; n.* = .{ .ast = rt.pin(v) }; return n; } // an uncompiled node for the AST v
+fn kids(a: []const V, n: usize) []const *Node { // exactly n nodes for the items of a (nil for missing ones)
+    const c = make(*Node, n);
+    for (c, 0..) |*x, i| x.* = stub(rt.arg(a, i));
+    return c;
 }
-fn run(m: *M) runtime.E!runtime.V {
-    sw: switch (m.go) {
-        .eval => |node| {
-            var x = node;
-            if (!in_macro) { in_macro = true; defer in_macro = false;
-                for (runtime.macros.items) |p| { const y = try call(p.*, x); if (runtime.truthy(y)) x = y; }
-            }
-            const a = switch (x) {
-                .s => |s| continue :sw .{ .ret = if (runtime.lookup(m.e, s)) |p| p.* else .nil },
-                .lit => |s| continue :sw .{ .ret = .{ .s = s } },
-                .l => |l| if (l.a.len > 0) l.a else return runtime.fail(runtime.str("ToyLisp: cannot evaluate an empty list", .{})),
-                else => continue :sw .{ .ret = x },
-            };
-            const f = if (a[0] == .s) std.meta.stringToEnum(runtime.Form, std.mem.span(a[0].s)) orelse .apply else .apply;
-            const kind = if (f == .native) .apply else f;
-            if (kind == .quote) continue :sw .{ .ret = runtime.arg(a, 1) };
-            if (kind == .lambda) continue :sw .{ .ret = runtime.lambda(a, m.e) };
-            const i: usize = switch (kind) { .apply => 0, .define, .@"set!" => 2, else => 1 };
-            if (kind != .begin or a.len > 2) gc.push(runtime.K, &runtime.ks, .{ .kind = kind, .i = i, .base = runtime.vs.items.len, .mark = gc.mark(), .l = a, .e = m.e });
-            continue :sw .{ .eval = runtime.arg(a, i) };
+fn current() u32 { return rt.epoch *% 2 +% @intFromBool(in_macro) +% 1; } // the stamp of up-to-date code; 0 means not compiled yet
+
+fn expand(x: V) rt.E!V { // every macro/* over x in turn; one that returns a false value leaves x as it was
+    in_macro = true;
+    defer in_macro = false;
+    var y = x;
+    for (rt.macros.items) |macro| {
+        const b = rt.vs.items.len; defer rt.vs.items.len = b;
+        gc.push(V, &rt.vs, macro.*); gc.push(V, &rt.vs, y);
+        const z = try exec(.{ .apply = b }, rt.root);
+        if (rt.truthy(z)) y = z;
+    }
+    return y;
+}
+fn form(a: []const V) rt.E!rt.Code { // the code of a list: a special form, or a call
+    if (a.len == 0) return rt.fail(rt.str("TinyLisp: cannot evaluate an empty list", .{}));
+    const head = if (a[0].is(.s)) std.meta.stringToEnum(rt.Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
+    switch (head) {
+        .quote => return .{ .val = rt.arg(a, 1) },
+        .lambda => {
+            const params = make(rt.Key, rt.items(rt.arg(a, 1)).len);
+            for (params, rt.items(rt.arg(a, 1))) |*key, p| { const sym = intern(p); sym.local = true; key.* = sym.key; } // local: a scope binds it
+            const proto = &make(rt.Proto, 1)[0]; proto.* = .{ .params = params, .body = stub(rt.arg(a, 2)) };
+            return .{ .lambda = proto };
         },
-        .ret => |r| {
-            if (runtime.ks.items.len == m.base) return gc.sweepKeep(m.m0, r);
-            const k = &runtime.ks.items[runtime.ks.items.len - 1]; const v = gc.sweepKeep(k.mark, r); const a = k.l; m.e = k.e;
-            switch (k.kind) {
-                .@"if" => { runtime.ks.items.len -= 1; continue :sw .{ .eval = runtime.arg(a, if (runtime.truthy(v)) 2 else 3) }; },
-                .begin => { k.i += 1; const x = a[k.i];
-                    if (k.i == a.len - 1) runtime.ks.items.len -= 1 else k.mark = gc.mark(); continue :sw .{ .eval = x }; },
-                .define, .@"set!" => { try runtime.assign(k.kind == .define, a, m.e, v); runtime.ks.items.len -= 1; continue :sw .{ .ret = v }; },
-                .native => continue :sw try runtime.step(k, v),
-                else => {
-                    if (k.i == 0 and v == .nil) return runtime.fail(runtime.str("ToyLisp: Function {f} is not defined", .{a[0]}));
-                    gc.push(runtime.V, &runtime.vs, v); k.i += 1; if (k.i < a.len) { k.mark = gc.mark(); continue :sw .{ .eval = a[k.i] }; }
-                    runtime.ks.items.len -= 1; continue :sw .{ .apply = k.base };
+        .@"if" => return .{ .@"if" = kids(a[1..], 3) },
+        .begin => return .{ .begin = kids(a[1..], @max(a.len - 1, 1)) }, // (begin) is nil
+        .define, .@"set!" => {
+            const d = &make(rt.Def, 1)[0];
+            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(rt.arg(a, 2)), .define = head == .define };
+            return .{ .def = d };
+        },
+        .apply => return .{ .call = kids(a, a.len) },
+    }
+}
+fn force(n: *Node) rt.E!void { // compile n: expand macros over its AST, then turn the result into code (unless nothing changed)
+    const x = if (in_macro or rt.ptr(n.ast) == null) n.ast else try expand(n.ast);
+    if (n.code == .raw or x != n.src) {
+        n.code = switch (x.tag()) {
+            .s => .{ .ref = .{ .sym = intern(x) } },
+            .lit => .{ .val = V.string(x.asStr()) }, // a string literal evaluates to a string
+            .l => try form(x.asList().items()),
+            else => .{ .val = x },
+        };
+        n.src = rt.pin(x);
+    }
+    n.stamp = current();
+}
+fn atom(n: *Node, e: *rt.Env) rt.E!?V { // the value of n if it is a constant or a variable (compiling it first), null otherwise
+    if (n.stamp != current()) try force(n);
+    return switch (n.code) { .val => |v| v, .ref => |*r| rt.fetch(e, r), else => null };
+}
+// ---------------------------------------------------------------- evaluator
+// No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected on
+// rt.vs, and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
+pub fn eval(ast: V, env: *rt.Env) rt.E!V { return exec(.{ .eval = stub(ast) }, env); }
+fn exec(go: rt.Go, env: *rt.Env) rt.E!V { // run from go until its first step has a value; an error goes to the innermost `try`
+    var m: rt.M = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
+    const vbase = rt.vs.items.len; gc.push(*rt.M, &rt.machines, &m); // its scope is a collector root
+    defer rt.machines.items.len -= 1;
+    errdefer rt.ks.items.len, rt.vs.items.len = .{ m.base, vbase };
+    var step = go;
+    while (true) return run(&m, step) catch |err| { step = rt.recover(m.base) orelse return err; continue; };
+}
+
+fn run(m: *rt.M, go: rt.Go) rt.E!V {
+    const ks = &rt.ks;
+    const vs = &rt.vs;
+    sw: switch (go) {
+        .eval => |n| {
+            if (!in_macro and gc.due()) gc.collect(); // the safe point: no value lives in a Zig local
+            if (try atom(n, m.e)) |v| continue :sw .{ .ret = v };
+            switch (n.code) {
+                .lambda => |p| continue :sw .{ .ret = rt.lambda(p, m.e) },
+                .@"if" => |c| {
+                    if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
+                    _ = rt.frame(.@"if", c, m.e); // wait for the condition
+                    continue :sw .{ .eval = c[0] };
                 },
+                .begin => |c| { if (c.len > 1) _ = rt.frame(.begin, c, m.e); continue :sw .{ .eval = c[0] }; },
+                .def => |d| { rt.frame(.def, &.{}, m.e).d = d; continue :sw .{ .eval = d.val }; },
+                .call => |c| continue :sw .{ .args = .{ .c = c, .i = 0, .b = vs.items.len } },
+                else => unreachable,
             }
+        },
+        .ret => |v| {
+            if (ks.items.len == m.base) return v;
+            const k = &ks.items[ks.items.len - 1]; const c = k.c;
+            if (m.e != k.e) rt.release(m.e); // the call that returned is over
+            m.e = k.e;
+            switch (k.kind) {
+                .@"if" => { ks.items.len -= 1; continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] }; },
+                .begin => { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; }, // the last is a tail position
+                .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
+                .native => continue :sw try rt.step(k, v),
+                .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },
+            }
+        },
+        .args => |a| { // push the function and arguments of a call on vs from a.i on; constants and variables need no frame
+            var i = a.i;
+            while (i < a.c.len) : (i += 1) {
+                const v = try atom(a.c[i], m.e) orelse { const k = rt.frame(.call, a.c, m.e); k.i = i; k.base = a.b; continue :sw .{ .eval = a.c[i] }; };
+                try rt.operand(a.c, i, v);
+            }
+            continue :sw .{ .apply = a.b };
         },
         .apply => |b| {
-            const f = runtime.vs.items[b]; const args = runtime.vs.items[b + 1 ..]; switch (f) {
-                .lam => |l| { // tail call: only the body and the scope stay live
-                    m.e = runtime.bind(l, args); runtime.vs.items.len = b; const x = l.body;
-                    const mk = if (runtime.ks.items.len > m.base) &runtime.ks.items[runtime.ks.items.len - 1].mark else &m.m0;
-                    mk.* = gc.resweep(mk.*, x, m.e); continue :sw .{ .eval = x };
+            const f = vs.items[b]; const args = vs.items[b + 1 ..];
+            switch (f.tag()) {
+                .lam => { // a tail call: only the new scope stays live
+                    const l = f.asLam();
+                    if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) rt.release(m.e); // no frame needs the old one
+                    m.e = rt.bind(l, args); vs.items.len = b;
+                    continue :sw .{ .eval = l.proto.body };
                 },
-                .f => |n| switch (n.f) {
-                    .plain => |p| { const v = try p(n, args); runtime.vs.items.len = b; continue :sw .{ .ret = v }; },
-                    .step => continue :sw try runtime.start(b, m.e), // a native frame: the arguments stay on vs
-                },
-                else => return runtime.fail(runtime.str("ToyLisp: {f} is not a function", .{f})),
+                .f => { const n = f.asFn(); switch (n.f) {
+                    .plain => |p| { const v = try p(n, args); vs.items.len = b; continue :sw .{ .ret = v }; },
+                    .step => continue :sw try rt.start(b, m.e), // a native frame: the arguments stay on vs
+                } },
+                else => return rt.fail(rt.str("TinyLisp: {f} is not a function", .{f})),
             }
         },
     }
 }
-var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r"; const unexpected = "ToyLisp: Syntax error, unexpected closing parenthesis";
-fn peek() u8 { return if (pos < src.len) src[pos] else 0; }
-fn skip() void {
+
+// ---------------------------------------------------------------- parser
+// Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.
+var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r";
+const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";
+
+fn peek() u8 { return if (pos < src.len) src[pos] else 0; } // a 0 byte ends the source
+fn skip() void { // spaces and ;-comments
     while (true) { pos = std.mem.indexOfNonePos(u8, src, pos, space) orelse src.len; if (peek() != ';') return; pos = std.mem.indexOfAnyPos(u8, src, pos, "\n\x00") orelse src.len; }
 }
-fn atom() runtime.V { // symbols and literals are permanent; a 0 byte ends the source
-    const lit = peek() == '"'; const s = pos + @intFromBool(lit);
-    pos = std.mem.indexOfAnyPos(u8, src, s, if (lit) "\"\x00" else space ++ "\x00()';\"") orelse src.len;
-    const t = src[s..pos]; if (lit and peek() == '"') pos += 1;
-    if (!lit and std.mem.indexOfAny(u8, t, "0123456789") != null) if (std.fmt.parseFloat(f64, t)) |d| return .{ .n = d } else |_| {};
-    const text = runtime.mkstr(t, true); return if (lit) .{ .lit = text } else .{ .s = text };
+fn lex() V { // a number, a symbol or a string literal
+    const lit = peek() == '"'; const start = pos + @intFromBool(lit);
+    pos = std.mem.indexOfAnyPos(u8, src, start, if (lit) "\"\x00" else space ++ "\x00()';\"") orelse src.len;
+    const t = src[start..pos]; if (lit and peek() == '"') pos += 1;
+    if (!lit and std.mem.indexOfAny(u8, t, "0123456789") != null) if (std.fmt.parseFloat(f64, t)) |d| return V.num(d) else |_| {};
+    const text = rt.mkstr(t, true);
+    return if (lit) V.literal(text) else V.string(text);
 }
-pub fn parse(text: []const u8) runtime.E!runtime.V {
+
+pub fn parse(text: []const u8) rt.E!V {
     src = text; pos = 0;
-    var done: std.ArrayList(runtime.V) = .empty; defer done.deinit(std.heap.c_allocator);
-    var open: std.ArrayList(?usize) = .empty; defer open.deinit(std.heap.c_allocator);
+    var done: std.ArrayList(V) = .empty; defer done.deinit(std.heap.c_allocator); // finished items, the open lists' items among them
+    var open: std.ArrayList(?usize) = .empty; defer open.deinit(std.heap.c_allocator); // where each open list starts in done; null: a quote
     while (open.items.len > 0 or done.items.len == 0) {
         skip();
-        var d: runtime.V = switch (peek()) {
-            0 => return runtime.fail(runtime.str("ToyLisp: Syntax error, unbalanced expression", .{})),
+        var d: V = switch (peek()) {
+            0 => return rt.fail(rt.str("TinyLisp: Syntax error, unbalanced expression", .{})),
             '(', '\'' => |c| { pos += 1; gc.push(?usize, &open, if (c == '(') done.items.len else null); continue; },
             ')' => blk: {
-                pos += 1; if (open.items.len == 0 or open.getLast() == null) return runtime.fail(runtime.str(unexpected, .{}));
-                const xs = done.items[open.pop().?.?..]; done.items.len -= xs.len; break :blk runtime.list(xs, xs.len);
+                pos += 1; if (open.items.len == 0 or open.getLast() == null) return rt.fail(rt.str(unexpected, .{}));
+                const items = done.items[open.pop().?.?..]; done.items.len -= items.len;
+                break :blk rt.list(items, items.len);
             },
-            else => atom(),
+            else => lex(),
         };
-        while (open.items.len > 0 and open.getLast() == null) : (_ = open.pop()) d = runtime.list(&.{ .{ .s = runtime.mkstr("quote", true) }, d }, 2);
-        gc.push(runtime.V, &done, d);
+        while (open.items.len > 0 and open.getLast() == null) : (_ = open.pop()) d = rt.list(&.{ V.string(rt.mkstr("quote", true)), d }, 2); // 'x is (quote x)
+        gc.push(V, &done, d);
     }
-    skip(); if (peek() != 0) return runtime.fail(runtime.str(unexpected, .{}));
+    skip();
+    if (peek() != 0) return rt.fail(rt.str(unexpected, .{}));
     return done.items[0];
 }

@@ -3,48 +3,175 @@ const gc = @import("gc.zig");
 const lang = @import("lang.zig");
 
 pub const E = error{Lisp}; // the error value itself is in `errv`
-pub const V = union(enum) { // s: symbol or runtime string, lit: string literal from source
-    nil,
-    b: bool,
-    n: f64,
-    s: [*:0]const u8,
-    lit: [*:0]const u8,
-    l: *Lst,
-    f: *Fn,
-    lam: *Lam,
+/// A value in 8 bytes (NaN boxing): a number is its own double bits, everything else lives in the quiet-NaN space with a
+/// 3-bit tag in bits 48-50 and a 48-bit pointer or flag as payload. Numbers that are NaN are stored as one canonical NaN.
+pub const V = enum(u64) {
+    _,
+    pub const Tag = enum { n, nil, b, s, lit, l, f, lam }; // s: symbol or runtime string, lit: string literal from source
+    const BOX: u64 = 0xFFF8_0000_0000_0000;
+    const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
+    pub const nil: V = @fromBackingInt(@intCast(BOX | 1 << 48));
 
-    pub const format = @import("stdlib_native.zig").format;
+    inline fn box(t: u64, payload: u64) V {
+        return @fromBackingInt(@intCast(BOX | t << 48 | payload));
+    }
+    inline fn bits(v: V) u64 {
+        return @backingInt(v);
+    }
+    inline fn addr(v: V) usize {
+        return @intCast(v.bits() & PAYLOAD);
+    }
+    pub inline fn num(x: f64) V {
+        return if (x != x) @fromBackingInt(@intCast(0x7FF8_0000_0000_0000)) else @fromBackingInt(@intCast(@as(u64, @bitCast(x))));
+    }
+    pub inline fn boolean(x: bool) V {
+        return box(2, @intFromBool(x));
+    }
+    pub inline fn string(p: [*:0]const u8) V {
+        return box(3, @intFromPtr(p));
+    }
+    pub inline fn literal(p: [*:0]const u8) V {
+        return box(4, @intFromPtr(p));
+    }
+    pub inline fn listOf(p: *Lst) V {
+        return box(5, @intFromPtr(p));
+    }
+    pub inline fn fnOf(p: *Fn) V {
+        return box(6, @intFromPtr(p));
+    }
+    pub inline fn lamOf(p: *Lam) V {
+        return box(7, @intFromPtr(p));
+    }
+    pub inline fn tag(v: V) Tag {
+        if (v.bits() >> 51 != 0x1FFF) return .n;
+        return switch (v.bits() >> 48 & 7) {
+            1 => .nil,
+            2 => .b,
+            3 => .s,
+            4 => .lit,
+            5 => .l,
+            6 => .f,
+            7 => .lam,
+            else => .n,
+        };
+    }
+    pub inline fn isNum(v: V) bool {
+        return v.bits() >> 51 != 0x1FFF;
+    }
+    pub inline fn is(v: V, t: Tag) bool {
+        return v.tag() == t;
+    }
+    pub inline fn asNum(v: V) f64 {
+        return @bitCast(v.bits());
+    }
+    pub inline fn asBool(v: V) bool {
+        return v.bits() & 1 != 0;
+    }
+    pub inline fn asStr(v: V) [*:0]const u8 { // for s and lit
+        return @ptrFromInt(v.addr());
+    }
+    pub inline fn asList(v: V) *Lst {
+        return @ptrFromInt(v.addr());
+    }
+    pub inline fn asFn(v: V) *Fn {
+        return @ptrFromInt(v.addr());
+    }
+    pub inline fn asLam(v: V) *Lam {
+        return @ptrFromInt(v.addr());
+    }
+
+    /// Iterative, so nested lists can't overflow the native stack.
+    pub fn format(top: V, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        var todo: std.ArrayList(?V) = .empty; // null: a list's closing parenthesis
+        defer todo.deinit(std.heap.c_allocator);
+        gc.push(?V, &todo, top);
+        while (todo.pop()) |item| {
+            if (item) |v| switch (v.tag()) {
+                .nil => try w.writeAll("nil"),
+                .b => try w.writeAll(if (v.asBool()) "#t" else "#f"),
+                .n => {
+                    const n = v.asNum();
+                    if (n == @trunc(n) and @abs(n) < 1e18) try w.print("{d}", .{@as(i64, @intFromFloat(n))}) else try w.print("{d}", .{n});
+                },
+                .s => try w.writeAll(std.mem.span(v.asStr())),
+                .lit => try w.print("\"{s}\"", .{v.asStr()}),
+                .l => {
+                    try w.writeByte('(');
+                    gc.push(?V, &todo, null);
+                    var it = std.mem.reverseIterator(v.asList().items());
+                    while (it.next()) |x| gc.push(?V, &todo, x);
+                    continue;
+                },
+                .f, .lam => try w.writeAll("<function>"),
+            } else try w.writeByte(')');
+            if (todo.getLastOrNull()) |next| if (next != null) try w.writeByte(' '); // more items of the same list
+        }
+    }
 };
-pub const Lst = struct { a: []V }; // items are stored inline, right after the struct
+/// A list: its items are stored inline, right after the length.
+pub const Lst = struct {
+    len: usize,
+    pub inline fn items(self: *Lst) []V {
+        return gc.after(V, self)[0..self.len];
+    }
+};
 pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 };
 /// plain: computes its value directly. step: calls back into Lisp, so it runs as a frame of the machine: it is
 /// invoked with null first, then with each callback's value, and says what the machine does next.
 pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *K, ?V) E!Go };
-pub const Lam = struct { params: V, body: V, env: *Env };
-pub const Env = struct { p: ?*Env, vars: []Var, cap: usize }; // vars are stored inline until they outgrow cap; the root scope uses the global table
-pub const Var = struct { k: [*:0]const u8, v: V };
+pub const Lam = struct { proto: *Proto, env: *Env };
+pub const Env = struct { p: ?*Env, vars: []Var, cap: usize, proto: ?*Proto = null, esc: bool = false }; // vars are stored inline until they outgrow cap; the root scope uses the global table
+pub const Var = struct { k: Key, v: V };
+
+// Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
+pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
+pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
+pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
+pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // (define k v) or (set! k v)
+pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0 }; // cap: room for the scope of a call, grown by defines
+pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, call: []const *Node };
+pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw }; // src: the (expanded) form that code was built from
 
 const gpa = std.heap.c_allocator;
 
 // The machine's state: pending work lives in heap frames, so nothing grows the native stack.
-pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", apply, native }; // apply: anything else
-pub const K = struct { kind: Form, i: usize, base: usize, mark: usize, l: []V, e: *Env };
-pub const Go = union(enum) { eval: V, ret: V, apply: usize }; // apply: the function at vs[apply], then its arguments
+pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", apply }; // apply: anything else
+pub const Kind = enum { @"if", begin, def, call, native };
+pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env };
+/// A running evaluator loop: its scope is a root for the collector.
+pub const M = struct { e: *Env, base: usize };
+pub var machines: std.ArrayList(*M) = .empty;
+/// Values that permanent compiled nodes point to (the AST and its expansions) stay alive for good.
+pub var pins: std.ArrayList(V) = .empty;
+
+pub fn pin(v: V) V {
+    gc.push(V, &pins, v);
+    return v;
+}
+pub const Go = union(enum) { eval: *Node, ret: V, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } }; // apply: the function at vs[apply], then its arguments; args: collecting them from c[i] on, they start at vs[b]
+
+/// Push the value of c[i], an item of a call: the function first, which must exist.
+pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
+    if (i == 0 and v == V.nil) return fail(str("TinyLisp: Function {f} is not defined", .{c[0].ast}));
+    gc.push(V, &vs, v);
+}
+
+/// Push a frame of kind with children c (its pending work).
+pub fn frame(kind: Kind, c: []const *Node, e: *Env) *K {
+    gc.push(K, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
+    return &ks.items[ks.items.len - 1];
+}
 pub var ks: std.ArrayList(K) = .empty;
 pub var vs: std.ArrayList(V) = .empty; // function + arguments being collected, native frames' state
 
 pub fn ptr(v: V) ?*anyopaque {
-    return switch (v) {
+    return switch (v.tag()) {
         .nil, .b, .n => null,
-        .s, .lit => |s| @ptrCast(@constCast(s)),
-        inline else => |p| p,
+        .s, .lit => @ptrCast(@constCast(v.asStr())),
+        .l => v.asList(),
+        .f => v.asFn(),
+        .lam => v.asLam(),
     };
-}
-
-/// A heap reference to v is being stored.
-pub fn rv(v: V) V {
-    gc.ret(ptr(v));
-    return v;
 }
 
 pub fn arg(a: []const V, i: usize) V {
@@ -52,19 +179,20 @@ pub fn arg(a: []const V, i: usize) V {
 }
 
 pub fn items(v: V) []V {
-    return if (v == .l) v.l.a else &.{};
+    return if (v.is(.l)) v.asList().items() else &.{};
 }
 
 pub fn mkstr(s: []const u8, perm: bool) [*:0]u8 {
     const t: [*]u8 = @ptrCast(if (perm) gc.perm(s.len + 1) else gc.alloc(s.len + 1, .str));
-    @memcpy(t[0..s.len], s); // calloc: already 0-terminated
+    @memcpy(t[0..s.len], s);
+    t[s.len] = 0;
     return @ptrCast(t);
 }
 
 pub fn str(comptime f: []const u8, args: anytype) V {
     const m = std.fmt.allocPrint(gpa, f, args) catch gc.oom();
     defer gpa.free(m);
-    return .{ .s = mkstr(m, false) };
+    return V.string(mkstr(m, false));
 }
 
 pub fn fail(e: V) E {
@@ -74,28 +202,27 @@ pub fn fail(e: V) E {
 
 /// A list of n items: a, then nils.
 pub fn list(a: []const V, n: usize) V {
-    const l = gc.new(Lst, n * @sizeOf(V), .list, undefined);
-    l.a = gc.after(V, l)[0..n];
-    for (l.a, 0..) |*x, i| x.* = rv(arg(a, i));
-    return .{ .l = l };
+    const l = gc.new(Lst, n * @sizeOf(V), .list, .{ .len = n });
+    for (l.items(), 0..) |*x, i| x.* = arg(a, i);
+    return V.listOf(l);
 }
 
 pub fn nf(f: Native, d0: V, d1: V) *Fn {
-    return gc.new(Fn, 0, .func, .{ .f = f, .d0 = rv(d0), .d1 = rv(d1) });
+    return gc.new(Fn, 0, .func, .{ .f = f, .d0 = d0, .d1 = d1 });
 }
 
 pub fn truthy(v: V) bool {
-    return switch (v) {
+    return switch (v.tag()) {
         .nil => false,
-        .b => |b| b,
-        .n => |n| n != 0 and n == n,
-        .s => |s| s[0] != 0,
+        .b => v.asBool(),
+        .n => v.asNum() != 0 and v.asNum() == v.asNum(),
+        .s => v.asStr()[0] != 0,
         else => true,
     };
 }
 
 fn isNil(v: V) bool {
-    return v == .nil or (v == .l and v.l.a.len == 0);
+    return v == V.nil or (v.is(.l) and v.asList().len == 0);
 }
 
 fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
@@ -104,14 +231,15 @@ fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
 
 fn eq(a: V, b: V) bool {
     if (isNil(a) or isNil(b)) return isNil(a) and isNil(b);
-    if ((a == .s and b == .s) or (a == .lit and b == .lit)) return streq(@ptrCast(ptr(a)), @ptrCast(ptr(b)));
-    return std.meta.eql(a, b);
+    if ((a.is(.s) and b.is(.s)) or (a.is(.lit) and b.is(.lit))) return streq(a.asStr(), b.asStr());
+    if (a.isNum() and b.isNum()) return a.asNum() == b.asNum();
+    return a == b;
 }
 
 pub fn num(v: V) f64 {
-    return switch (v) {
-        .n => |n| n,
-        .b => |b| @floatFromInt(@intFromBool(b)),
+    return switch (v.tag()) {
+        .n => v.asNum(),
+        .b => @floatFromInt(@intFromBool(v.asBool())),
         .nil => 0,
         else => std.math.nan(f64),
     };
@@ -119,116 +247,158 @@ pub fn num(v: V) f64 {
 
 // ---------------------------------------------------------------- scopes
 pub var macros: std.ArrayList(*V) = .empty; // root slots of the macro/* functions
-var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
-var gv: [1 << 13]V = @splat(.nil);
+pub var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
+pub var gv: [1 << 13]V = @splat(.nil);
 
-fn slot(e: *Env, k: [*:0]const u8, create: bool) ?*V {
+pub var epoch: u32 = 0; // bumped when a macro/* changes: code compiled before it is compiled again
+
+fn slot(e: *Env, k: Key, create: bool) ?*V {
     if (e.p == null) {
         var i: usize = std.hash.Fnv1a_32.hash(std.mem.span(k)) & (gk.len - 1);
         while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (streq(key, k)) return &gv[i];
         if (create) gk[i] = k;
         return if (create) &gv[i] else null;
     }
-    var it = std.mem.reverseIterator(e.vars); // the latest binding of a name wins
-    while (it.nextPtr()) |x| if (x.k == k or streq(x.k, k)) return &x.v;
+    var i = e.vars.len; // the latest binding of a name wins
+    while (i > 0) : (i -= 1) if (e.vars[i - 1].k == k) return &e.vars[i - 1].v;
     if (!create) return null;
     if (e.vars.len == e.cap) {
         const more = gpa.alloc(Var, e.cap * 2) catch gc.oom();
         @memcpy(more[0..e.cap], e.vars);
         if (e.vars.ptr != gc.after(Var, e)) gpa.free(e.vars);
         e.vars.ptr, e.cap = .{ more.ptr, more.len };
+        if (e.proto) |p| p.cap = e.cap; // the next call of this function gets a scope that is big enough
     }
     e.vars.len += 1;
     e.vars[e.vars.len - 1] = .{ .k = k, .v = .nil };
     return &e.vars[e.vars.len - 1].v;
 }
 
-fn name(v: V) [*:0]const u8 {
-    return if (v == .s) v.s else str("{f}", .{v}).s;
+/// The innermost binding of the name: scope keys are interned, so they are compared by address. A name that no scope binds
+/// is global without searching. g caches the global slot.
+pub fn find(env: *Env, sym: *Sym, g: *?*V) ?*V {
+    var e = env;
+    while (sym.local and e.p != null) : (e = e.p.?) {
+        var i = e.vars.len;
+        while (i > 0) : (i -= 1) if (e.vars[i - 1].k == sym.key) return &e.vars[i - 1].v;
+    }
+    if (g.* == null) g.* = slot(root, sym.key, false);
+    return g.*;
 }
 
-/// (define name v) or (set! name v), a being the form.
-pub fn assign(define: bool, a: []const V, e: *Env, v: V) E!void {
-    if (a.len < 2) return fail(str("ToyLisp: {s} needs a name", .{if (define) "define" else "set!"}));
-    const s = name(a[1]);
-    if (define) set(e, s, v) else if (lookup(e, s)) |p| {
-        gc.rel(ptr(p.*));
-        p.* = rv(v);
+pub fn fetch(env: *Env, r: *Ref) V {
+    return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
+}
+
+/// (define name v) or (set! name v).
+pub fn assign(d: *Def, e: *Env, v: V) E!void {
+    const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
+    if (d.define) {
+        sym.local = sym.local or e.p != null;
+        set(e, sym.key, v);
+    } else if (find(e, sym, &d.g)) |p| {
+        p.* = v;
     }
 }
 
-pub fn lookup(env: *Env, k: [*:0]const u8) ?*V {
-    var e: ?*Env = env;
-    while (e) |s| : (e = s.p) if (slot(s, k, false)) |v| return v;
-    return null;
-}
-
-/// Root keys are copied to permanent memory; scope keys are counted references.
-pub fn set(e: *Env, key: [*:0]const u8, v: V) void {
+/// Root keys are copied to permanent memory; scope keys are interned already.
+pub fn set(e: *Env, key: Key, v: V) void {
     const s = slot(e, key, false) orelse blk: {
-        const s = slot(e, if (e.p != null) rv(.{ .s = key }).s else mkstr(std.mem.span(key), true), true).?;
+        const s = slot(e, if (e.p != null) key else mkstr(std.mem.span(key), true), true).?;
         if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
         break :blk s;
     };
-    gc.rel(ptr(s.*));
-    s.* = rv(v);
+    s.* = v;
+    if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) epoch +%= 1;
 }
 
-pub fn lambda(a: []const V, e: *Env) V {
-    gc.ret(e);
-    return .{ .lam = gc.new(Lam, 0, .lam, .{ .params = rv(arg(a, 1)), .body = rv(arg(a, 2)), .env = e }) };
+pub fn lambda(p: *Proto, e: *Env) V {
+    e.esc = true; // a closure holds the scope: it can no longer be recycled when its call ends
+    return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
 }
+
+// Most scopes die when their call ends: a call's scope is recycled then, unless a closure captured it. Recycled scopes wait on
+// a free list (linked through `p`); the collector forgets the list, so whatever it holds is simply collected.
+const env_cap = 4;
+pub var env_pool: ?*Env = null;
 
 pub fn bind(f: *Lam, a: []const V) *Env {
-    const ps = items(f.params);
-    const cap = @max(ps.len, 4);
-    const e = gc.new(Env, cap * @sizeOf(Var), .env, .{ .p = f.env, .vars = undefined, .cap = cap });
-    e.vars = gc.after(Var, e)[0..ps.len];
-    gc.ret(f.env);
-    for (ps, e.vars, 0..) |p, *x, i| x.* = .{ .k = rv(.{ .s = name(p) }).s, .v = rv(arg(a, i)) };
+    const ps = f.proto.params;
+    const cap = @max(f.proto.cap, ps.len, env_cap);
+    const e = if (cap == env_cap and env_pool != null) blk: {
+        const e = env_pool.?;
+        env_pool = e.p;
+        break :blk e;
+    } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..ps.len], .cap = cap, .proto = f.proto, .esc = cap != env_cap };
+    for (ps, e.vars, 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
     return e;
 }
 
+/// The call that ran in e is over (nothing but a closure could still use it).
+pub fn release(e: *Env) void {
+    if (e.esc or e.p == null or e.cap != env_cap or e.vars.ptr != gc.after(Var, e)) return;
+    e.esc = true; // never twice
+    e.p = env_pool;
+    env_pool = e;
+}
+
 // ---------------------------------------------------------------- primitives
-const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", trampoline };
+const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", trampoline, @"vset!", exp, log, sqrt, cos, floor };
 
 fn binop(op: Op, x: V, y: V) V {
     const a = num(x);
     const b = num(y);
     return switch (op) {
-        .@"+" => if (x == .s or x == .lit or y == .s or y == .lit) str("{f}{f}", .{ x, y }) else .{ .n = a + b },
-        .@"-" => .{ .n = a - b },
-        .@"*" => .{ .n = a * b },
-        .@"/" => .{ .n = a / b },
-        .@">" => .{ .b = a > b },
-        .@"<" => .{ .b = a < b },
-        .@">=" => .{ .b = a >= b },
-        .@"<=" => .{ .b = a <= b },
+        .@"+" => if (x.is(.s) or x.is(.lit) or y.is(.s) or y.is(.lit)) str("{f}{f}", .{ x, y }) else V.num(a + b),
+        .@"-" => V.num(a - b),
+        .@"*" => V.num(a * b),
+        .@"/" => V.num(a / b),
+        .@">" => V.boolean(a > b),
+        .@"<" => V.boolean(a < b),
+        .@">=" => V.boolean(a >= b),
+        .@"<=" => V.boolean(a <= b),
         .@"&&" => if (truthy(x)) y else x,
         else => if (truthy(x)) x else y,
     };
 }
 
 fn prim(s: *Fn, a: []const V) E!V {
-    const op: Op = @fromBackingInt(@intFromFloat(s.d0.n));
+    const op: Op = @fromBackingInt(@intFromFloat(s.d0.asNum()));
     const x = arg(a, 0);
     if (@backingInt(op) <= @backingInt(Op.@"||")) { // arithmetic, comparison, && and ||: fold left
         var r = x;
         for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
     }
+    if (@backingInt(op) >= @backingInt(Op.exp)) { // math: one number in, one number out
+        const n = num(x);
+        return V.num(switch (op) {
+            .exp => @exp(n),
+            .log => @log(n),
+            .sqrt => @sqrt(n),
+            .cos => @cos(n),
+            else => @floor(n),
+        });
+    }
     const l = items(if (op == .cons) arg(a, 1) else x);
     switch (op) {
         .car => return arg(l, 0),
         .cdr => return list(l[@min(1, l.len)..], l.len -| 1),
-        .len => return .{ .n = @floatFromInt(l.len) },
+        .len => return V.num(@floatFromInt(l.len)),
         .list => return list(a, a.len),
         .@"error" => return fail(x),
-        .trampoline => return .{ .f = nf(.{ .step = trampRun }, x, .nil) },
-        .@"eq?" => return .{ .b = for (a) |y| (if (!eq(y, x)) break false) else true },
+        .trampoline => return V.fnOf(nf(.{ .step = trampRun }, x, .nil)),
+        .@"vset!" => { // (vset! list i v): store v at index i of the list itself (nothing needs a write barrier)
+            const i = num(arg(a, 1));
+            if (!(i >= 0 and i < @as(f64, @floatFromInt(l.len)))) return fail(str("TinyLisp: vset! index out of range", .{}));
+            l[@intFromFloat(i)] = arg(a, 2);
+            return arg(a, 2);
+        },
+        .@"eq?" => return V.boolean(for (a) |y| (if (!eq(y, x)) break false) else true),
         .cons => {
             const r = list(&.{x}, l.len + 1);
-            for (l, r.l.a[1..]) |y, *z| z.* = rv(y);
+            for (l, r.asList().items()[1..]) |y, *z| z.* = y;
             return r;
         },
         else => unreachable,
@@ -241,13 +411,14 @@ fn prim(s: *Fn, a: []const V) E!V {
 
 /// Push the frame of the native at vs[b] (its arguments follow it) and run its first step.
 pub fn start(b: usize, e: *Env) E!Go {
-    gc.push(K, &ks, .{ .kind = .native, .i = 0, .base = b, .mark = gc.mark(), .l = &.{}, .e = e });
-    return step(&ks.items[ks.items.len - 1], null);
+    const k = frame(.native, &.{}, e);
+    k.base = b;
+    return step(k, null);
 }
 
 /// Resume a native frame with the value of its callback (null: first step).
 pub fn step(k: *K, v: ?V) E!Go {
-    const n = vs.items[k.base].f;
+    const n = vs.items[k.base].asFn();
     return n.f.step(n, k, v);
 }
 
@@ -267,11 +438,10 @@ pub fn finish(k: *K, v: V) Go {
 }
 
 /// Call f with xs (which must not live on vs); its value comes back to this frame.
-pub fn callback(k: *K, f: V, xs: []const V) Go {
+pub fn callback(_: *K, f: V, xs: []const V) Go {
     const b = vs.items.len;
     gc.push(V, &vs, f);
     vs.appendSlice(gpa, xs) catch gc.oom();
-    k.mark = gc.mark(); // the callback's region: its value is swept against it, like an argument's
     return .{ .apply = b };
 }
 
@@ -298,7 +468,7 @@ pub fn recover(base: usize) ?Go {
     while (j > base) {
         j -= 1;
         const k = &ks.items[j];
-        if (k.kind != .native or vs.items[k.base].f.f.step != &tryRun) continue;
+        if (k.kind != .native or vs.items[k.base].asFn().f.step != &tryRun) continue;
         ks.items.len = j + 1;
         vs.items.len = k.base + 3; // try, thunk, handler
         k.i = 1;
@@ -309,7 +479,7 @@ pub fn recover(base: usize) ?Go {
 
 // trampoline: nested calls while active return thunks, the outermost runs them in a loop
 fn thunk(s: *Fn, k: *K, _: ?V) E!Go {
-    return tail(k, s.d0, s.d1.l.a, false);
+    return tail(k, s.d0, s.d1.asList().items(), false);
 }
 
 /// s.i - 1 is the index of the outermost run's frame. It is checked, not trusted: a frame dropped by an error
@@ -318,30 +488,30 @@ fn trampRun(s: *Fn, k: *K, v: ?V) E!Go {
     const frames = ks.items;
     const r = v orelse {
         const j = s.i -% 1;
-        if (j < frames.len - 1 and frames[j].kind == .native and vs.items[frames[j].base].f == s) {
+        if (j < frames.len - 1 and frames[j].kind == .native and vs.items[frames[j].base].asFn() == s) {
             const a = vs.items[k.base + 1 ..];
-            return finish(k, .{ .f = nf(.{ .step = thunk }, s.d0, list(a, a.len)) });
+            return finish(k, V.fnOf(nf(.{ .step = thunk }, s.d0, list(a, a.len))));
         }
         s.i = frames.len;
-        k.i = gc.mark(); // the loop's region
         vs.insertSlice(gpa, k.base + 1, &.{s.d0}) catch gc.oom(); // call s.d0 with the frame's arguments
-        k.mark = gc.mark();
         return .{ .apply = k.base + 1 };
     };
-    k.i = gc.resweep(k.i, r, null);
-    if (r == .f or r == .lam) return callback(k, r, &.{});
+    if (r.is(.f) or r.is(.lam)) return callback(k, r, &.{});
     s.i = 0;
     return finish(k, r);
 }
 
+pub var root: *Env = undefined;
+
 pub fn topLevel() *Env {
     const e: *Env = @ptrCast(@alignCast(gc.perm(@sizeOf(Env)))); // the root scope lives forever
+    root = e;
     e.* = .{ .p = null, .vars = &.{}, .cap = 0 };
     set(e, "nil", .nil);
-    set(e, "#t", .{ .b = true });
-    set(e, "#f", .{ .b = false });
+    set(e, "#t", V.boolean(true));
+    set(e, "#f", V.boolean(false));
     set(e, "ESC", str("\x1b", .{}));
-    for (std.enums.values(Op)) |op| set(e, @tagName(op), .{ .f = nf(.{ .plain = prim }, .{ .n = @floatFromInt(@backingInt(op)) }, .nil) }); // d0: the op
-    set(e, "try", .{ .f = nf(.{ .step = tryRun }, .nil, .nil) });
+    for (std.enums.values(Op)) |op| set(e, @tagName(op), V.fnOf(nf(.{ .plain = prim }, V.num(@floatFromInt(@backingInt(op))), .nil))); // d0: the op
+    set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
     return e;
 }
