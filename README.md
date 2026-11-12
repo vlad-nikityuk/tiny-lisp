@@ -1,6 +1,6 @@
 # Tiny Lisp
 
-A tiny Lisp interpreter written for fun, inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html). The core is one C file of at most 100 lines (`src/lisp.c`). A 1:1 Zig port lives in `src/zig/`.
+A tiny Lisp interpreter written for fun, inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html). Written in Zig.
 
 ## Language card
 
@@ -28,7 +28,7 @@ A tiny Lisp interpreter written for fun, inspired by Peter Norvig's [lispy](http
 ## Getting started
 
 ```bash
-make                         # build ./tiny-lisp (needs a C compiler)
+make                         # build ./tiny-lisp (needs Zig 0.17)
 ./tiny-lisp                  # interactive REPL
 ./tiny-lisp -f file.lisp     # run a file
 ./tiny-lisp --debug          # start with *DEBUG* set to #t
@@ -102,7 +102,7 @@ Missing arguments are `nil`; extra arguments are ignored.
 
 ### Recursion and tail calls
 
-Recursion is not limited by the C stack: pending work lives on the heap, so even non-tail recursion can go millions of calls deep (memory permitting). Calls in tail position (the branches of `if`, the last expression of `begin`, a function body) don't grow anything at all, so loops written as tail recursion run in constant memory.
+Recursion is not limited by the native stack: pending work lives on the heap, so even non-tail recursion can go millions of calls deep (memory permitting). Calls in tail position (the branches of `if`, the last expression of `begin`, a function body) don't grow anything at all, so loops written as tail recursion run in constant memory.
 
 `defrec` does the same through an explicit trampoline: it rewrites self-calls into thunks and runs them in a loop.
 
@@ -111,7 +111,7 @@ Recursion is not limited by the C stack: pending work lives on the heap, so even
 (count 1000000 0)                    ; 1000000
 ```
 
-One limit remains: native functions that call back into Lisp (`map`, `reduce`, `try`, `partial`, macros) use the C stack, so callbacks nested more than 12,000 deep raise a catchable `ToyLisp: recursion too deep` error.
+One limit remains: native functions that call back into Lisp (`map`, `reduce`, `try`, `partial`, macros) use the native stack, so callbacks nested more than 8,000 deep raise a catchable `ToyLisp: recursion too deep` error.
 
 ### Lists
 
@@ -174,21 +174,20 @@ A failing `assert` raises `assertion-failed`, which stops the run with a non-zer
 
 ### Standard library
 
-`src/stdlib_native.c` provides `print pi list? at map reduce red green partial`; everything else (`first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print pi list? at map reduce red green partial`; everything else (`first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
 ## Implementation
 
 | File | |
 |---|---|
-| `src/lisp.c` | parser, evaluator, primitives, REPL (≤ 100 lines) |
-| `src/gc.c` | memory management |
-| `src/stdlib_native.c`, `src/stdlib.lisp` | standard library |
-| `src/zig/` | the same interpreter in Zig (`make tiny-lisp-zig`, `make test-zig`) |
+| `src/lisp.zig` | parser, evaluator, primitives, REPL |
+| `src/gc.zig` | memory management |
+| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-- **Evaluator**: an explicit-stack machine. Pending work (`if` waiting for its condition, `begin` mid-sequence, arguments being evaluated) is a frame on a heap stack, and tail calls replace the current state, which is why recursion depth is bounded by memory, not the C stack. The parser and printer are iterative too.
+- **Evaluator**: an explicit-stack machine. Pending work (`if` waiting for its condition, `begin` mid-sequence, arguments being evaluated) is a frame on a heap stack, and tail calls replace the current state, which is why recursion depth is bounded by memory, not the native stack. The parser and printer are iterative too.
 - **Memory**: reference counts for references stored in the heap, plus per-call allocation regions: when a call returns, everything it allocated that nothing references is freed. Cycles are not collected. Peak memory stays at 2–3 MB on the benchmarks.
-- **Performance**: C and Zig are within 3% of each other (fib 22: 0.46 s; a 100k-iteration `defrec` loop: 1.05 s on an Apple Silicon Mac). Running every `macro/*` on every node dominates the time.
+- **Performance**: fib 22 takes 0.47 s and a 100k-iteration `defrec` loop 1.09 s on an Apple Silicon Mac, the same as the C version. Running every `macro/*` on every node dominates the time.
 
 ## History
 
@@ -196,4 +195,4 @@ A failing `assert` raises `assertion-failed`, which stops the run with a non-zer
 2. **TypeScript**: a straight port. For a long time it had no proper tail calls, and macro expansion was recursive, so deep programs overflowed the JavaScript stack.
 3. **Coding agents**: fixing that became much easier with AI coding agents: a stack-safe evaluator, iterative macro expansion, tests shared across runtimes.
 4. **C**: a rewrite with an explicit-stack evaluator and its own memory management, about 5× faster than the TypeScript version on Node.js and using a few MB instead of 100+ MB.
-5. **Zig**: a 1:1 port of the C version for readability, at the same speed.
+5. **Zig**: a 1:1 port of the C version for readability, at the same speed. It replaced C, whose 100-line limit made the code hard to read.

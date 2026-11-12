@@ -1,9 +1,6 @@
 tiny-lisp
-tiny-lisp-asan
-*.dSYM/
+tiny-lisp-safe
+*.o
+.zig-cache/
 .idea/
 *~
-target/
-tiny-lisp-zig
-tiny-lisp-zig.o
-.zig-cache/
