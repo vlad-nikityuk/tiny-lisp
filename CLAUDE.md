@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make                       # build ./tiny-lisp
 make test                  # spec/repl.py + spec/specs.lisp + the 100-line check on src/lisp.c
 make asan                  # AddressSanitizer build: ./tiny-lisp-asan
+make test-zig              # build ./tiny-lisp-zig (Zig 0.17) and run the same suites
 ./tiny-lisp [-f file.lisp] [--debug]
 ```
 
@@ -23,6 +24,8 @@ make asan                  # AddressSanitizer build: ./tiny-lisp-asan
 - Values held only in frames / the operand stack / C locals are not counted, so never sweep a region they live in.
 - No VLAs sized by data (use the heap).
 - Check changes with `make asan` and run both test suites on `./tiny-lisp-asan` (the callback-depth test can overflow under ASan's larger frames).
+
+**Zig port (`src/zig/`)**: a 1:1 port of the three C files (same evaluator, GC and semantics), written readably and not line-limited. Keep both in sync when behaviour changes. Differences: errors are Zig error unions (`error.Lisp` + `errv`) instead of `longjmp`, and the callback depth cap is 8,000 (Zig frames are bigger; it overflows the 8 MB stack at ~11k). Check memory-safety-sensitive changes with `zig build-exe -OReleaseSafe -lc src/zig/lisp.zig`.
 
 ## Language semantics
 
