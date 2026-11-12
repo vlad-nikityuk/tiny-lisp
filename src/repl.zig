@@ -2,13 +2,14 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const lang = @import("lang.zig");
+const runtime = @import("runtime.zig");
 const native = @import("stdlib_native.zig");
 
 const gpa = std.heap.c_allocator;
 
-fn load(io: std.Io, e: *lang.Env, path: []const u8) lang.E!void {
+fn load(io: std.Io, e: *runtime.Env, path: []const u8) runtime.E!void {
     const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch {
-        lang.errv = lang.str("cannot open {s}", .{path});
+        lang.errv = runtime.str("cannot open {s}", .{path});
         return error.Lisp;
     };
     defer gpa.free(text);
@@ -30,12 +31,12 @@ pub fn main(init: std.process.Init) !void {
     const out = &ow.interface;
     lang.out = out;
     defer out.flush() catch {};
-    const e = lang.topLevel();
+    const e = runtime.topLevel();
     var file: ?[]const u8 = null;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, "--debug")) {
-            lang.set(e, "*DEBUG*", .{ .b = true });
+            runtime.set(e, "*DEBUG*", .{ .b = true });
             try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];

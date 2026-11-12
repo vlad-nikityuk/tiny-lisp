@@ -1,21 +1,21 @@
-// Memory management: reference counts for heap references + per-call allocation regions.
+// Lean GC: reference counts for heap references only, plus per-call allocation regions.
 //
-// Only references stored in the heap are counted: list elements, scope slots, globals, closure
-// captures and native-closure data. References held in locals are not, which keeps eval free of
-// inc/dec bookkeeping. Instead every allocation is appended to a log, and each eval/call remembers
-// the log position when it started (mark). When it finishes (sweep) everything allocated since
-// then with a zero count is freed, except the value being returned, which simply stays in the log
-// and so becomes part of the caller's region. Scopes are ordinary objects: a scope that no closure
-// captured has a zero count and is freed as soon as its call returns.
+// 1. Every allocation is appended to a log. A frame remembers the log position when it starts (its mark).
+// 2. Locals, frames and the operand stack are NOT counted. Only values stored in the heap (list items, scope
+//    slots, globals, closure captures, native data) are: `ret` on store, `rel` on overwrite.
+// 3. When a frame finishes it sweeps its region: everything allocated since the mark with a zero count is freed,
+//    except the returned value, which stays in the log and joins the caller's region.
+// 4. Tail calls and the trampoline resweep the same region each iteration; long-lived survivors move to the
+//    enclosing region so loops stay linear.
 //
-// Limitation: reference cycles (e.g. a closure stored in the scope it captures) are never freed.
+// Limitation: reference cycles (a closure stored in the scope it captures) are never freed.
 const std = @import("std");
-const lisp = @import("lang.zig");
+const lisp = @import("runtime.zig");
 const V = lisp.V;
 
 pub const Kind = enum(i16) { dead = -2, perm = -1, str, list, func, lam, env };
 const H = extern struct { rc: i32 = 0, kind: Kind, age: i16 = 0, idx: usize = 0 }; // header in front of every managed object; age: loop sweeps survived
-const OLD = 4; // loop sweeps an object must survive before it's treated as long-lived (values passed along a loop live ~2)
+const old = 4; // loop sweeps an object must survive before it's treated as long-lived (values passed along a loop live ~2)
 
 var log: std.ArrayList(?*H) = .empty;
 var dying: std.ArrayList(*H) = .empty; // freed via a worklist, never recursively
@@ -65,7 +65,6 @@ pub fn new(comptime T: type, extra: usize, kind: Kind, init: T) *T {
     return p;
 }
 
-/// Never freed: parser symbols/literals, root keys, the root scope.
 pub fn perm(n: usize) *anyopaque {
     const h = calloc(n);
     h.* = .{ .kind = .perm, .rc = 1 << 30 };
@@ -126,7 +125,7 @@ pub fn mark() usize {
 }
 
 fn isOld(h: *H, loop: bool) bool {
-    return loop and h.rc > 0 and h.age >= OLD;
+    return loop and h.rc > 0 and h.age >= old;
 }
 
 /// Free everything allocated since m that nothing references (except keep/keep2).
@@ -142,7 +141,7 @@ fn sweep(m: usize, keep: V, keep2: ?*anyopaque, loop: bool) usize {
     }
     sweeping = false;
     // Survivors stay in the log and so join the caller's region. In a loop (tail calls, trampoline) the same region is swept again
-    // every iteration: survivors that are heap-referenced and already lived through OLD loop sweeps are long-lived, so they go first
+    // every iteration: survivors that are heap-referenced and already lived through old loop sweeps are long-lived, so they go first
     // and the returned mark leaves them to the enclosing region instead of rescanning them every iteration (that would be quadratic).
     var j = m;
     for (0..2) |pass| {
@@ -158,7 +157,7 @@ fn sweep(m: usize, keep: V, keep2: ?*anyopaque, loop: bool) usize {
         young = i;
         break;
     };
-    if (loop) for (log.items[young..j]) |h| if (h.?.age < OLD) {
+    if (loop) for (log.items[young..j]) |h| if (h.?.age < old) {
         h.?.age += 1;
     };
     log.items.len = j;

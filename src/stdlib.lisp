@@ -1,5 +1,6 @@
 ;; Lisp part of the stdlib. Loaded after the native part (src/stdlib_native.zig):
-;; print pi list? at map reduce red green partial
+;; print list? at map reduce partial
+(define pi 3.141592653589793)
 (define first car)
 (define rest cdr)
 
@@ -30,6 +31,9 @@
 ;; ------------- UTILS ----------------------------------------
 (defn trace (x) (begin (print x) x))
 (defn pass () 0)
+(defn color (code x) (+ ESC "[" code "m" x ESC "[39m"))
+(defn red (x) (color 31 x))
+(defn green (x) (color 32 x))
 ;; ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
 
