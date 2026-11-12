@@ -344,13 +344,61 @@
     (define printed (+ "" (nest 50000 '())))
     (assert (eq? printed printed))))
 
-(deftest stack--callback-recursion-raises-catchable-error
+;; natives that call back into Lisp (map, reduce, partial, try, trampoline) are frames too
+
+(deftest stack--deep-recursion-through-map-callbacks
   (begin
     (defn walk (n) (if (eq? n 0) 0 (+ 1 (first (map '(1) (lambda (x) (walk (- n 1))))))))
+    (assert (eq? 200000 (walk 200000)))))
+
+(deftest stack--deep-recursion-through-reduce-and-partial
+  (begin
+    (defn rwalk (n) (if (eq? n 0) 0 (reduce '(1) (lambda (acc x) (+ acc x (rwalk (- n 1)))) 0)))
+    (assert (eq? 100000 (rwalk 100000)))
+    (defn pwalk (n) (if (eq? n 0) 0 (+ 1 ((partial pwalk (list (- n 1)))))))
+    (assert (eq? 100000 (pwalk 100000)))
+    (defn mwalk (n) (if (eq? n 0) 0 (+ 1 (first ((partial map (list '(1))) (lambda (x) (mwalk (- n 1))))))))
+    (assert (eq? 100000 (mwalk 100000)))))
+
+(deftest stack--deeply-nested-try
+  (begin
+    (defn tries (n) (if (eq? n 0) (error 0) (+ 1 (try (lambda () (tries (- n 1))) (lambda (e) e)))))
+    (assert (eq? 100000 (tries 100000)))
+    ;; every handler raises again: the error travels through all 100000 levels
+    (defn rethrow (n) (if (eq? n 0) (error 0) (try (lambda () (rethrow (- n 1))) (lambda (e) (error (+ e 1))))))
+    (assert (eq? 100000 (try (lambda () (rethrow 100000)) (lambda (e) e))))))
+
+(deftest stack--error-deep-inside-map-callbacks-is-caught
+  (begin
+    (defn mdown (n) (if (eq? n 0) (error "bottom") (+ 1 (first (map '(1) (lambda (x) (mdown (- n 1))))))))
+    (assert (eq? "bottom" (try (lambda () (mdown 100000)) (lambda (e) e))))
+    (defn walk (n) (if (eq? n 0) 0 (+ 1 (first (map '(1) (lambda (x) (walk (- n 1))))))))
     (assert (eq? 1000 (walk 1000)))
-    (define result (try (lambda () (walk 20000)) (lambda (e) "caught")))
-    (assert (eq? "caught" result))
-    (assert (eq? 500 (walk 500)))))
+    (assert (equal? '(2 3) (map '(1 2) (lambda (x) (+ x 1)))))))
+
+(deftest errors--handler-that-raises
+  (begin
+    (assert (eq? "ab" (try (lambda () (try (lambda () (error "a")) (lambda (e) (error (+ e "b"))))) (lambda (e) e))))
+    (assert (eq? 1 (try (lambda () (try (lambda () 1) (lambda (e) (error "never")))) (lambda (e) "c"))))
+    (assert (eq? "caught" (try (lambda () (try (lambda () (error "a")) 42)) (lambda (e) "caught"))))))
+
+(deftest errors--try-inside-map-inside-try
+  (begin
+    (define r (try (lambda () (map '(1 2 3) (lambda (x) (try (lambda () (if (eq? x 2) (error "inner") x)) (lambda (e) e)))))
+                   (lambda (e) "outer")))
+    (assert (equal? '(1 inner 3) r))
+    (define r2 (try (lambda () (map '(1 2 3) (lambda (x) (if (eq? x 2) (error "outer") x)))) (lambda (e) e)))
+    (assert (eq? "outer" r2))
+    (assert (eq? 6 (reduce '(1 2 3) (lambda (acc x) (try (lambda () (error x)) (lambda (e) (+ acc e)))) 0)))))
+
+(deftest tail--defrec-after-error-inside-callbacks
+  (begin
+    (defrec dloop (n acc) (if (eq? n 0) (error acc) (dloop (- n 1) (+ acc (first (map '(1) (lambda (x) x)))))))
+    (assert (eq? 1000 (try (lambda () (dloop 1000 0)) (lambda (e) e))))
+    (defrec ok (n acc) (if (eq? n 0) acc (ok (- n 1) (+ acc 1))))
+    (assert (eq? 5 (first (map '(1) (lambda (x) (try (lambda () (dloop 5 0)) (lambda (e) e)))))))
+    (assert (eq? 3000 (ok 3000 0)))
+    (assert (eq? 7 (try (lambda () (dloop 7 0)) (lambda (e) e))))))
 
 (deftest stack--error-deep-inside-recursion-unwinds
   (begin

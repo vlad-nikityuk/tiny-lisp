@@ -41,7 +41,10 @@ pub const V = union(enum) { // s: symbol or runtime string, lit: string literal 
     }
 };
 pub const Lst = struct { a: []V }; // items are stored inline, right after the struct
-pub const Fn = struct { f: *const fn (*Fn, []const V) E!V, d0: V, d1: V, i: usize = 0 }; // native fn + captured data
+pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 }; // native fn + captured data
+/// plain: computes its value directly. step: calls back into Lisp, so it runs as a frame of the machine: it is
+/// invoked with null first, then with each callback's value, and says what the machine does next.
+pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *lang.K, ?V) E!lang.Go };
 pub const Lam = struct { params: V, body: V, env: *Env };
 pub const Env = struct { p: ?*Env, vars: []Var, cap: usize }; // vars are stored inline until they outgrow cap; the root scope uses the global table
 pub const Var = struct { k: [*:0]const u8, v: V };
@@ -96,7 +99,7 @@ pub fn list(a: []const V, n: usize) V {
     return .{ .l = l };
 }
 
-pub fn nf(f: *const fn (*Fn, []const V) E!V, d0: V, d1: V) *Fn {
+pub fn nf(f: Native, d0: V, d1: V) *Fn {
     return gc.new(Fn, 0, .func, .{ .f = f, .d0 = rv(d0), .d1 = rv(d1) });
 }
 
@@ -222,8 +225,18 @@ fn slot(e: *Env, k: [*:0]const u8, create: bool) ?*V {
     return &e.vars[e.vars.len - 1].v;
 }
 
-pub fn name(v: V) [*:0]const u8 {
+fn name(v: V) [*:0]const u8 {
     return if (v == .s) v.s else str("{f}", .{v}).s;
+}
+
+/// (define name v) or (set! name v), a being the form.
+pub fn assign(define: bool, a: []const V, e: *Env, v: V) E!void {
+    if (a.len < 2) return fail(str("ToyLisp: {s} needs a name", .{if (define) "define" else "set!"}));
+    const s = name(a[1]);
+    if (define) set(e, s, v) else if (lookup(e, s)) |p| {
+        gc.rel(ptr(p.*));
+        p.* = rv(v);
+    }
 }
 
 /// The slot of k in the nearest scope that has it.
@@ -244,6 +257,12 @@ pub fn set(e: *Env, key: [*:0]const u8, v: V) void {
     s.* = rv(v);
 }
 
+/// (lambda params body) closing over e.
+pub fn lambda(a: []const V, e: *Env) V {
+    gc.ret(e);
+    return .{ .lam = gc.new(Lam, 0, .lam, .{ .params = rv(arg(a, 1)), .body = rv(arg(a, 2)), .env = e }) };
+}
+
 pub fn bind(f: *Lam, a: []const V) *Env {
     const ps = items(f.params);
     const cap = @max(ps.len, 4);
@@ -255,7 +274,7 @@ pub fn bind(f: *Lam, a: []const V) *Env {
 }
 
 // ---------------------------------------------------------------- primitives
-const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", @"try", trampoline };
+const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", trampoline };
 
 fn binop(op: Op, x: V, y: V) V {
     const a = num(x);
@@ -289,34 +308,114 @@ fn prim(s: *Fn, a: []const V) E!V {
         .len => return .{ .n = @floatFromInt(l.len) },
         .list => return list(a, a.len),
         .@"error" => return fail(x),
-        .trampoline => return .{ .f = nf(trampRun, x, .nil) },
+        .trampoline => return .{ .f = nf(.{ .step = trampRun }, x, .nil) },
         .@"eq?" => return .{ .b = for (a) |y| (if (!eq(y, x)) break false) else true },
         .cons => {
             const r = list(&.{x}, l.len + 1);
             for (l, r.l.a[1..]) |y, *z| z.* = rv(y);
             return r;
         },
-        .@"try" => return lang.call(x, &.{}) catch lang.call(arg(a, 1), &.{lang.errv}),
         else => unreachable,
     }
 }
 
-// trampoline: nested calls while active return thunks, the outermost runs them
-fn thunk(s: *Fn, _: []const V) E!V {
-    return lang.call(s.d0, s.d1.l.a);
+// ---------------------------------------------------------------- natives that call back into Lisp
+// They run as frames: a native frame's arguments sit on vs right after the native itself (vs[k.base]),
+// its state goes after them. Values held only there are not counted (see gc.zig).
+
+/// Push the frame of the native at vs[b] (its arguments follow it) and run its first step.
+pub fn start(b: usize, e: *Env) E!lang.Go {
+    gc.push(lang.K, &lang.ks, .{ .kind = .native, .i = 0, .base = b, .mark = gc.mark(), .l = &.{}, .e = e });
+    return step(&lang.ks.items[lang.ks.items.len - 1], null);
 }
 
-fn trampRun(s: *Fn, a: []const V) E!V {
-    if (s.i != 0) return .{ .f = nf(thunk, s.d0, list(a, a.len)) };
-    var m = gc.mark();
-    s.i = 1;
-    defer s.i = 0; // also when the body raises an error
-    var r = try lang.call(s.d0, a);
-    while (r == .f or r == .lam) {
-        r = try lang.call(r, &.{});
-        m = gc.resweep(m, r, null);
+/// Resume a native frame with the value of its callback (null: first step).
+pub fn step(k: *lang.K, v: ?V) E!lang.Go {
+    const n = lang.vs.items[k.base].f;
+    return n.f.step(n, k, v);
+}
+
+/// The frame's arguments, padded with nil or cut to exactly n (so state can follow them).
+pub fn frameArgs(k: *lang.K, n: usize) []V {
+    const end = k.base + 1 + n;
+    while (lang.vs.items.len < end) gc.push(V, &lang.vs, .nil);
+    lang.vs.items.len = end;
+    return lang.vs.items[k.base + 1 ..];
+}
+
+/// Pop the frame and hand v to the next one.
+pub fn finish(k: *lang.K, v: V) lang.Go {
+    lang.vs.items.len = k.base;
+    lang.ks.items.len -= 1;
+    return .{ .ret = v };
+}
+
+/// Call f with xs (which must not live on vs); its value comes back to this frame.
+pub fn callback(k: *lang.K, f: V, xs: []const V) lang.Go {
+    const b = lang.vs.items.len;
+    gc.push(V, &lang.vs, f);
+    lang.vs.appendSlice(gpa, xs) catch gc.oom();
+    k.mark = gc.mark(); // the callback's region: its value is swept against it, like an argument's
+    return .{ .apply = b };
+}
+
+/// Replace the frame by a call of f with pre, then (if keep) the frame's arguments: f runs in tail position.
+pub fn tail(k: *lang.K, f: V, pre: []const V, keep: bool) lang.Go {
+    const b = k.base;
+    if (!keep) lang.vs.items.len = b + 1;
+    lang.vs.items[b] = f;
+    lang.vs.insertSlice(gpa, b + 1, pre) catch gc.oom();
+    lang.ks.items.len -= 1;
+    return .{ .apply = b };
+}
+
+/// (try thunk handler) calls thunk; after an error, `recover` resumes the frame with k.i = 1 and the error value.
+fn tryRun(_: *Fn, k: *lang.K, v: ?V) E!lang.Go {
+    const a = frameArgs(k, 2);
+    const r = v orelse return callback(k, a[0], &.{});
+    return if (k.i == 1) tail(k, a[1], &.{r}, false) else finish(k, r);
+}
+
+/// After an error: drop the frames above the innermost try frame at or above base and resume it, if there is one.
+pub fn recover(base: usize) ?lang.Go {
+    var j = lang.ks.items.len;
+    while (j > base) {
+        j -= 1;
+        const k = &lang.ks.items[j];
+        if (k.kind != .native or lang.vs.items[k.base].f.f.step != &tryRun) continue;
+        lang.ks.items.len = j + 1;
+        lang.vs.items.len = k.base + 3; // try, thunk, handler
+        k.i = 1;
+        return .{ .ret = lang.errv };
     }
-    return r;
+    return null;
+}
+
+// trampoline: nested calls while active return thunks, the outermost runs them in a loop
+fn thunk(s: *Fn, k: *lang.K, _: ?V) E!lang.Go {
+    return tail(k, s.d0, s.d1.l.a, false);
+}
+
+/// s.i - 1 is the index of the outermost run's frame. It is checked, not trusted: a frame dropped by an error
+/// never finishes and so never clears it.
+fn trampRun(s: *Fn, k: *lang.K, v: ?V) E!lang.Go {
+    const ks = lang.ks.items;
+    const r = v orelse {
+        const j = s.i -% 1;
+        if (j < ks.len - 1 and ks[j].kind == .native and lang.vs.items[ks[j].base].f == s) {
+            const a = lang.vs.items[k.base + 1 ..];
+            return finish(k, .{ .f = nf(.{ .step = thunk }, s.d0, list(a, a.len)) });
+        }
+        s.i = ks.len;
+        k.i = gc.mark(); // the loop's region
+        lang.vs.insertSlice(gpa, k.base + 1, &.{s.d0}) catch gc.oom(); // call s.d0 with the frame's arguments
+        k.mark = gc.mark();
+        return .{ .apply = k.base + 1 };
+    };
+    k.i = gc.resweep(k.i, r, null);
+    if (r == .f or r == .lam) return callback(k, r, &.{});
+    s.i = 0;
+    return finish(k, r);
 }
 
 pub fn topLevel() *Env {
@@ -325,6 +424,7 @@ pub fn topLevel() *Env {
     set(e, "nil", .nil);
     set(e, "#t", .{ .b = true });
     set(e, "#f", .{ .b = false });
-    for (std.enums.values(Op)) |op| set(e, @tagName(op), .{ .f = nf(prim, .{ .n = @floatFromInt(@backingInt(op)) }, .nil) }); // d0: the op
+    for (std.enums.values(Op)) |op| set(e, @tagName(op), .{ .f = nf(.{ .plain = prim }, .{ .n = @floatFromInt(@backingInt(op)) }, .nil) }); // d0: the op
+    set(e, "try", .{ .f = nf(.{ .step = tryRun }, .nil, .nil) });
     return e;
 }

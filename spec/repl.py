@@ -47,6 +47,12 @@ CASES = [
     ("(+ 1 2) ;; trailing comment", "3"),
     ("(+ 1 " * 100000 + "0" + ")" * 100000, "100000"),
     ("(len (list " + "'(1) " * 5000 + "))", "5000"),
+    # natives calling back into Lisp are frames: no depth limit, errors unwind them
+    ("(begin (define walk (lambda (n) (if (eq? n 0) 0 (+ 1 (first (map '(1) (lambda (x) (walk (- n 1))))))))) (walk 100000))", "100000"),
+    ("(try (lambda () (map '(1) (lambda (x) (error 'deep)))) (lambda (e) (list 'got e)))", "(got deep)"),
+    ("(map '(1 2) (lambda (x) (undefined-fn x)))", ERROR),
+    ("(map '(1 2) (lambda (x) (* x 10)))", "(10 20)"),
+    ("((partial map '((1 2))) (lambda (x) (+ x 1)))", "(2 3)"),
 ]
 
 out = subprocess.run(sys.argv[1:], input="\n".join(src for src, _ in CASES) + "\n", capture_output=True, text=True).stdout
