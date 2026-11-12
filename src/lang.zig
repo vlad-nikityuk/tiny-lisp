@@ -2,9 +2,9 @@
 const std = @import("std"); const gc = @import("gc.zig"); const runtime = @import("runtime.zig");
 pub var out: *std.Io.Writer = undefined; pub var errv: runtime.V = .nil; var in_macro = false;
 const M = struct { go: runtime.Go, e: *runtime.Env, m0: usize, base: usize }; // ks[base..] are this run's frames
-
 fn call(f: runtime.V, x: runtime.V) runtime.E!runtime.V {
-    const b = runtime.vs.items.len; defer runtime.vs.items.len = b; gc.push(runtime.V, &runtime.vs, f); gc.push(runtime.V, &runtime.vs, x); return exec(.{ .apply = b }, undefined);
+    const b = runtime.vs.items.len; defer runtime.vs.items.len = b;
+    gc.push(runtime.V, &runtime.vs, f); gc.push(runtime.V, &runtime.vs, x); return exec(.{ .apply = b }, undefined);
 }
 pub fn eval(node: runtime.V, env: *runtime.Env) runtime.E!runtime.V { return exec(.{ .eval = node }, env); }
 fn exec(go: runtime.Go, env: *runtime.Env) runtime.E!runtime.V {
@@ -38,7 +38,8 @@ fn run(m: *M) runtime.E!runtime.V {
             const k = &runtime.ks.items[runtime.ks.items.len - 1]; const v = gc.sweepKeep(k.mark, r); const a = k.l; m.e = k.e;
             switch (k.kind) {
                 .@"if" => { runtime.ks.items.len -= 1; continue :sw .{ .eval = runtime.arg(a, if (runtime.truthy(v)) 2 else 3) }; },
-                .begin => { k.i += 1; const x = a[k.i]; if (k.i == a.len - 1) runtime.ks.items.len -= 1 else k.mark = gc.mark(); continue :sw .{ .eval = x }; },
+                .begin => { k.i += 1; const x = a[k.i];
+                    if (k.i == a.len - 1) runtime.ks.items.len -= 1 else k.mark = gc.mark(); continue :sw .{ .eval = x }; },
                 .define, .@"set!" => { try runtime.assign(k.kind == .define, a, m.e, v); runtime.ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .native => continue :sw try runtime.step(k, v),
                 else => {
@@ -64,8 +65,6 @@ fn run(m: *M) runtime.E!runtime.V {
         },
     }
 }
-
-// Iterative parser: `open` holds where each unfinished list starts in `done` (null: a pending quote).
 var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r"; const unexpected = "ToyLisp: Syntax error, unexpected closing parenthesis";
 fn peek() u8 { return if (pos < src.len) src[pos] else 0; }
 fn skip() void {
@@ -80,7 +79,8 @@ fn atom() runtime.V { // symbols and literals are permanent; a 0 byte ends the s
 }
 pub fn parse(text: []const u8) runtime.E!runtime.V {
     src = text; pos = 0;
-    var done: std.ArrayList(runtime.V) = .empty; defer done.deinit(std.heap.c_allocator); var open: std.ArrayList(?usize) = .empty; defer open.deinit(std.heap.c_allocator);
+    var done: std.ArrayList(runtime.V) = .empty; defer done.deinit(std.heap.c_allocator);
+    var open: std.ArrayList(?usize) = .empty; defer open.deinit(std.heap.c_allocator);
     while (open.items.len > 0 or done.items.len == 0) {
         skip();
         var d: runtime.V = switch (peek()) {
