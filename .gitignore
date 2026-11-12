@@ -5,3 +5,4 @@ tiny-lisp-safe
 .idea/
 *~
 target/
+.claude/
