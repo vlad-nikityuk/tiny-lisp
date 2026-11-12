@@ -1,3 +1,6 @@
-*~
-node_modules/*
+tiny-lisp
+tiny-lisp-asan
+*.dSYM/
 .idea/
+*~
+target/

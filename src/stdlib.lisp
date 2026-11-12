@@ -1,3 +1,5 @@
+;; Lisp part of the stdlib. Loaded after the native part (src/stdlib_native.c):
+;; print pi list? at map reduce red green partial
 (define first car)
 (define rest cdr)
 
@@ -26,26 +28,16 @@
       (map ast (lambda (x) (patch-rec-trampoline x name))))
     ast))
 ;; ------------- UTILS ----------------------------------------
-(define print (js/eval "console.log"))
-(define pi (js/eval "Math.PI"))
 (defn trace (x) (begin (print x) x))
 (defn pass () 0)
 ;; ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
-(define list? (js/eval "Array.isArray"))
-
-;; (at lst idx)
-(define at
-  (js/eval "(function(lst,idx){ return lst[idx];})"))
 
 (defn iterate (lst f)
   (if (not (empty? lst))
     (begin
       (f (first lst))
       (iterate (rest lst) f))))
-
-(define map
-  (js/eval "(function(lst,fn){ return lst.map(fn);})"))
 
 (defn l/reduce (lst f memo)
   (if (empty? lst) memo
@@ -54,9 +46,6 @@
 (defn r/reduce (lst f memo)
   (if (empty? lst) memo
     (f (first lst) (r/reduce (rest lst) f memo))))
-
-(define reduce
-  (js/eval "(function(lst,fn,memo){ return lst.reduce(fn, memo);})"))
 
 ;; (and doesn't work here for some reason, using (&&
 ;; (iterate (zip '(1 2 3) '(4 5 6)) print)
@@ -93,11 +82,6 @@
 
 (defn c/tail (lst)
   (lst (lambda (h t) t)))
-
-;;-------------- COLORS -----------------------------------
-
-(define red (js/eval "colors.red"))
-(define green (js/eval "colors.green"))
 
 ;;-------------- UNIT TESTS -----------------------------------
 (defn assert (expr)
@@ -186,6 +170,3 @@
 	      (define test-fn (first (rest test)))
 	      (test-fn)
 	      (print (green "PASS") name)))))
-
-(defn partial (fn args)
-  (js/bind fn (cons nil args)))

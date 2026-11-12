@@ -12,8 +12,3 @@ insert_final_newline = true
 [*.lisp]
 indent_style = space
 indent_size = 2
-
-
-[*.coffee]
-indent_style = space
-indent_size = 2
