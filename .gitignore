@@ -4,3 +4,6 @@ tiny-lisp-asan
 .idea/
 *~
 target/
+tiny-lisp-zig
+tiny-lisp-zig.o
+.zig-cache/
