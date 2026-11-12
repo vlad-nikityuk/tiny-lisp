@@ -1,4 +1,4 @@
-;; Lisp part of the stdlib. Loaded after the native part (src/stdlib_native.c):
+;; Lisp part of the stdlib. Loaded after the native part (src/stdlib_native.zig):
 ;; print pi list? at map reduce red green partial
 (define first car)
 (define rest cdr)

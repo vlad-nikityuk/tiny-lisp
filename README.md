@@ -1,136 +1,156 @@
-# Tiny Lisp Interpreter
+# Tiny Lisp
 
-A minimalistic Lisp interpreter in C, featuring macro support, tail-call optimization, and a small standard library.
+a tiny Lisp that doesn't blow the stack
 
-Created *just for fun* and educational purposes. The interpreter (`src/lisp.c`) is at most 100 lines, based on [norvig.com/lispy.html](http://norvig.com/lispy.html).
+**Zig speed · macros on every node · tail calls · 2 MB of memory**
 
-## Layout
+Written just for fun, inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
 
-- `src/lisp.c`: parser, evaluator, primitives, REPL
-- `src/gc.c`: memory management (reference counts + per-call regions)
-- `src/stdlib_native.c` + `src/stdlib.lisp`: standard library (native part, Lisp part)
-- `spec/specs.lisp`: Lisp test suite; `spec/repl.py`: REPL-driven tests
+```lisp
+(defn fact (n) (if (<= n 1) 1 (* n (fact (- n 1)))))
+(print "10! =" (fact 10))                      ; 10! = 3628800
+(map '(1 2 3) (lambda (x) (* x x)))            ; (1 4 9)
+```
 
-## Usage
+## 1. Tiny Lisp is SMALL.
+
+The evaluator is one file of under 100 lines (`src/lang.zig`), the whole interpreter about 740 lines of Zig. Values, parser, scopes, macros, tail calls, closures, errors, a test framework and a standard library, with no dependencies beyond libc.
+
+## 2. Tiny Lisp is STACK-SAFE.
+
+Pending work lives in heap frames, not on the native stack, so recursion is limited by memory and nothing else, even when it goes through `map`, `reduce`, `partial` or `try`. A non-tail recursion a million calls deep just works (it takes about 260 MB). Tail calls use no memory at all.
+
+```lisp
+(defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
+(deep 1000000)                                 ; 1000000
+```
+
+## 3. Tiny Lisp is FAST, and light.
+
+Memory is managed with reference counts plus per-call allocation regions: no tracing GC, and a program that churns through garbage stays flat at 2–3 MB.
+
+| | TypeScript on Node.js | Tiny Lisp (Zig) |
+|---|---|---|
+| fib 22 | 2.29 s | **0.44 s** (5×) |
+| 100k-step `defrec` loop | 5.01 s | **1.02 s** (5×) |
+| allocation-heavy churn | 6.59 s | **1.34 s** (5×) |
+| peak memory | 51–146 MB | **2–3 MB** |
+
+Apple Silicon, median of 5 runs, measured on the original TypeScript version (see `git log`).
+
+## 4. Tiny Lisp has MACROS.
+
+A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it. `defn`, `defrec` and `deftest` are macros written in Lisp (`src/stdlib.lisp`).
+
+```lisp
+(define macro/unless
+  (lambda (ast)
+    (if (eq? (first ast) "unless")
+      (list "if" (list "not" (first (rest ast))) (first (rest (rest ast))))
+      ast)))
+
+(unless #f (print "runs"))
+```
+
+## 5. Get started.
+
+You need [Zig 0.17](https://ziglang.org/download/).
 
 ```bash
 make                         # build ./tiny-lisp
 ./tiny-lisp                  # REPL
 ./tiny-lisp -f file.lisp     # run a file
-./tiny-lisp --debug          # set *DEBUG* to #t
-make test                    # run all tests
+make test                    # run the tests
 ```
 
-## Language Features
+Run it from the repository root: it loads `src/stdlib.lisp` on start.
 
-### Basic Syntax
+## 6. Guide
 
-**Arithmetic & Logic:**
-```lisp
-#> (+ 1 2 3)
-6
-#> (- 10 3)
-7
-#> (eq? 1 1)
-#t
-#> (if #t "yes" "no")
-"yes"
-```
+### Values
 
-**Lists & Data Structures:**
-```lisp
-#> (list 1 2 3)
-(1 2 3)
-#> (cons 0 '(1 2 3))
-(0 1 2 3)
-#> (car '(a b c))
-a
-#> (cdr '(a b c))
-(b c)
-```
+Numbers (`42`, `1.5`), booleans (`#t`, `#f`), `nil`, lists (`'(1 2 3)`), functions, and strings. Symbols and strings are the same type, so `(eq? "abc" 'abc)` is `#t`. A bare symbol is a variable; a quoted one or a string literal evaluates to itself. Comments start with `;`.
 
-**Variables & Functions:**
-```lisp
-#> (define x 42)
-42
-#> (define square (lambda (n) (* n n)))
-#> (square 5)
-25
-```
+### Truthiness
 
-### Advanced Features
+`#f`, `nil`, `0` and `""` are false. Everything else is true, **including the empty list** (but `(eq? '() nil)` is `#t`). `&&` and `||` return one of their operands: `(|| 0 "x")` is `"x"`.
 
-#### Macros
-Define compile-time transformations with powerful macro system:
+### Forms
 
-```lisp
-;; Function definition shorthand
-(defn factorial (n) (if (<= n 1) 1 (* n (factorial (- n 1)))))
+| | |
+|---|---|
+| `(quote x)` or `'x` | the unevaluated `x` |
+| `(if c a b)` | `a` if `c` is true, else `b` |
+| `(define name v)` | create a variable in the current scope |
+| `(set! name v)` | update the nearest existing variable |
+| `(lambda (args) body)` | a closure; missing arguments are `nil`, extra ones are ignored |
+| `(begin e1 e2 ...)` | evaluate in order, return the last |
+| `(defn name (args) body)` | shorthand for `define` + `lambda` |
+| `(defrec name (args) body)` | like `defn`, with self tail calls run in a loop |
 
-;; Custom control structures
-(define macro/unless
-  (lambda (ast)
-    (if (eq? (first ast) "unless")
-      (list "if" (list "not" (second ast)) (third ast))
-      ast)))
+Operators: `+ - * /` (variadic; `+` concatenates when an argument is a string), `< > <= >=`, `eq?`, `&&`, `||`, `not`.
 
-(unless #f (print "This will execute"))
-```
+### Lists
 
-#### Tail-Call Optimization with Trampoline
-Efficient recursive functions that don't blow the stack:
+Lists are immutable arrays: `cons` and `cdr` copy. The list comes first in `map` and `reduce`.
+
+| | | |
+|---|---|---|
+| `(list 1 2)` | `(1 2)` | `(cons 0 '(1 2))` → `(0 1 2)` |
+| `(car '(a b))` / `first` | `a` | `nil` for an empty list |
+| `(cdr '(1))` / `rest` | `()` | |
+| `(len '(1 2 3))` | `3` | `(at '(a b c) 1)` → `b` |
+| `(map '(1 2 3) (lambda (x) (* x x)))` | `(1 4 9)` | |
+| `(reduce '(1 2 3 4) + 0)` | `10` | |
+| `(zip '(1 2) '(a b))` | `((1 a) (2 b))` | `(concat '(1 2) '(3 4))` → `(1 2 3 4)` |
+| `list?`, `empty?`, `equal?` | | `equal?` compares element-wise |
+
+Also `partial` (`((partial + '(1 2)) 3)` is `6`) and Church-encoded lists `c/cons`, `c/head`, `c/tail`.
+
+### Errors
+
+`(error v)` raises any value; `(try body-fn handler-fn)` runs the body and, if it raised, calls the handler with the value:
 
 ```lisp
-;; Define tail-recursive functions
-(defrec factorial-tr (n acc)
-  (if (<= n 1)
-    acc
-    (factorial-tr (- n 1) (* n acc))))
-
-;; Works for moderate recursion depth
-(factorial-tr 100 1)  ; => 9.332621544394418e+157
+(try (lambda () (error 'boom)) (lambda (e) (list 'caught e)))   ; (caught boom)
 ```
 
-#### Church Encoding & Functional Data Structures
+Interpreter errors (undefined functions, syntax errors) are raised as strings and caught the same way.
+
+### Tests
+
 ```lisp
-;; Church-encoded linked lists
-(define lst (c/cons 1 (c/cons 2 nil)))
-(c/head lst)  ; => 1
-(c/tail lst)  ; => (c/cons 2 nil)
+(deftest arithmetic (assert (eq? (+ 2 3) 5)))
+(run-tests)                                    ; PASS arithmetic
 ```
 
-#### Testing Framework
-```lisp
-;; Define unit tests
-(deftest basic-math
-  (assert (eq? (+ 2 3) 5)))
+A failing `assert` raises `assertion-failed` and stops the run with a non-zero exit code.
 
-(deftest list-operations
-  (assert (equal? (cons 1 '(2 3)) '(1 2 3))))
+### Recursion
 
-;; Run all tests
-(run-tests)
-```
+Tail calls (the branches of `if`, the last expression of `begin`, a function body) use no memory, so loops written as tail recursion run forever. There is no recursion limit other than memory: a `map` callback that recurses, or a `try` nested a hundred thousand deep, works like any other call.
 
-#### Higher-Order Functions
-```lisp
-;; Map, reduce, filter operations
-(map '(1 2 3 4) (lambda (x) (* x x)))  ; => (1 4 9 16)
-(reduce '(1 2 3 4) + 0)                ; => 10
-(partial + '(1 2))                     ; => partially applied function
-```
+### Standard library
 
-#### Pattern Matching & Destructuring
-```lisp
-;; List comprehension-style operations
-(zip '(1 2 3) '(a b c))  ; => ((1 a) (2 b) (3 c))
-(concat '(1 2) '(3 4))   ; => (1 2 3 4)
-```
+`src/stdlib_native.zig` provides `print pi list? at map reduce red green partial`. Everything else (`first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
-## Architecture
+## 7. Under the hood
 
-- **Parser**: iterative S-expression parser
-- **Evaluator**: explicit-stack machine. Pending work (`if`, `begin`, `define`, argument evaluation) lives in heap frames and tail calls replace the current state, so recursion depth is limited by memory, not the C stack
-- **Macros**: every `macro/*` function in the root scope rewrites each AST node before evaluation
-- **Memory**: heap reference counts plus per-call allocation regions, no tracing GC
-- **Stdlib**: see `src/stdlib.lisp` for `defn`, `defrec`, `deftest`, list utilities and Church lists
+| File | |
+|---|---|
+| `src/lang.zig` | the evaluator: an explicit-stack machine |
+| `src/runtime.zig` | values, printer, parser, scopes, primitives, trampoline |
+| `src/gc.zig` | memory management |
+| `src/repl.zig` | command line and REPL |
+| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library |
+| `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
+
+The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Running every `macro/*` on every node dominates the run time.
+
+## 8. History
+
+1. **CoffeeScript**: the first version.
+2. **TypeScript**: a straight port. For a long time it had no proper tail calls, and macro expansion was recursive, so deep programs overflowed the JavaScript stack.
+3. **Coding agents**: fixing that became much easier with AI coding agents: a stack-safe evaluator, iterative macro expansion, tests shared across runtimes.
+4. **C**: a rewrite with an explicit-stack evaluator and its own memory management, about 5× faster than the TypeScript version on Node.js.
+5. **Zig**: a 1:1 port of the C version for readability, at the same speed. It replaced C, whose 100-line limit made the code hard to read.
