@@ -25,7 +25,7 @@ fn at(_: *Fn, a: []const V) E!V {
 
 fn map(_: *Fn, a: []const V) E!V {
     const l = lisp.items(arg(a, 0));
-    const r = lisp.list(null, l.len);
+    const r = lisp.list(&.{}, l.len);
     for (l, r.l.a) |*x, *y| y.* = lisp.rv(try lisp.call(arg(a, 1), x[0..1])); // results are stored in the heap: count them
     return r;
 }
@@ -46,25 +46,27 @@ fn green(_: *Fn, a: []const V) E!V {
 
 fn partialRun(s: *Fn, a: []const V) E!V {
     const pre = lisp.items(s.d1);
-    const args: [*]V = @ptrCast(@alignCast(gc.raw((pre.len + a.len + 1) * @sizeOf(V)))); // heap: the prefix list can be large
-    defer gc.rawFree(args);
-    @memcpy(args[0..pre.len], pre);
-    @memcpy(args[pre.len..][0..a.len], a);
-    return lisp.call(s.d0, args[0 .. pre.len + a.len]);
+    const args = std.mem.concat(std.heap.c_allocator, V, &.{ pre, a }) catch gc.oom(); // heap: the prefix list can be large
+    defer std.heap.c_allocator.free(args);
+    return lisp.call(s.d0, args);
 }
 
 fn partial(_: *Fn, a: []const V) E!V {
     return .{ .f = lisp.nf(partialRun, arg(a, 0), arg(a, 1)) };
 }
 
+fn def(e: *lisp.Env, k: [*:0]const u8, f: *const fn (*Fn, []const V) E!V) void {
+    lisp.set(e, k, .{ .f = lisp.nf(f, .nil, .nil) });
+}
+
 pub fn install(e: *lisp.Env) void {
     lisp.set(e, "pi", .{ .n = std.math.pi });
-    lisp.def(e, "print", print);
-    lisp.def(e, "list?", isList);
-    lisp.def(e, "at", at);
-    lisp.def(e, "map", map);
-    lisp.def(e, "reduce", reduce);
-    lisp.def(e, "red", red);
-    lisp.def(e, "green", green);
-    lisp.def(e, "partial", partial);
+    def(e, "print", print);
+    def(e, "list?", isList);
+    def(e, "at", at);
+    def(e, "map", map);
+    def(e, "reduce", reduce);
+    def(e, "red", red);
+    def(e, "green", green);
+    def(e, "partial", partial);
 }

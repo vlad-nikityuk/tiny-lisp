@@ -15,7 +15,7 @@ fn load(io: std.Io, e: *lang.Env, path: []const u8) lang.E!void {
     const program = std.fmt.allocPrint(gpa, "(begin {s}\n)", .{text}) catch gc.oom();
     defer gpa.free(program);
     _ = try lang.eval(try lang.parse(program), e);
-    _ = gc.sweepKeep(0, .nil, null);
+    _ = gc.sweepKeep(0, .nil);
 }
 
 fn die() noreturn {
@@ -45,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
     if (file) |f| return load(init.io, e, f) catch die();
     const ibuf = try gpa.alloc(u8, 1 << 24);
     var in: std.Io.File.Reader = .init(.stdin(), init.io, ibuf);
-    while (true) : (_ = gc.sweepKeep(0, .nil, null)) {
+    while (true) : (_ = gc.sweepKeep(0, .nil)) {
         try out.writeAll("#> ");
         try out.flush();
         const line = try in.interface.takeDelimiter('\n') orelse return;
@@ -55,7 +55,6 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
             continue;
         } else |_| {} else |_| {}
-        lang.reset();
         try out.print("\x1b[31m{f}\x1b[39m\n", .{lang.errv});
     }
 }

@@ -58,8 +58,11 @@ pub fn alloc(n: usize, kind: Kind) *anyopaque {
     return body(h);
 }
 
-pub fn new(comptime T: type, extra: usize, kind: Kind) *T {
-    return @ptrCast(@alignCast(alloc(@sizeOf(T) + extra, kind)));
+/// A managed T initialised to init, with `extra` bytes after it.
+pub fn new(comptime T: type, extra: usize, kind: Kind, init: T) *T {
+    const p: *T = @ptrCast(@alignCast(alloc(@sizeOf(T) + extra, kind)));
+    p.* = init;
+    return p;
 }
 
 /// Never freed: parser symbols/literals, root keys, the root scope.
@@ -67,15 +70,6 @@ pub fn perm(n: usize) *anyopaque {
     const h = calloc(n);
     h.* = .{ .kind = .perm, .rc = 1 << 30 };
     return body(h);
-}
-
-/// Buffers owned by one object (grown scope arrays).
-pub fn raw(n: usize) *anyopaque {
-    return std.c.malloc(n) orelse oom();
-}
-
-pub fn rawFree(p: *anyopaque) void {
-    std.c.free(p);
 }
 
 /// Count a heap reference.
@@ -172,8 +166,8 @@ fn sweep(m: usize, keep: V, keep2: ?*anyopaque, loop: bool) usize {
 }
 
 /// Sweep the region starting at m, keeping (and returning) the value being handed to the caller.
-pub fn sweepKeep(m: usize, keep: V, keep2: ?*anyopaque) V {
-    _ = sweep(m, keep, keep2, false);
+pub fn sweepKeep(m: usize, keep: V) V {
+    _ = sweep(m, keep, null, false);
     return keep;
 }
 
