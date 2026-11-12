@@ -1,5 +1,4 @@
-;; Lisp part of the stdlib. Loaded after the native part (src/stdlib_native.zig):
-;; print list? at map reduce partial
+;; Lisp part of the stdlib, loaded after the native part (src/stdlib_native.zig).
 (define pi 3.141592653589793)
 (define first car)
 (define rest cdr)
@@ -34,8 +33,7 @@
 (defn color (code x) (+ ESC "[" code "m" x ESC "[39m"))
 (defn red (x) (color 31 x))
 (defn green (x) (color 32 x))
-;; Random numbers in [0, 1): a Park-Miller generator, so the same seed gives the same numbers everywhere.
-;; (set! rng-state n) reseeds it.
+;; Park-Miller random numbers in [0, 1); (set! rng-state n) reseeds.
 (define rng-state 20240607)
 (defn rand ()
   (begin

@@ -147,10 +147,10 @@ Run from the repository root.
 
 | File | |
 |---|---|
-| `src/lang.zig` | the compiler (AST to typed nodes, expanding macros), the evaluator (an explicit-stack machine over compiled nodes) and the parser |
-| `src/runtime.zig` | values (8-byte, NaN-boxed) and the printer, scopes, primitives, trampoline |
+| `src/lang.zig` | parser, compiler, evaluator |
+| `src/runtime.zig` | values, scopes, primitives, trampoline |
 | `src/gc.zig` | memory management (mark-sweep) |
-| `src/repl.zig` | command line and REPL |
+| `src/repl.zig` | REPL |
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
@@ -172,4 +172,4 @@ The first Zig version against the TypeScript one:
 | allocation-heavy churn | 6.59 s | 1.34 s (5×) |
 | peak memory | 51–146 MB | 2–3 MB |
 
-Apple Silicon, median of 5 runs. Since then the evaluator got a compiler, the memory manager a mark-sweep collector and values shrank to 8 bytes (see Performance).
+Apple Silicon, median of 5 runs.

@@ -15,7 +15,7 @@ pub const Kind = enum(u3) { perm, str, list, func, lam, env };
 /// mark in bit 0 and the kind in bits 1-3.
 const H = extern struct { link: usize };
 
-var all: ?*H = null; // every collectable object
+var all: ?*H = null;
 var gray: std.ArrayList(*H) = .empty; // marked, children not yet visited
 var allocated: usize = 0; // bytes since the last collection
 var limit: usize = 2 << 20; // collect when allocated passes this; follows the live size
@@ -79,7 +79,7 @@ pub fn alloc(n: usize, kind: Kind) *anyopaque {
     return body(h);
 }
 
-/// A managed T initialised to init, with `extra` bytes after it.
+/// `extra` bytes follow the T.
 pub fn new(comptime T: type, extra: usize, kind: Kind, init: T) *T {
     const p: *T = @ptrCast(@alignCast(alloc(@sizeOf(T) + extra, kind)));
     p.* = init;
@@ -134,7 +134,6 @@ fn drain() void {
     }
 }
 
-/// What an object occupies, header included.
 fn bytesOf(h: *H) usize {
     const p = body(h);
     const n: usize = switch (kindOf(h)) {
@@ -159,11 +158,10 @@ fn markRoots() void {
     markV(lang.errv);
 }
 
-/// Free everything unreachable from the roots.
 pub fn collect() void {
     markRoots();
     drain();
-    var live: usize = 0; // bytes
+    var live: usize = 0;
     var prev: ?*H = null;
     var cur = all;
     while (cur) |h| {

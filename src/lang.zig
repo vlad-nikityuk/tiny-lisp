@@ -6,7 +6,7 @@ const rt = @import("runtime.zig");
 const V = rt.V; const Node = rt.Node;
 
 pub var out: *std.Io.Writer = undefined;
-pub var errv: V = .nil; // the value of the Lisp error being raised
+pub var errv: V = .nil;
 
 // ---------------------------------------------------------------- compiler
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
@@ -26,8 +26,8 @@ fn intern(v: V) *rt.Sym { // equal names are the same symbol, so scopes compare 
     return entry.value_ptr.*;
 }
 
-pub fn stub(v: V) *Node { const n = &make(Node, 1)[0]; n.* = .{ .ast = rt.pin(v) }; return n; } // an uncompiled node for the AST v
-fn kids(a: []const V, n: usize) []const *Node { // exactly n nodes for the items of a (nil for missing ones)
+pub fn stub(v: V) *Node { const n = &make(Node, 1)[0]; n.* = .{ .ast = rt.pin(v) }; return n; }
+fn kids(a: []const V, n: usize) []const *Node { // n nodes for the items of a, nil for missing ones
     const c = make(*Node, n);
     for (c, 0..) |*x, i| x.* = stub(rt.arg(a, i));
     return c;
@@ -46,14 +46,14 @@ fn expand(x: V) rt.E!V { // every macro/* over x in turn; one that returns a fal
     }
     return y;
 }
-fn form(a: []const V) rt.E!rt.Code { // the code of a list: a special form, or a call
+fn form(a: []const V) rt.E!rt.Code {
     if (a.len == 0) return rt.fail(rt.str("TinyLisp: cannot evaluate an empty list", .{}));
     const head = if (a[0].is(.s)) std.meta.stringToEnum(rt.Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
     switch (head) {
         .quote => return .{ .val = rt.arg(a, 1) },
         .lambda => {
             const params = make(rt.Key, rt.items(rt.arg(a, 1)).len);
-            for (params, rt.items(rt.arg(a, 1))) |*key, p| { const sym = intern(p); sym.local = true; key.* = sym.key; } // local: a scope binds it
+            for (params, rt.items(rt.arg(a, 1))) |*key, p| { const sym = intern(p); sym.local = true; key.* = sym.key; }
             const proto = &make(rt.Proto, 1)[0]; proto.* = .{ .params = params, .body = stub(rt.arg(a, 2)) };
             return .{ .lambda = proto };
         },
@@ -67,7 +67,7 @@ fn form(a: []const V) rt.E!rt.Code { // the code of a list: a special form, or a
         .apply => return .{ .call = kids(a, a.len) },
     }
 }
-fn force(n: *Node) rt.E!void { // compile n: expand macros over its AST, then turn the result into code (unless nothing changed)
+fn force(n: *Node) rt.E!void { // expand macros over n's AST, then build its code unless they changed nothing
     const x = if (in_macro or rt.ptr(n.ast) == null) n.ast else try expand(n.ast);
     if (n.code == .raw or x != n.src) {
         n.code = switch (x.tag()) {
@@ -80,7 +80,7 @@ fn force(n: *Node) rt.E!void { // compile n: expand macros over its AST, then tu
     }
     n.stamp = current();
 }
-fn atom(n: *Node, e: *rt.Env) rt.E!?V { // the value of n if it is a constant or a variable (compiling it first), null otherwise
+fn atom(n: *Node, e: *rt.Env) rt.E!?V { // the value if n is a constant or a variable, else null; compiles n on demand
     if (n.stamp != current()) try force(n);
     return switch (n.code) { .val => |v| v, .ref => |*r| rt.fetch(e, r), else => null };
 }
@@ -108,7 +108,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                 .lambda => |p| continue :sw .{ .ret = rt.lambda(p, m.e) },
                 .@"if" => |c| {
                     if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
-                    _ = rt.frame(.@"if", c, m.e); // wait for the condition
+                    _ = rt.frame(.@"if", c, m.e);
                     continue :sw .{ .eval = c[0] };
                 },
                 .begin => |c| { if (c.len > 1) _ = rt.frame(.begin, c, m.e); continue :sw .{ .eval = c[0] }; },
@@ -124,13 +124,13 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
             m.e = k.e;
             switch (k.kind) {
                 .@"if" => { ks.items.len -= 1; continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] }; },
-                .begin => { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; }, // the last is a tail position
+                .begin => { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; }, // the last one is a tail position
                 .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .native => continue :sw try rt.step(k, v),
                 .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },
             }
         },
-        .args => |a| { // push the function and arguments of a call on vs from a.i on; constants and variables need no frame
+        .args => |a| { // push the function and arguments from a.i on; constants and variables need no frame
             var i = a.i;
             while (i < a.c.len) : (i += 1) {
                 const v = try atom(a.c[i], m.e) orelse { const k = rt.frame(.call, a.c, m.e); k.i = i; k.base = a.b; continue :sw .{ .eval = a.c[i] }; };
@@ -163,10 +163,10 @@ var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r";
 const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";
 
 fn peek() u8 { return if (pos < src.len) src[pos] else 0; } // a 0 byte ends the source
-fn skip() void { // spaces and ;-comments
+fn skip() void {
     while (true) { pos = std.mem.indexOfNonePos(u8, src, pos, space) orelse src.len; if (peek() != ';') return; pos = std.mem.indexOfAnyPos(u8, src, pos, "\n\x00") orelse src.len; }
 }
-fn lex() V { // a number, a symbol or a string literal
+fn lex() V {
     const lit = peek() == '"'; const start = pos + @intFromBool(lit);
     pos = std.mem.indexOfAnyPos(u8, src, start, if (lit) "\"\x00" else space ++ "\x00()';\"") orelse src.len;
     const t = src[start..pos]; if (lit and peek() == '"') pos += 1;

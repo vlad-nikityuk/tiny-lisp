@@ -127,7 +127,7 @@ pub const Var = struct { k: Key, v: V };
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
-pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // (define k v) or (set! k v)
+pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0 }; // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, call: []const *Node };
 pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw }; // src: the (expanded) form that code was built from
@@ -156,7 +156,6 @@ pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
     gc.push(V, &vs, v);
 }
 
-/// Push a frame of kind with children c (its pending work).
 pub fn frame(kind: Kind, c: []const *Node, e: *Env) *K {
     gc.push(K, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
     return &ks.items[ks.items.len - 1];
@@ -290,7 +289,6 @@ pub fn fetch(env: *Env, r: *Ref) V {
     return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
 }
 
-/// (define name v) or (set! name v).
 pub fn assign(d: *Def, e: *Env, v: V) E!void {
     const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
@@ -407,7 +405,7 @@ fn prim(s: *Fn, a: []const V) E!V {
 
 // ---------------------------------------------------------------- natives that call back into Lisp
 // They run as frames: a native frame's arguments sit on vs right after the native itself (vs[k.base]),
-// its state goes after them. Values held only there are not counted (see gc.zig).
+// its state goes after them.
 
 /// Push the frame of the native at vs[b] (its arguments follow it) and run its first step.
 pub fn start(b: usize, e: *Env) E!Go {
