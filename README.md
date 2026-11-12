@@ -2,8 +2,6 @@
 
 a tiny Lisp that doesn't blow the stack
 
-**Zig speed · macros on every node · tail calls · 2 MB of memory**
-
 Written just for fun, inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
 
 ```lisp
