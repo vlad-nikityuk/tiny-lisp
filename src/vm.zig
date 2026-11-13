@@ -380,7 +380,7 @@ pub fn ready(p: *rt.Proto) ?*rt.Bytecode {
 }
 
 fn arith2(comptime op: Op, x: V, y: V) ?V {
-    if (op == .eq) return V.boolean(rt.eq(x, y));
+    if (op == .eq) return V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y));
     if (op == .at) {
         if (!x.is(.l) or !y.isNum()) return null;
         const l = x.asList().items();
@@ -409,7 +409,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
     const y = st[n - 1];
     if (op == .eq) {
         sp.* = n - 1;
-        st[n - 2] = V.boolean(rt.eq(x, y));
+        st[n - 2] = V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y));
         return true;
     }
     if (op == .at) {
