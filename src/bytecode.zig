@@ -12,7 +12,79 @@ const Node = rt.Node;
 const E = rt.E;
 const Op = Opcode;
 
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, global, setglobal, storelocal, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, add_sk, add_sl, sub_sk, sub_sl, mul_sk, mul_sl, lt_sk, lt_sl, gt_sk, gt_sl, le_sk, le_sl, ge_sk, ge_sl, eq_sk, eq_sl, at_sk, at_sl, vset_ll, prim1, call, tailcall, ret };
+// zig fmt: off
+/// The instructions. a, b: the operands in the instruction (Ins); "push", "pop" and "top" are about the stack of values.
+pub const Opcode = enum(u8) {
+    // values
+    konst,      // push consts[a]
+    local,      // push slot a of the scope
+    outer,      // push the variable refs[a], which is in an enclosing scope or global (b: where it was found, see vm.outerSlot)
+    global,     // push the global refs[a] (a free name of an inlined function)
+    lambda,     // push a closure of protos[a] over the scope
+    // assignments (define and set! have a value, so it stays on the stack)
+    setlocal,   // slot a = top
+    setouter,   // define or set! defs[a], a name outside this function's slots (b as in outer)
+    setglobal,  // set! the global defs[a]
+    storelocal, // slot a = pop (an argument of an inlined function)
+    pop,
+    // control
+    jmp,        // go to instruction b
+    jmpf,       // pop; go to b if it was false
+    andj, orj,  // && and ||: if top decides the result (false for &&, true for ||) go to b, else pop
+    call,       // call the function that is under its a arguments; the value replaces them (consts[b]: its source, for an error)
+    tailcall,   // the same in tail position: the call replaces this function's
+    ret,        // return top
+    // primitives, compiled while their names were bound to the natives. prims[a] is the call, made the ordinary way (vm.slow)
+    // when the operands are not plain numbers (or a list and an index).
+    not,        // top = (not top)
+    prim1,      // top = (prims[a].op top): abs floor sqrt exp log cos
+    add, sub, mul, div, mod, lt, gt, le, ge, eq, at, // pop y; top = (op top y)
+    // The same, fused with the operands: the first is l (the local in slot b >> 16) or s (top of the stack), the second is
+    // l (a local) or k (a constant), by its index in b's low 16 bits. The l forms push the value, the s forms replace top.
+    add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll,
+    add_sk, add_sl, sub_sk, sub_sl, mul_sk, mul_sl, lt_sk, lt_sl, gt_sk, gt_sl, le_sk, le_sl, ge_sk, ge_sl, eq_sk, eq_sl, at_sk, at_sl,
+    vset,       // (vset! list index value) on the three top values; consts[a]: the native, which does all but an in-range store
+    vset_ll,    // the same with the list in slot b >> 16 and the index in slot b & 0xffff: top stays, as the value
+    // loops: (each list (lambda (x) ...)) and (map ...); protos[a] is the lambda, bodies[a] its bytecode.
+    // b != 0: the list is (range n) and only n is on the stack, the loop counts.
+    each, map,         // the list is on top: push the rest of the loop's state
+    eachnext, mapnext, // run the body with the next item (it comes back here with `ret`), or end with the loop's value
+};
+// zig fmt: on
+
+/// The instructions for a two-operand primitive, and those of them that have fused forms.
+pub const binary = [_]Opcode{ .add, .sub, .mul, .div, .mod, .lt, .gt, .le, .ge, .eq, .at };
+pub const fusable = [_]Opcode{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at };
+
+/// The primitive that a two-operand instruction, plain or fused, computes.
+pub fn primOf(comptime op: Opcode) rt.Op {
+    return switch (op) {
+        .add, .add_lk, .add_ll, .add_sk, .add_sl => .@"+",
+        .sub, .sub_lk, .sub_ll, .sub_sk, .sub_sl => .@"-",
+        .mul, .mul_lk, .mul_ll, .mul_sk, .mul_sl => .@"*",
+        .div => .@"/",
+        .mod => .mod,
+        .lt, .lt_lk, .lt_ll, .lt_sk, .lt_sl => .@"<",
+        .gt, .gt_lk, .gt_ll, .gt_sk, .gt_sl => .@">",
+        .le, .le_lk, .le_ll, .le_sk, .le_sl => .@"<=",
+        .ge, .ge_lk, .ge_ll, .ge_sk, .ge_sl => .@">=",
+        .eq, .eq_lk, .eq_ll, .eq_sk, .eq_sl => .@"eq?",
+        .at, .at_lk, .at_ll, .at_sk, .at_sl => .at,
+        else => unreachable,
+    };
+}
+
+/// The fused form of op for the operands "lk", "ll", "sk" or "sl": add_lk for add.
+fn fused(comptime op: Opcode, comptime operands: []const u8) Opcode {
+    return @field(Opcode, @tagName(op) ++ "_" ++ operands);
+}
+
+/// Is the second operand of a fused instruction a constant (else a local)?
+pub fn secondIsConst(comptime op: Opcode) bool {
+    const name = @tagName(op);
+    return name[name.len - 1] == 'k';
+}
+
 /// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b, and the
 /// `rt.shape` that was valid for in c.
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 };
@@ -223,20 +295,11 @@ const Comp = struct {
                 if (p.sym.local or p.g.* != p.f) return c.genCall(p.c, tail); // rebound since it was compiled: an ordinary call
                 for (p.c[1..]) |x| try c.genAll(x, false);
                 const op: Op = switch (p.op) {
-                    .@"+" => .add,
-                    .@"-" => .sub,
-                    .@"*" => .mul,
-                    .@"<" => .lt,
-                    .@">" => .gt,
-                    .@"<=" => .le,
-                    .@">=" => .ge,
-                    .@"eq?" => .eq,
-                    .at => .at,
-                    .mod => .mod,
-                    .@"/" => .div,
                     .not => .not,
                     .abs, .floor, .sqrt, .exp, .log, .cos => .prim1,
-                    else => unreachable,
+                    else => inline for (binary) |o| {
+                        if (p.op == comptime primOf(o)) break o;
+                    } else unreachable,
                 };
                 const pi = add(*rt.Prim, &c.prims, p);
                 if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
@@ -270,21 +333,19 @@ const Comp = struct {
         if (n == 0 or n - 1 < c.barrier) return false;
         const y = c.ins.items[n - 1];
         if (y.op != .local and y.op != .konst) return false;
-        const local = y.op == .local;
-        const x = if (n >= 2 and n - 2 >= c.barrier) c.ins.items[n - 2] else Ins{ .op = .pop };
-        if (x.op == .local) {
-            const fused: Op = inline for (.{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at }) |o| {
-                if (op == o) break if (local) @field(Op, @tagName(o) ++ "_ll") else @field(Op, @tagName(o) ++ "_lk");
-            } else return false;
-            c.ins.items.len = n - 2;
-            _ = c.emit(fused, pi, (@as(usize, x.a) << 16) | y.a);
-            return true;
-        }
-        const fused: Op = inline for (.{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at }) |o| {
-            if (op == o) break if (local) @field(Op, @tagName(o) ++ "_sl") else @field(Op, @tagName(o) ++ "_sk");
+        const first_local = n >= 2 and n - 2 >= c.barrier and c.ins.items[n - 2].op == .local;
+        const second_local = y.op == .local;
+        const fused_op: Op = inline for (fusable) |o| {
+            if (op == o) break if (first_local) (if (second_local) fused(o, "ll") else fused(o, "lk")) else (if (second_local) fused(o, "sl") else fused(o, "sk"));
         } else return false;
-        c.ins.items.len = n - 1;
-        _ = c.emit(fused, pi, y.a);
+        if (first_local) {
+            const x = c.ins.items[n - 2];
+            c.ins.items.len = n - 2;
+            _ = c.emit(fused_op, pi, (@as(usize, x.a) << 16) | y.a);
+        } else {
+            c.ins.items.len = n - 1;
+            _ = c.emit(fused_op, pi, y.a);
+        }
         return true;
     }
 

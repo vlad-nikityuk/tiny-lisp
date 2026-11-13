@@ -11,28 +11,10 @@ const V = rt.V;
 const E = rt.E;
 const Op = bc.Opcode;
 
-/// The primitive that an arithmetic instruction computes.
-fn primOf(comptime op: Op) rt.Op {
-    return switch (op) {
-        .add => .@"+",
-        .sub => .@"-",
-        .mul => .@"*",
-        .div => .@"/",
-        .mod => .mod,
-        .lt => .@"<",
-        .gt => .@">",
-        .le => .@"<=",
-        .ge => .@">=",
-        .eq => .@"eq?",
-        .at => .at,
-        else => unreachable,
-    };
-}
-
 /// (op x y) with both operands on the stack: replace them by the value, or leave them and say false.
 inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
     const n = sp.*;
-    st[n - 2] = prims.fast(comptime primOf(op), st[n - 2], st[n - 1]) orelse return false;
+    st[n - 2] = prims.fast(comptime bc.primOf(op), st[n - 2], st[n - 1]) orelse return false;
     sp.* = n - 1;
     return true;
 }
@@ -192,10 +174,9 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         inline .add_lk, .sub_lk, .mul_lk, .lt_lk, .gt_lk, .le_lk, .ge_lk, .eq_lk, .at_lk, .add_ll, .sub_ll, .mul_ll, .lt_ll, .gt_ll, .le_ll, .ge_ll, .eq_ll, .at_ll => |op| {
-            const name = comptime @tagName(op);
             const x = e.vars[ip[0].b >> 16].v;
-            const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
-            if (prims.fast(comptime primOf(@field(Op, name[0 .. name.len - 3])), x, y)) |v| {
+            const y = if (comptime bc.secondIsConst(op)) code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
+            if (prims.fast(comptime bc.primOf(op), x, y)) |v| {
                 st[sp] = v;
                 sp += 1;
                 ip += 1;
@@ -207,9 +188,8 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             return slow(m, code, ip, 2);
         },
         inline .add_sk, .sub_sk, .mul_sk, .lt_sk, .gt_sk, .le_sk, .ge_sk, .eq_sk, .at_sk, .add_sl, .sub_sl, .mul_sl, .lt_sl, .gt_sl, .le_sl, .ge_sl, .eq_sl, .at_sl => |op| { // the first operand is on the stack, the second a constant or a local
-            const name = comptime @tagName(op);
-            const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b] else e.vars[ip[0].b].v;
-            if (prims.fast(comptime primOf(@field(Op, name[0 .. name.len - 3])), st[sp - 1], y)) |v| {
+            const y = if (comptime bc.secondIsConst(op)) code.consts[ip[0].b] else e.vars[ip[0].b].v;
+            if (prims.fast(comptime bc.primOf(op), st[sp - 1], y)) |v| {
                 st[sp - 1] = v;
                 ip += 1;
                 continue :sw ip[0].op;
