@@ -1,157 +1,19 @@
-// The tree tier: the compiler from the AST (parser.zig) to nodes, and the explicit-stack evaluator that runs them. It is the
-// reference semantics; bytecode.zig and vm.zig are a faster path for function bodies.
+// The tree tier's evaluator: an explicit-stack machine that runs the nodes compile.zig builds. It is the reference
+// semantics; a function whose body vm/compiler.zig can compile is handed to vm/exec.zig instead (the `.vm` step).
 const std = @import("std");
-const gc = @import("runtime/gc.zig");
-const rt = @import("runtime/runtime.zig");
-const scope = @import("runtime/scope.zig");
-const prims = @import("runtime/primitives.zig");
-const vm = @import("vm.zig");
-const bytecode = @import("bytecode.zig");
+const gc = @import("../runtime/gc.zig");
+const rt = @import("../runtime/runtime.zig");
+const scope = @import("../runtime/scope.zig");
+const prims = @import("../runtime/primitives.zig");
+const compile = @import("compile.zig");
+const vm = @import("../vm.zig");
+const compiler = @import("../bytecode.zig");
 const V = rt.V;
 const Node = rt.Node;
 
-// compiler
-// ----------------------------------------------------------------
-// The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
-// runs. Every macro/* runs once per node; a new or redefined one (scope.epoch) recompiles all nodes. Nodes and symbols are
-// permanent; their AST is pinned.
-
-/// While a macro runs, code is not expanded (so expansion nests one level).
-pub var in_macro = false;
-
-const make = rt.make;
-var interned: std.StringHashMapUnmanaged(*rt.Sym) = .empty;
-
-/// The symbol of a name: equal names are the same symbol, so scopes compare keys by address.
-fn intern(v: V) *rt.Sym {
-    const name = std.mem.span(if (v.is(.s)) v.asStr() else rt.str("{f}", .{v}).asStr());
-    const entry = interned.getOrPut(rt.gpa, name) catch gc.oom();
-    if (!entry.found_existing) { // the table's key is the symbol's own name
-        entry.value_ptr.* = &make(rt.Sym, 1)[0];
-        entry.value_ptr.*.* = .{ .key = rt.mkstr(name, true) };
-        entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
-    }
-    return entry.value_ptr.*;
-}
-
-/// A node that is not compiled yet.
-pub fn stub(v: V) *Node {
-    const n = &make(Node, 1)[0];
-    n.* = .{ .ast = rt.pin(v) };
-    return n;
-}
-
-/// n nodes for the items of a, nil for missing ones.
-fn kids(a: []const V, n: usize) []const *Node {
-    const c = make(*Node, n);
-    for (c, 0..) |*x, i| x.* = stub(rt.arg(a, i));
-    return c;
-}
-
-/// The stamp of up-to-date code; 0 means not compiled yet.
-pub fn current() u32 {
-    return scope.epoch *% 2 +% @intFromBool(in_macro) +% 1;
-}
-
-/// Every macro/* over x in turn; one that returns a false value leaves x as it was.
-fn expand(x: V) rt.E!V {
-    in_macro = true;
-    defer in_macro = false;
-    var y = x;
-    for (scope.macros.items) |macro| {
-        const b = rt.vs.items.len;
-        defer rt.vs.items.len = b;
-        gc.push(V, &rt.vs, macro.*);
-        gc.push(V, &rt.vs, y);
-        const z = try exec(.{ .apply = b }, scope.root);
-        if (rt.truthy(z)) y = z;
-    }
-    return y;
-}
-
-const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
-
-/// The code of a list: a special form by its head, or a call.
-fn form(a: []const V) rt.E!rt.Code {
-    if (a.len == 0) return rt.fail(rt.str("TinyLisp: cannot evaluate an empty list", .{}));
-    const head = if (a[0].is(.s)) std.meta.stringToEnum(Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
-    switch (head) {
-        .quote => return .{ .val = rt.arg(a, 1) },
-        .lambda => {
-            const ps = rt.items(rt.arg(a, 1));
-            const params = make(rt.Key, ps.len);
-            const proto = &make(rt.Proto, 1)[0];
-            proto.* = .{ .params = params[0..0], .body = stub(rt.arg(a, 2)) };
-            var n: usize = 0;
-            for (ps) |p| {
-                if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { // (a b & rest): rest takes the extra arguments
-                    proto.rest = true;
-                    continue;
-                }
-                const sym = intern(p);
-                if (sym.inlined and !sym.local) scope.epoch +%= 1;
-                sym.local = true;
-                params[n] = sym.key;
-                n += 1;
-                proto.params = params[0..n];
-            }
-            return .{ .lambda = proto };
-        },
-        .@"if" => return .{ .@"if" = kids(a[1..], 3) },
-        .begin => return .{ .begin = kids(a[1..], @max(a.len - 1, 1)) }, // (begin) is nil
-        .@"&&" => return .{ .@"&&" = kids(a[1..], @max(a.len - 1, 1)) }, // short-circuit
-        .@"||" => return .{ .@"||" = kids(a[1..], @max(a.len - 1, 1)) },
-        .define, .@"set!" => {
-            const d = &make(rt.Def, 1)[0];
-            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(rt.arg(a, 2)), .define = head == .define };
-            return .{ .def = d };
-        },
-        .apply => return call(a, kids(a, a.len)),
-    }
-}
-
-/// The code of the call a (c: its items). Two kinds of call are recognised by their head, while it is a global no scope binds:
-/// - the native each or map with a lambda as the last operand: the lambda gets a guard, so making it captures nothing (scope.lambda);
-/// - a primitive that `primitives.fast` knows, with one or two operands: a Prim node, computed in place (`inplace` below).
-fn call(a: []const V, c: []const *Node) rt.Code {
-    if (!a[0].is(.s)) return .{ .call = c };
-    const sym = intern(a[0]);
-    const g = scope.globalOf(sym) orelse return .{ .call = c };
-    const last = rt.items(a[a.len - 1]);
-    if (a.len >= 3 and last.len > 0 and last[0].is(.s) and std.mem.eql(u8, std.mem.span(last[0].asStr()), "lambda")) {
-        if (g.* == rt.each_v or g.* == rt.map_v) {
-            c[c.len - 1].guard = &make(rt.Guard, 1)[0];
-            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = g, .f = rt.pin(g.*) };
-        }
-    }
-    if (a.len == 2 or a.len == 3) if (prims.primOp(g.*)) |op| if ((a.len == 2) == prims.unary(op)) {
-        const p = &make(rt.Prim, 1)[0];
-        sym.inlined = true;
-        p.* = .{ .op = op, .sym = sym, .g = g, .f = rt.pin(g.*), .c = c };
-        return .{ .prim = p };
-    };
-    return .{ .call = c };
-}
-
-/// Expand macros over n's AST, then build its code unless they changed nothing.
-pub fn force(n: *Node) rt.E!void {
-    const x = if (in_macro or rt.ptr(n.ast) == null) n.ast else try expand(n.ast);
-    if (n.code == .raw or x != n.src) {
-        n.code = switch (x.tag()) {
-            .s => .{ .ref = .{ .sym = intern(x) } },
-            .lit => .{ .val = V.string(x.asStr()) }, // a string literal evaluates to a string
-            .l => try form(x.asList().items()),
-            else => .{ .val = x },
-        };
-        if (n.code == .lambda) n.code.lambda.guard = n.guard;
-        n.src = rt.pin(x);
-    }
-    n.stamp = current();
-}
-
 /// The value if n is a constant or a variable, else null; compiles n on demand.
 inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
-    if (n.stamp != current()) try force(n);
+    if (n.stamp != compile.current()) try compile.force(n);
     return switch (n.code) {
         .val => |v| v,
         .ref => |*r| scope.fetch(e, r),
@@ -183,17 +45,15 @@ fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V {
     return if (p.c.len == 2) prims.fast1(p.op, x[0]) else prims.fast(p.op, x[0], x[1]);
 }
 
-// evaluator
-// ----------------------------------------------------------------
 // No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected
 // on rt.vs, and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 
 pub fn eval(ast: V, env: *rt.Env) rt.E!V {
-    return exec(.{ .eval = stub(ast) }, env);
+    return exec(.{ .eval = compile.stub(ast) }, env);
 }
 
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
-fn exec(go: rt.Go, env: *rt.Env) rt.E!V {
+pub fn exec(go: rt.Go, env: *rt.Env) rt.E!V {
     var m: rt.Machine = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
     const vbase = rt.vs.items.len;
     gc.push(*rt.Machine, &rt.machines, &m); // its scope is a collector root
@@ -211,7 +71,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
     const vs = &rt.vs;
     sw: switch (go) {
         .eval => |n| {
-            if (!in_macro and gc.due()) gc.collect(); // all live managed values are rooted
+            if (!compile.in_macro and gc.due()) gc.collect(); // all live managed values are rooted
             if (try atom(n, m.e)) |v| continue :sw .{ .ret = v };
             switch (n.code) {
                 .lambda => |p| continue :sw .{ .ret = scope.lambda(p, m.e) },
@@ -242,7 +102,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             }
         },
         .vm => |x| {
-            if (!in_macro and gc.due()) gc.collect();
+            if (!compile.in_macro and gc.due()) gc.collect();
             continue :sw try vm.exec(m, x.code, x.pc);
         },
         .ret => |v| {
@@ -313,7 +173,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
                     const l = f.asLam();
-                    const code = bytecode.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
+                    const code = compiler.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) scope.release(m.e); // no frame needs the old one
                     m.e = scope.bind(l, vs.items[b + 1 ..]);
                     vs.items.len = b;

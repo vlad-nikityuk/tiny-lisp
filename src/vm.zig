@@ -1,4 +1,4 @@
-// Tier 2, the executor: runs the bytecode that bytecode.zig compiles, inside the machine of lang.zig. `exec` runs
+// Tier 2, the executor: runs the bytecode that bytecode.zig compiles, inside the machine of compile.zig. `exec` runs
 // instructions until it needs the machine and returns the next rt.Go (a call, or a return); a call that is not a tail call
 // leaves a `vm` frame on rt.ks that resumes the code at the instruction after it.
 const std = @import("std");
@@ -7,7 +7,7 @@ const rt = @import("runtime/runtime.zig");
 const scope = @import("runtime/scope.zig");
 const bc = @import("bytecode.zig");
 const prims = @import("runtime/primitives.zig");
-const lang = @import("lang.zig");
+const compile = @import("lang/compile.zig");
 const V = rt.V;
 const E = rt.E;
 const Op = bc.Opcode;
@@ -343,7 +343,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             if (idx == 0) resumeFrame(.loop, e, code, pcOf(code, ip), top); // the body comes back to this instruction
             const k = &ks.items[ks.items.len - 1];
             st[ib] = V.num(idx);
-            if (!lang.in_macro and gc.due()) {
+            if (!compile.in_macro and gc.due()) {
                 vs.items.len = sp;
                 gc.collect();
             }

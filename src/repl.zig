@@ -2,7 +2,7 @@
 const std = @import("std");
 const source = @import("lib/source.zig");
 const parser = @import("lang/parser.zig");
-const lang = @import("lang.zig");
+const eval = @import("lang/eval.zig");
 const rt = @import("runtime/runtime.zig");
 const scope = @import("runtime/scope.zig");
 const natives = @import("lib/natives.zig");
@@ -10,7 +10,7 @@ const natives = @import("lib/natives.zig");
 const gpa = std.heap.c_allocator;
 
 fn load(io: std.Io, e: *rt.Env, path: []const u8) rt.E!void {
-    _ = try lang.eval(try source.readProgram(io, path), e);
+    _ = try eval.eval(try source.readProgram(io, path), e);
 }
 
 fn die() noreturn {
@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
         const line = try in.interface.takeDelimiter('\n') orelse return;
         const s = std.mem.trimStart(u8, line, " \t\r\n");
         if (s.len == 0) continue;
-        if (parser.parse(s)) |x| if (lang.eval(x, e)) |v| {
+        if (parser.parse(s)) |x| if (eval.eval(x, e)) |v| {
             try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
             continue;
         } else |_| {} else |_| {}

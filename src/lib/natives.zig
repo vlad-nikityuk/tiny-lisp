@@ -1,7 +1,7 @@
 // The native part of the standard library (installed before stdlib.lisp, the Lisp part, is loaded).
 const std = @import("std");
 const source = @import("source.zig");
-const lang = @import("../lang.zig");
+const compile = @import("../lang/compile.zig");
 const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
@@ -150,7 +150,7 @@ fn split(_: *Fn, a: []const V) E!V {
 fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| return rt.finish(k, r);
     const path = text(rt.frameArgs(k, 1)[0]);
-    return .{ .eval = lang.stub(try source.readProgram(io, path)) };
+    return .{ .eval = compile.stub(try source.readProgram(io, path)) };
 }
 
 fn def(e: *rt.Env, k: [*:0]const u8, f: rt.Native) V {

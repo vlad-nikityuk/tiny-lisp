@@ -7,7 +7,7 @@ const gc = @import("runtime/gc.zig");
 const rt = @import("runtime/runtime.zig");
 const scope = @import("runtime/scope.zig");
 const prims = @import("runtime/primitives.zig");
-const lang = @import("lang.zig");
+const compile = @import("lang/compile.zig");
 const V = rt.V;
 const Node = rt.Node;
 const E = rt.E;
@@ -99,7 +99,7 @@ pub const Bytecode = struct {
     protos: []const *rt.Proto, // lambdas
     bodies: []const ?*Bytecode, // by the same index as protos: the compiled body of a loop lambda
     keys: []const rt.Key, // the names of the scope's slots: parameters, then defines, then the slots of inlined functions
-    stamp: u32, // lang.current() when it was compiled
+    stamp: u32, // compile.current() when it was compiled
     room: usize, // the most values it can have on the stack
 };
 
@@ -154,7 +154,7 @@ const Compiler = struct {
     }
 
     fn forced(n: *Node) E!void {
-        if (n.stamp != lang.current()) try lang.force(n);
+        if (n.stamp != compile.current()) try compile.force(n);
     }
 
     /// A use of a name (a read or a set!). After a region that defined the name it cannot be compiled; otherwise it is
@@ -459,7 +459,7 @@ const Compiler = struct {
     }
 };
 
-fn compile(p: *rt.Proto) void {
+fn build(p: *rt.Proto) void {
     p.tried = true;
     var c: Compiler = .{ .self = p };
     defer c.deinit();
@@ -476,7 +476,7 @@ fn compile(p: *rt.Proto) void {
         .protos = dup(*rt.Proto, c.protos.items),
         .bodies = dup(?*Bytecode, c.bodies.items),
         .keys = dup(rt.Key, c.keys.items),
-        .stamp = lang.current(),
+        .stamp = compile.current(),
         .room = room(c.ins.items),
     };
     for (code.consts) |v| _ = rt.pin(v);
@@ -506,12 +506,12 @@ const enabled = true;
 
 /// The bytecode of p, compiled on first use and again after a macro changed; null if p stays with the tree evaluator.
 pub fn ready(p: *rt.Proto) ?*Bytecode {
-    if (!enabled or lang.in_macro) return null;
+    if (!enabled or compile.in_macro) return null;
     if (p.code) |c| {
-        if (c.stamp == lang.current()) return c;
+        if (c.stamp == compile.current()) return c;
         p.code = null;
         p.tried = false;
     }
-    if (!p.tried) compile(p);
+    if (!p.tried) build(p);
     return p.code;
 }
