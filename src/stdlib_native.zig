@@ -153,23 +153,25 @@ fn load(_: *Fn, k: *K, v: ?V) E!Go {
     return .{ .eval = lang.stub(try lang.parse(program)) };
 }
 
-fn def(e: *runtime.Env, k: [*:0]const u8, f: runtime.Native) void {
-    runtime.set(e, k, V.fnOf(runtime.nf(f, .nil, .nil)));
+fn def(e: *runtime.Env, k: [*:0]const u8, f: runtime.Native) V {
+    const v = V.fnOf(runtime.nf(f, .nil, .nil));
+    runtime.set(e, k, v);
+    return v;
 }
 
 pub fn install(e: *runtime.Env) void {
-    def(e, "print", .{ .plain = print });
-    def(e, "list?", .{ .plain = isList });
-    def(e, "map", .{ .step = mapper(true) });
-    def(e, "each", .{ .step = mapper(false) });
-    def(e, "reduce", .{ .step = reduce });
-    def(e, "apply", .{ .step = apply });
-    def(e, "partial", .{ .plain = partial });
-    def(e, "concat", .{ .plain = concat });
-    def(e, "range", .{ .plain = range });
-    def(e, "zip", .{ .plain = zip });
-    def(e, "read-file", .{ .plain = readFile });
-    def(e, "write-file", .{ .plain = writeFile });
-    def(e, "split", .{ .plain = split });
-    def(e, "load", .{ .step = load });
+    _ = def(e, "print", .{ .plain = print });
+    _ = def(e, "list?", .{ .plain = isList });
+    runtime.map_v = runtime.pin(def(e, "map", .{ .step = mapper(true) }));
+    runtime.each_v = runtime.pin(def(e, "each", .{ .step = mapper(false) }));
+    _ = def(e, "reduce", .{ .step = reduce });
+    _ = def(e, "apply", .{ .step = apply });
+    _ = def(e, "partial", .{ .plain = partial });
+    _ = def(e, "concat", .{ .plain = concat });
+    _ = def(e, "range", .{ .plain = range });
+    _ = def(e, "zip", .{ .plain = zip });
+    _ = def(e, "read-file", .{ .plain = readFile });
+    _ = def(e, "write-file", .{ .plain = writeFile });
+    _ = def(e, "split", .{ .plain = split });
+    _ = def(e, "load", .{ .step = load });
 }

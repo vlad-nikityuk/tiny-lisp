@@ -135,7 +135,7 @@ pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, res
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
 pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, global, setglobal, storelocal, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
-pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
+pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 }; // an outer lookup notes where it found the name in b, and the `shape` it was valid for in c
 pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, bodies: []const ?*Bytecode, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
@@ -260,6 +260,11 @@ pub var macros: std.ArrayList(*V) = .empty; // root slots of the macro/* functio
 pub var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
 pub var gv: [1 << 13]V = @splat(.nil);
 
+/// Bumped when a name is added to a scope whose layout tier-2 code relies on (by load, say): remembered lookups are void.
+pub var shape: u32 = 1;
+/// The natives each and map themselves (not a function that merely is a step native): the loop lambda exemption and the bytecode loops are for them.
+pub var each_v: V = .nil;
+pub var map_v: V = .nil;
 pub var epoch: u32 = 0; // bumped when a macro/* changes: code compiled before it is compiled again
 
 pub fn slotOf(e: *Env, k: Key) ?*V {
@@ -282,6 +287,9 @@ fn slot(e: *Env, k: Key, create: bool) ?*V {
         if (e.vars.ptr != gc.after(Var, e)) gpa.free(e.vars);
         e.vars.ptr, e.cap = .{ more.ptr, more.len };
         if (e.proto) |p| p.cap = e.cap; // the next call of this function gets a scope that is big enough
+    }
+    if (e.proto != null and e.proto.?.code != null) {
+        shape +%= 1;
     }
     e.vars.len += 1;
     e.vars[e.vars.len - 1] = .{ .k = k, .v = .nil };
@@ -632,7 +640,7 @@ pub fn special(a: []const V, c: []const *Node) Code {
     if (a.len >= 3 and a[0].is(.s) and items(a[a.len - 1]).len > 0 and items(a[a.len - 1])[0].is(.s) and streq(items(a[a.len - 1])[0].asStr(), "lambda")) {
         const sym = intern(a[0]);
         const g = if (sym.local) null else slot(root, sym.key, false);
-        if (g) |slotp| if (slotp.*.is(.f) and slotp.*.asFn().f == .step and (streq(sym.key, "each") or streq(sym.key, "map"))) {
+        if (g) |slotp| if (slotp.* == each_v or slotp.* == map_v) {
             c[c.len - 1].guard = &make(Guard, 1)[0];
             c[c.len - 1].guard.?.* = .{ .sym = sym, .g = slotp, .f = pin(slotp.*) };
         };

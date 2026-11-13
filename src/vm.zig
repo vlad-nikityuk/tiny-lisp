@@ -44,11 +44,10 @@ const Comp = struct {
     }
 
     fn slotOf(c: *Comp, sym: *rt.Sym) ?usize {
-        if (c.inl) |i| {
-            for (i.keys, 0..) |k, j| if (k == sym.key) return i.base + j;
-            return null;
-        }
-        for (c.keys.items, 0..) |k, i| if (k == sym.key) return i;
+        const keys = if (c.inl) |i| i.keys else c.keys.items;
+        const base = if (c.inl) |i| i.base else 0;
+        var i = keys.len; // the last of equal names wins, as in a scope search
+        while (i > 0) : (i -= 1) if (keys[i - 1] == sym.key) return base + i - 1;
         return null;
     }
 
@@ -258,7 +257,14 @@ const Comp = struct {
         if (depth > 24 or count.* > 48) return false;
         return switch (n.code) {
             .val, .ref => true,
-            .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |x| {
+            .call => |kids| calls: {
+                if (kids[0].code == .ref and !kids[0].code.ref.sym.local) if (rt.slotOf(rt.root, kids[0].code.ref.sym.key)) |g| {
+                    if (g.*.is(.f) and g.*.asFn().f == .step) break :calls false; // a native that runs code in the scope it is called from (load, try, map...)
+                };
+                for (kids) |x| if (!inlinable(x, depth + 1, count)) break :calls false;
+                break :calls true;
+            },
+            .@"if", .begin, .@"&&", .@"||" => |kids| for (kids) |x| {
                 if (!inlinable(x, depth + 1, count)) break false;
             } else true,
             .prim => |p| for (p.c[1..]) |x| {
@@ -304,9 +310,8 @@ const Comp = struct {
             const sym = k[0].code.ref.sym;
             const lp = k[2].code.lambda;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
-            const native = g != null and g.?.*.is(.f) and g.?.*.asFn().f == .step;
-            const is_each = native and std.mem.eql(u8, std.mem.span(sym.key), "each");
-            const is_map = native and std.mem.eql(u8, std.mem.span(sym.key), "map");
+            const is_each = g != null and g.?.* == rt.each_v;
+            const is_map = g != null and g.?.* == rt.map_v;
             if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
             const body = ready(lp) orelse break :loop;
             sym.prim = true; // rebinding each or map makes epoch change, so this code is compiled again
@@ -443,7 +448,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// ((hops + 1) << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
 inline fn outerSlot(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
-    if (ins.b != 0) {
+    if (ins.b != 0 and ins.c == rt.shape) {
         var s = e;
         var hops = ins.b >> 16;
         while (hops > 0) : (hops -= 1) s = s.p.?;
@@ -460,7 +465,10 @@ noinline fn outerLook(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
     while (sym.local and s.p != null) : (s = s.p.?) {
         var i = s.vars.len;
         while (i > 0) : (i -= 1) if (s.vars[i - 1].k == sym.key) {
-            if (fixed and hops < 0x7fff and i - 1 < 0x10000) ins.b = (hops << 16) | @as(u32, @intCast(i - 1));
+            if (fixed and hops < 0x7fff and i - 1 < 0x10000) {
+                ins.b = (hops << 16) | @as(u32, @intCast(i - 1));
+                ins.c = rt.shape;
+            }
             return &s.vars[i - 1].v;
         };
         fixed = fixed and s.proto != null and s.proto.?.code != null;
