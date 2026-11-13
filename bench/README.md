@@ -36,39 +36,40 @@ Interpreter start is 0.021 s for Python and 0.003 s for tinylisp, and is include
 
 | benchmark | python | tinylisp | tinylisp / python |
 |---|---|---|---|
-| mlp_xor (scalar autograd) | 0.303 s | 0.334 s | 1.10x |
-| linreg (scalar autograd) | 0.309 s | 0.352 s | 1.14x |
-| logreg | 0.351 s | 0.400 s | 1.14x |
-| matmul | 0.368 s | 0.433 s | 1.18x |
-| kmeans | 0.297 s | 0.374 s | 1.26x |
-| sieve | 0.384 s | 0.624 s | 1.63x |
-| bpe | 0.307 s | 0.512 s | 1.67x |
-| spectral_norm | 0.278 s | 0.519 s | 1.87x |
-| dijkstra | 0.347 s | 0.651 s | 1.88x |
-| bigram | 0.142 s | 0.303 s | 2.13x |
-| knapsack | 0.402 s | 1.055 s | 2.62x |
-| mandelbrot | 0.327 s | 0.975 s | 2.98x |
-| quicksort | 0.194 s | 0.656 s | 3.37x |
-| nbody | 0.359 s | 1.265 s | 3.53x |
-| fannkuch | 0.409 s | 1.915 s | 4.68x |
-| levenshtein | 0.200 s | 1.185 s | 5.93x |
-| nqueens | 0.399 s | 2.852 s | 7.16x |
-| life | 0.337 s | 2.516 s | 7.46x |
+| kmeans | 0.299 s | 0.093 s | 0.31x |
+| logreg | 0.358 s | 0.134 s | 0.37x |
+| matmul | 0.359 s | 0.135 s | 0.38x |
+| dijkstra | 0.344 s | 0.134 s | 0.39x |
+| mlp_xor (scalar autograd) | 0.302 s | 0.153 s | 0.51x |
+| knapsack | 0.405 s | 0.205 s | 0.51x |
+| linreg (scalar autograd) | 0.309 s | 0.160 s | 0.52x |
+| mandelbrot | 0.326 s | 0.183 s | 0.56x |
+| bpe | 0.302 s | 0.245 s | 0.81x |
+| sieve | 0.375 s | 0.379 s | 1.01x |
+| nbody | 0.360 s | 0.372 s | 1.03x |
+| bigram | 0.143 s | 0.150 s | 1.05x |
+| spectral_norm | 0.270 s | 0.330 s | 1.22x |
+| nqueens | 0.397 s | 0.497 s | 1.25x |
+| life | 0.339 s | 0.439 s | 1.29x |
+| levenshtein | 0.199 s | 0.288 s | 1.45x |
+| fannkuch | 0.410 s | 0.603 s | 1.47x |
+| quicksort | 0.195 s | 0.292 s | 1.50x |
 
-Geometric mean: tinylisp takes 2.4x as long as CPython 3.14.
+Geometric mean: tinylisp takes 0.76x as long as CPython 3.14 (it was 2.4x before the second tier below).
 
 ## What the numbers say
 
-- **Allocation-heavy, call-heavy code is on par** (1.1x-1.3x): the autograd programs build thousands of small lists
-  and call small functions, which is what microgpt does, and what the evaluator and the collector are tuned for.
-- **Tight loops over indices are where CPython wins** (3x-7x): `nqueens`, `life`, `levenshtein`, `fannkuch`, `nbody`.
-  Python's `for` and `while` are bytecode; here `for` is a `map` with a lambda, so every iteration is a call with a
-  scope, and there is no `while`.
-- **`&&` and `||` short-circuit** (special forms, like Python's `and`/`or`; they still return the deciding operand). They used to
-  evaluate every operand: `nqueens` took 2.9 s, now 1.5 s. `mod`, `abs`, `min`, `max` and `not` are natives rather than
-  Lisp functions (`life`, `levenshtein`, `knapsack`).
-- **Two-operand primitive calls on variables and constants are computed in place** (`Code.prim`): no frame, no call. A 10M-iteration
-  tail loop went from 0.47 s to 0.27 s; the geometric mean against CPython from 2.05x to 1.77x.
-- **Loop bodies passed to `each`/`map` do not capture their scope** (a `for` inside a `for` used to make the outer iteration's scope
-  unrecyclable). Nested short loops (`life`, `nbody`) got about 10% faster.
-- **Arithmetic on numbers is not the problem**: the float programs (`logreg`, `matmul`, `kmeans`) are within 1.3x.
+- **The evaluator has two tiers.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
+  parameters and defines (`src/vm.zig`); the tree evaluator in `src/lang.zig` still runs everything else and defines the
+  semantics (the bytecode is only used where it behaves the same). Going from the tree evaluator alone (2.4x) to this: in-place
+  primitive calls on variables and constants (2.1x), `&&`/`||` short-circuit and native `mod`/`min`/`max`/`abs`/`not`,
+  bytecode with fused arithmetic, outer-variable lookups remembered after the first (about 1.2x), then loops run by the bytecode
+  with the scope of an iteration reused (0.76x).
+- **Programs that call small functions and do arithmetic are now faster than CPython** (0.3x-0.6x): the autograd programs,
+  `matmul`, `kmeans`, `logreg`, `dijkstra`, `knapsack`, `mandelbrot` (a tail-recursive function that calls itself reuses its scope).
+- **What is left is loop-heavy code** (1.0x-1.5x: `quicksort`, `fannkuch`, `levenshtein`, `life`, `nqueens`, `spectral_norm`):
+  a loop body that calls out to something that is not compiled, or that creates a closure, goes through the machine and
+  loses the scope reuse; every call still builds a scope and a frame.
+- **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
+  the place of a variable in the tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
+  without leaving `vm.exec` (no gain), a bytecode step for statement sequences.
