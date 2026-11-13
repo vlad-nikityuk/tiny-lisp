@@ -76,7 +76,7 @@ fn concat(_: *Fn, a: []const V) E!V {
 
 /// (range n) is the list (0 1 ... n-1).
 fn range(_: *Fn, a: []const V) E!V {
-    const r = runtime.list(&.{}, @intFromFloat(@max(0, runtime.num(arg(a, 0)))));
+    const r = runtime.list(&.{}, runtime.rangeLen(arg(a, 0)));
     for (r.asList().items(), 0..) |*x, i| x.* = V.num(@floatFromInt(i));
     return r;
 }
@@ -168,7 +168,7 @@ pub fn install(e: *runtime.Env) void {
     _ = def(e, "apply", .{ .step = apply });
     _ = def(e, "partial", .{ .plain = partial });
     _ = def(e, "concat", .{ .plain = concat });
-    _ = def(e, "range", .{ .plain = range });
+    runtime.range_v = runtime.pin(def(e, "range", .{ .plain = range }));
     _ = def(e, "zip", .{ .plain = zip });
     _ = def(e, "read-file", .{ .plain = readFile });
     _ = def(e, "write-file", .{ .plain = writeFile });

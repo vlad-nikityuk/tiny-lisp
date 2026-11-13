@@ -265,6 +265,12 @@ pub var shape: u32 = 1;
 /// The natives each and map themselves (not a function that merely is a step native): the loop lambda exemption and the bytecode loops are for them.
 pub var each_v: V = .nil;
 pub var map_v: V = .nil;
+pub var range_v: V = .nil; // the native range: a loop over a call of it counts instead of building the list
+
+/// How many items (range v) has.
+pub fn rangeLen(v: V) usize {
+    return @intFromFloat(@max(0, num(v)));
+}
 pub var epoch: u32 = 0; // bumped when a macro/* changes: code compiled before it is compiled again
 
 pub fn slotOf(e: *Env, k: Key) ?*V {

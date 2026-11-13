@@ -315,11 +315,22 @@ const Comp = struct {
             if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
             const body = ready(lp) orelse break :loop;
             sym.prim = true; // rebinding each or map makes epoch change, so this code is compiled again
-            try c.genAll(k[1], false);
+            var counted: usize = 0; // a loop over (range n): count to n, no list
+            var source = k[1];
+            if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
+                const rsym = k[1].code.call[0].code.ref.sym;
+                const rg = if (rsym.local) null else rt.slotOf(rt.root, rsym.key);
+                if (rg != null and rg.?.* == rt.range_v) {
+                    counted = 1;
+                    source = k[1].code.call[1];
+                    rsym.prim = true; // rebinding range makes epoch change
+                }
+            }
+            try c.genAll(source, false);
             const at = c.add(*rt.Proto, &c.protos, lp);
             _ = c.add(?*rt.Bytecode, &c.bodies, body);
-            _ = c.emit(if (is_map) .map else .each, at, 0);
-            _ = c.emit(if (is_map) .mapnext else .eachnext, at, 0);
+            _ = c.emit(if (is_map) .map else .each, at, counted);
+            _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
             if (tail) _ = c.emit(.ret, 0, 0);
             return;
         }
@@ -693,7 +704,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
         },
         .map => { // as each, with the list of results (the body's values) between the index and that place
             st[sp] = V.num(-1);
-            st[sp + 1] = rt.list(&.{}, rt.items(st[sp - 1]).len);
+            st[sp + 1] = rt.list(&.{}, if (ip[0].b != 0) rt.rangeLen(st[sp - 1]) else rt.items(st[sp - 1]).len);
             st[sp + 2] = V.nil;
             sp += 3;
             ip += 1;
@@ -728,9 +739,11 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             const top = sp - 1;
             const ib = if (is_map) top - 2 else top - 1; // the index
             const idx = st[ib].asNum() + 1;
+            const counted = ip[0].b != 0;
             const items = rt.items(st[ib - 1]);
+            const len = if (counted) rt.rangeLen(st[ib - 1]) else items.len;
             if (is_map and idx > 0) st[ib + 1].asList().items()[@intFromFloat(idx - 1)] = st[top];
-            if (idx >= @as(f64, @floatFromInt(items.len))) { // done: the value of the loop is nil (each) or the results (map)
+            if (idx >= @as(f64, @floatFromInt(len))) { // done: the value of the loop is nil (each) or the results (map)
                 if (idx > 0) { // there is a loop frame
                     const k = &ks.items[ks.items.len - 1];
                     if (k.env2) |x| if (!x.captured) rt.release(x);
@@ -754,7 +767,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
                 gc.collect();
             }
             const body = code.bodies[ip[0].a].?;
-            const item = items[@intFromFloat(idx)];
+            const item = if (counted) V.num(idx) else items[@intFromFloat(idx)];
             if (k.env2) |x| if (!x.captured and x.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
                 x.vars[0].v = item;
                 for (x.vars[1..]) |*v| v.v = V.nil;

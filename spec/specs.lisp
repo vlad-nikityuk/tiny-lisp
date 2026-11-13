@@ -908,4 +908,19 @@
                20))
   (assert (eq? ((lambda (x x) x) 1 2) 2)))
 
+(defn count-loop (n) (for/list (i (range n)) (* i 2)))
+(defn count-each (n) (begin (define s 0) (for (i (range n)) (set! s (+ s i))) s))
+(defn count-with-range-arg (n) (for/list (i (range (+ n 1))) i))
+(defn count-shadowed (range) (for/list (i (range 3)) i))
+(deftest "tier 2: loops over (range n) count"
+  (assert (equal? (count-loop 3) (list 0 2 4)))
+  (assert (equal? (count-loop 0) (list)))
+  (assert (equal? (count-loop -2) (list)))
+  (assert (equal? (count-loop 2.7) (list 0 2)))
+  (assert (equal? (count-loop "x") (list)))
+  (assert (equal? (count-loop nil) (list)))
+  (assert (eq? (count-each 100) 4950))
+  (assert (equal? (count-with-range-arg 2) (list 0 1 2)))
+  (assert (equal? (count-shadowed (lambda (n) (list 7 8))) (list 7 8))))
+
 (run-tests)
