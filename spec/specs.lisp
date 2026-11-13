@@ -923,4 +923,20 @@
   (assert (equal? (count-with-range-arg 2) (list 0 1 2)))
   (assert (equal? (count-shadowed (lambda (n) (list 7 8))) (list 7 8))))
 
+(defn store-ll (l i) (vset! l i (+ i 100)))
+(defn mixed (l i) (list (+ (at l i) 1) (< (at l i) 3) (eq? (at l i) 2) (- (at l i) i) (* (at l i) 2)))
+(defn mixed-k (x) (list (+ x 1) (- x 1) (* x 2) (< x 2) (>= x 2) (eq? x 2) (at x 0)))
+(deftest "tier 2: operands taken from a local or a constant"
+  (define l (list 1 2 3))
+  (assert (eq? (store-ll l 1) 101))
+  (assert (equal? l (list 1 101 3)))
+  (assert (equal? (try (lambda () (store-ll l 5)) (lambda (e) "range")) "range"))
+  (assert (equal? (try (lambda () (store-ll nil 0)) (lambda (e) "list")) "list"))
+  (assert (equal? (mixed (list 1 2 3) 1) (list 3 #t #t 1 4)))
+  (assert (equal? (mixed (list 1 2 3) 5) (list 1 #t #f -5 0)))
+  (assert (equal? (mixed-k 2) (list 3 1 4 #f #t #t nil)))
+  (assert (equal? (at (mixed-k "a") 0) "a1"))
+  (assert (equal? (at (mixed-k "a") 3) #f))
+  (assert (equal? (at (mixed-k "a") 4) #f)))
+
 (run-tests)

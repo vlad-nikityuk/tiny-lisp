@@ -235,20 +235,41 @@ const Comp = struct {
         }
     }
 
-    /// (op local local) and (op local constant), the two operands just pushed, become one instruction (b: first slot << 16 | second).
+    /// The operands just pushed: (op local local) and (op local constant) become one instruction (b: first slot << 16 | second);
+    /// when the first operand is something else, a local or constant second operand still goes into the instruction (b: it).
     fn fuse(c: *Comp, op: Op, pi: usize) bool {
         const n = c.ins.items.len;
-        if (n < 2 or n - 2 < c.barrier) return false;
-        const x = c.ins.items[n - 2];
+        if (n == 0 or n - 1 < c.barrier) return false;
         const y = c.ins.items[n - 1];
-        if (x.op != .local or (y.op != .local and y.op != .konst)) return false;
+        if (y.op != .local and y.op != .konst) return false;
         const local = y.op == .local;
+        const x = if (n >= 2 and n - 2 >= c.barrier) c.ins.items[n - 2] else rt.Ins{ .op = .pop };
+        if (x.op == .local) {
+            const fused: Op = inline for (.{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at }) |o| {
+                if (op == o) break if (local) @field(Op, @tagName(o) ++ "_ll") else @field(Op, @tagName(o) ++ "_lk");
+            } else return false;
+            c.ins.items.len = n - 2;
+            _ = c.emit(fused, pi, (@as(usize, x.a) << 16) | y.a);
+            return true;
+        }
         const fused: Op = inline for (.{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at }) |o| {
-            if (op == o) break if (local) @field(Op, @tagName(o) ++ "_ll") else @field(Op, @tagName(o) ++ "_lk");
+            if (op == o) break if (local) @field(Op, @tagName(o) ++ "_sl") else @field(Op, @tagName(o) ++ "_sk");
         } else return false;
-        c.ins.items.len = n - 2;
-        _ = c.emit(fused, pi, (@as(usize, x.a) << 16) | y.a);
+        c.ins.items.len = n - 1;
+        _ = c.emit(fused, pi, y.a);
         return true;
+    }
+
+    /// Does evaluating this change nothing and call nothing (constants, names, primitives on those)?
+    fn plain(n: *Node, depth: usize) bool {
+        if (depth > 8) return false;
+        return switch (n.code) {
+            .val, .ref => true,
+            .prim => |p| for (p.c[1..]) |x| {
+                if (!plain(x, depth + 1)) break false;
+            } else true,
+            else => false,
+        };
     }
 
     /// Is this body something to inline: small, no closures?
@@ -338,8 +359,16 @@ const Comp = struct {
             const sym = k[0].code.ref.sym;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
             if (g) |slotp| if (rt.isVset(slotp.*)) {
-                for (k[1..]) |x| try c.genAll(x, false);
                 sym.prim = true; // rebinding it makes epoch change, so this code is compiled again
+                const lo = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
+                const io = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
+                if (lo != null and io != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
+                    try c.genAll(k[3], false);
+                    _ = c.emit(.vset_ll, c.add(V, &c.consts, slotp.*), (lo.? << 16) | io.?);
+                    if (tail) _ = c.emit(.ret, 0, 0);
+                    return;
+                }
+                for (k[1..]) |x| try c.genAll(x, false);
                 _ = c.emit(.vset, c.add(V, &c.consts, slotp.*), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
                 return;
@@ -623,6 +652,44 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             st[sp + 1] = y;
             vs.items.len = sp + 2;
             return slow(m, code, ip, 2);
+        },
+        inline .add_sk, .sub_sk, .mul_sk, .lt_sk, .gt_sk, .le_sk, .ge_sk, .eq_sk, .at_sk, .add_sl, .sub_sl, .mul_sl, .lt_sl, .gt_sl, .le_sl, .ge_sl, .eq_sl, .at_sl => |op| { // the first operand is on the stack, the second a constant or a local
+            const name = comptime @tagName(op);
+            const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b] else e.vars[ip[0].b].v;
+            if (arith2(@field(Op, name[0 .. name.len - 3]), st[sp - 1], y)) |v| {
+                st[sp - 1] = v;
+                ip += 1;
+                continue :sw ip[0].op;
+            }
+            st[sp] = y;
+            sp += 1;
+            vs.items.len = sp;
+            return slow(m, code, ip, 2);
+        },
+        .vset_ll => { // (vset! list index value) with the list and the index in locals, the value on the stack
+            const l = e.vars[ip[0].b >> 16].v;
+            const i = e.vars[ip[0].b & 0xffff].v;
+            if (l.is(.l) and i.isNum()) {
+                const items = l.asList().items();
+                const x = i.asNum();
+                if (x >= 0 and x < @as(f64, @floatFromInt(items.len))) {
+                    items[@intFromFloat(x)] = st[sp - 1];
+                    ip += 1;
+                    continue :sw ip[0].op;
+                }
+            }
+            const n = code.consts[ip[0].a].asFn();
+            const value = st[sp - 1]; // the native does anything that is not an in-range store, and gets all three
+            st[sp - 1] = l;
+            st[sp] = i;
+            st[sp + 1] = value;
+            sp += 2;
+            vs.items.len = sp;
+            const r = try n.f.plain(n, st[sp - 3 .. sp]);
+            sp -= 2;
+            st[sp - 1] = r;
+            ip += 1;
+            continue :sw ip[0].op;
         },
         .prim1, .prim2 => {
             const p = code.prims[ip[0].a];
