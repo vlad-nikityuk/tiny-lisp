@@ -94,7 +94,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
     const vs = &rt.vs;
     sw: switch (go) {
         .eval => |n| {
-            if (!in_macro and gc.due()) gc.collect(); // the safe point: no value lives in a Zig local
+            if (!in_macro and gc.due()) gc.collect(); // all live managed values are rooted
             if (try atom(n, m.e)) |v| continue :sw .{ .ret = v };
             switch (n.code) {
                 .lambda => |p| continue :sw .{ .ret = rt.lambda(p, m.e) },

@@ -1,8 +1,8 @@
 // Mark-sweep memory manager.
 //
 // Every managed object is malloc'd with a header and linked into one list. Nothing is counted and nothing is swept per
-// call: when enough has been allocated, the evaluator loop calls `collect` at a safe point, where no Zig local holds a
-// value (everything live is on the machine's stacks, in scopes, in globals, or in the registered machines). Marking uses a
+// call: the evaluator and VM collect at rooted transitions and backedges, publishing the VM stack length first.
+// Every live managed value must be reachable from roots, even if also held in a Zig local. Marking uses a
 // worklist, never recursion; sweeping frees what stayed unmarked. Cycles (a closure stored in the scope it captures) are
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
 const std = @import("std");

@@ -486,7 +486,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 }
 
 /// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
-/// ((hops + 1) << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
+/// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
 inline fn outerSlot(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
     if (ins.b != 0 and ins.c == rt.shape) {

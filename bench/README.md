@@ -29,8 +29,9 @@ Where the Lisp cannot copy the Python line for line: a `while` is a tail-recursi
 `sieve`, `bigram` sampling); `bpe` fills a preallocated vector where Python appends; `levenshtein` splits a name into a
 list of characters where Python indexes the string.
 
-## Results
+## Historical results
 
+Historical snapshot (revision and exact Zig version were not recorded; the project uses Zig 0.17).
 Apple M2 Max, Python 3.14.5 (no JIT), tinylisp built with `make` (ReleaseSafe), best of 3 whole-process times.
 Interpreter start is 0.021 s for Python and 0.003 s for tinylisp, and is included.
 
@@ -61,16 +62,14 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 
 - **The evaluator has two tiers.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
   parameters and defines (`src/vm.zig`); the tree evaluator in `src/lang.zig` still runs everything else and defines the
-  semantics (the bytecode is only used where it behaves the same). Going from the tree evaluator alone (2.4x) to this: in-place
-  primitive calls on variables and constants (2.1x), `&&`/`||` short-circuit and native `mod`/`min`/`max`/`abs`/`not`,
-  bytecode with fused arithmetic and remembered outer-variable lookups (1.2x), loops (`for`, `for/list`) run by the bytecode with
-  the scope of an iteration reused, a function calling itself in tail position reusing its scope, and small global functions
-  inlined into their callers, scopes of up to 16 slots recycled, loops over `(range n)` counting, natives called without leaving the bytecode loop, and operands taken from locals and constants by the instruction itself (0.59x).
+  semantics. Bytecode expands the whole body on first call and sees primitive rebinding only on subsequent calls,
+  as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
+  and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.
 - **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,
   `knapsack`, `bpe` and `mandelbrot`; 0.7x-0.9x for `nbody`, `spectral_norm`, `sieve`, `levenshtein`, `quicksort`; on par for
   `bigram`, `life`, `nqueens`.
-- **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, about 2 ns each (240M of them), and about
-  7M calls that are not inlined (a call builds a scope and a frame, about 25 ns).
+- **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, measured then at about 2 ns each (240M of them), and about
+  7M calls that are not inlined (a call builds a scope and a frame, measured then at about 25 ns).
 - **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
   the place of a variable in the tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
   without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.

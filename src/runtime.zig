@@ -128,7 +128,7 @@ pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same p
 pub const Sym = struct { key: Key, local: bool = false, prim: bool = false }; // prim: the head of a Prim node, so tier-2 code inlines it (rebinding it bumps epoch) // local: some scope binds this name (a parameter, or a define inside a function)
 /// A call of a primitive on two operands, compiled as such while its name is global and still bound to that primitive: the evaluator
 /// computes it in place when both operands are constants or variables holding numbers (or a list and an index), else it is the call c.
-pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // slow: an operand is a call, so it is never computed in place
+pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // unary or binary; slow: operands cannot be evaluated within the bounded in-place descent
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false, inlined: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
