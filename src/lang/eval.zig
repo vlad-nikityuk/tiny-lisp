@@ -9,8 +9,9 @@ const compile = @import("compile.zig");
 const compiler = @import("../vm/compiler.zig");
 const vm = @import("../vm/exec.zig");
 const machine = @import("../runtime/machine.zig");
+const node = @import("../runtime/node.zig");
 const V = rt.V;
-const Node = rt.Node;
+const Node = node.Node;
 
 /// The value if n is a constant or a variable, else null; compiles n on demand.
 inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
@@ -22,7 +23,7 @@ inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
     };
 }
 
-/// A leaf, or a primitive call on leaves that computes in place (rt.Prim).
+/// A leaf, or a primitive call on leaves that computes in place (node.Prim).
 inline fn atom(n: *Node, e: *rt.Env) rt.E!?V {
     if (try leaf(n, e)) |v| return v;
     return if (n.code == .prim and !n.code.prim.slow) try inplace(n.code.prim, e, 3) else null;
@@ -30,7 +31,7 @@ inline fn atom(n: *Node, e: *rt.Env) rt.E!?V {
 
 /// The value of a primitive call whose operands are leaves or, a few levels deep (so native recursion stays bounded),
 /// primitive calls themselves; null if it has to be an ordinary call. Kept out of line: inlined into `run` it slows everything.
-fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V {
+fn inplace(p: *node.Prim, e: *rt.Env, depth: u8) rt.E!?V {
     if (p.sym.local or p.g.* != p.f) return null; // the name was rebound
     var x = [2]V{ .nil, .nil };
     inline for (0..2) |i| if (i + 1 < p.c.len) {

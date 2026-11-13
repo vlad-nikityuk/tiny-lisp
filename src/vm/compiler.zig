@@ -9,9 +9,10 @@ const scope = @import("../runtime/scope.zig");
 const prims = @import("../runtime/primitives.zig");
 const compile = @import("../lang/compile.zig");
 const V = rt.V;
-const Node = rt.Node;
+const Node = node.Node;
 const E = rt.E;
 const bytecode = @import("bytecode.zig");
+const node = @import("../runtime/node.zig");
 const Op = bytecode.Opcode;
 const Ins = bytecode.Ins;
 const Bytecode = bytecode.Bytecode;
@@ -34,18 +35,18 @@ fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
 const Compiler = struct {
     ins: std.ArrayList(Ins) = .empty,
     consts: std.ArrayList(V) = .empty,
-    refs: std.ArrayList(*rt.Ref) = .empty,
-    prims: std.ArrayList(*rt.Prim) = .empty,
-    defs: std.ArrayList(*rt.Def) = .empty,
-    protos: std.ArrayList(*rt.Proto) = .empty,
+    refs: std.ArrayList(*node.Ref) = .empty,
+    prims: std.ArrayList(*node.Prim) = .empty,
+    defs: std.ArrayList(*node.Def) = .empty,
+    protos: std.ArrayList(*node.Proto) = .empty,
     bodies: std.ArrayList(?*Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
-    keys: std.ArrayList(rt.Key) = .empty,
-    seen: std.ArrayList(rt.Key) = .empty, // names read or set! so far, in scan order
+    keys: std.ArrayList(node.Key) = .empty,
+    seen: std.ArrayList(node.Key) = .empty, // names read or set! so far, in scan order
     conditional_depth: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
-    held: std.ArrayList(struct { key: rt.Key, level: usize }) = .empty, // names defined in the regions being scanned
-    closed: std.ArrayList(rt.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
-    self: ?*rt.Proto = null,
-    inline_scope: ?struct { keys: []const rt.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
+    held: std.ArrayList(struct { key: node.Key, level: usize }) = .empty, // names defined in the regions being scanned
+    closed: std.ArrayList(node.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
+    self: ?*node.Proto = null,
+    inline_scope: ?struct { keys: []const node.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
     inline_sites: usize = 0, // functions inlined so far
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
@@ -58,7 +59,7 @@ const Compiler = struct {
         inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(rt.gpa);
     }
 
-    fn slotOf(c: *Compiler, sym: *rt.Sym) ?usize {
+    fn slotOf(c: *Compiler, sym: *node.Sym) ?usize {
         const keys = if (c.inline_scope) |i| i.keys else c.keys.items;
         const base = if (c.inline_scope) |i| i.base else 0;
         var i = keys.len; // the last of equal names wins, as in a scope search
@@ -72,12 +73,12 @@ const Compiler = struct {
 
     /// A use of a name (a read or a set!). After a region that defined the name it cannot be compiled; otherwise it is
     /// remembered, so that a later define of the name is rejected.
-    fn use(c: *Compiler, sym: *rt.Sym) !void {
+    fn use(c: *Compiler, sym: *node.Sym) !void {
         if (has(c.closed.items, sym)) return error.Bail;
-        if (c.slotOf(sym) == null and !has(c.seen.items, sym)) _ = add(rt.Key, &c.seen, sym.key);
+        if (c.slotOf(sym) == null and !has(c.seen.items, sym)) _ = add(node.Key, &c.seen, sym.key);
     }
 
-    fn has(keys: []const rt.Key, sym: *rt.Sym) bool {
+    fn has(keys: []const node.Key, sym: *node.Sym) bool {
         for (keys) |k| if (k == sym.key) return true;
         return false;
     }
@@ -111,7 +112,7 @@ const Compiler = struct {
     fn leave(c: *Compiler) void {
         c.conditional_depth -= 1;
         while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.conditional_depth) {
-            _ = add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
+            _ = add(node.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
             c.held.items.len -= 1;
         }
     }
@@ -147,7 +148,7 @@ const Compiler = struct {
                 const sym = d.sym orelse return error.Bail;
                 if (!d.define) return c.use(sym);
                 if (has(c.closed.items, sym) or has(c.seen.items, sym)) return error.Bail;
-                if (c.slotOf(sym) == null) _ = add(rt.Key, &c.keys, sym.key);
+                if (c.slotOf(sym) == null) _ = add(node.Key, &c.keys, sym.key);
                 if (c.conditional_depth > 0) _ = add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.conditional_depth });
                 sym.local = true;
             },
@@ -185,7 +186,7 @@ const Compiler = struct {
             // the rest leave a value, which a tail position returns
             .val => |v| _ = c.emit(.konst, add(V, &c.consts, v), 0),
             .ref => |*r| {
-                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*rt.Ref, &c.refs, r), 0);
+                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*node.Ref, &c.refs, r), 0);
             },
             .@"&&", .@"||" => |k| {
                 var jumps: [max_short_circuit_operands]usize = undefined;
@@ -207,18 +208,18 @@ const Compiler = struct {
                         if (p.op == comptime bytecode.primOf(o)) break o;
                     } else unreachable,
                 };
-                const pi = add(*rt.Prim, &c.prims, p);
+                const pi = add(*node.Prim, &c.prims, p);
                 if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
             },
             .lambda => |lp| {
-                const at = add(*rt.Proto, &c.protos, lp);
+                const at = add(*node.Proto, &c.protos, lp);
                 _ = add(?*Bytecode, &c.bodies, null);
                 _ = c.emit(.lambda, at, 0);
             },
             .def => |d| {
                 try c.gen(d.val, false);
                 const slot = if (d.sym) |sym| c.slotOf(sym) else null;
-                if (slot) |i| _ = c.emit(.setlocal, i, 0) else _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*rt.Def, &c.defs, d), 0);
+                if (slot) |i| _ = c.emit(.setlocal, i, 0) else _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*node.Def, &c.defs, d), 0);
             },
             else => return error.Bail,
         }
@@ -295,13 +296,13 @@ const Compiler = struct {
         if (l.env != scope.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
         var sub: Compiler = .{};
         defer sub.deinit();
-        for (l.proto.params) |pk| _ = add(rt.Key, &sub.keys, pk);
+        for (l.proto.params) |pk| _ = add(node.Key, &sub.keys, pk);
         sub.scan(l.proto.body, 0) catch return false;
         var count: usize = 0;
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         for (k[1..]) |x| try c.gen(x, false);
         const base = c.keys.items.len;
-        for (sub.keys.items) |_| _ = add(rt.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
+        for (sub.keys.items) |_| _ = add(node.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
         var i = k.len - 1;
         while (i > 0) : (i -= 1) _ = c.emit(.storelocal, base + i - 1, 0);
         l.proto.inlined = true;
@@ -319,22 +320,22 @@ const Compiler = struct {
         const sym = k[0].code.ref.sym;
         const lp = k[2].code.lambda;
         const g = scope.globalOf(sym) orelse return false;
-        const is_map = g.* == rt.map_v;
-        if (!(is_map or g.* == rt.each_v) or lp.params.len != 1 or lp.rest) return false;
+        const is_map = g.* == node.map_v;
+        if (!(is_map or g.* == node.each_v) or lp.params.len != 1 or lp.rest) return false;
         const body = ready(lp) orelse return false;
         sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
         var counted: usize = 0;
         var source = k[1];
         if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
             const range = k[1].code.call[0].code.ref.sym;
-            if (scope.globalOf(range)) |rg| if (rg.* == rt.range_v) {
+            if (scope.globalOf(range)) |rg| if (rg.* == node.range_v) {
                 counted = 1;
                 source = k[1].code.call[1];
                 range.inlined = true; // rebinding range makes epoch change
             };
         }
         try c.gen(source, false);
-        const at = add(*rt.Proto, &c.protos, lp);
+        const at = add(*node.Proto, &c.protos, lp);
         _ = add(?*Bytecode, &c.bodies, body);
         _ = c.emit(if (is_map) .map else .each, at, counted);
         _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
@@ -372,23 +373,23 @@ const Compiler = struct {
     }
 };
 
-fn build(p: *rt.Proto) void {
+fn build(p: *node.Proto) void {
     p.tried = true;
     var c: Compiler = .{ .self = p };
     defer c.deinit();
-    for (p.params) |k| _ = add(rt.Key, &c.keys, k);
+    for (p.params) |k| _ = add(node.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
-    const code = &rt.make(Bytecode, 1)[0];
+    const code = &node.make(Bytecode, 1)[0];
     code.* = .{
         .ins = @constCast(dup(Ins, c.ins.items)),
         .consts = dup(V, c.consts.items),
-        .refs = dup(*rt.Ref, c.refs.items),
-        .prims = dup(*rt.Prim, c.prims.items),
-        .defs = dup(*rt.Def, c.defs.items),
-        .protos = dup(*rt.Proto, c.protos.items),
+        .refs = dup(*node.Ref, c.refs.items),
+        .prims = dup(*node.Prim, c.prims.items),
+        .defs = dup(*node.Def, c.defs.items),
+        .protos = dup(*node.Proto, c.protos.items),
         .bodies = dup(?*Bytecode, c.bodies.items),
-        .keys = dup(rt.Key, c.keys.items),
+        .keys = dup(node.Key, c.keys.items),
         .stamp = compile.current(),
         .room = room(c.ins.items),
     };
@@ -409,7 +410,7 @@ fn room(ins: []const Ins) usize {
 }
 
 fn dup(comptime T: type, xs: []const T) []const T {
-    const m = rt.make(T, xs.len);
+    const m = node.make(T, xs.len);
     @memcpy(m, xs);
     return m;
 }
@@ -418,7 +419,7 @@ fn dup(comptime T: type, xs: []const T) []const T {
 const enabled = true;
 
 /// The bytecode of p, compiled on first use and again after a macro changed; null if p stays with the tree evaluator.
-pub fn ready(p: *rt.Proto) ?*Bytecode {
+pub fn ready(p: *node.Proto) ?*Bytecode {
     if (!enabled or compile.in_macro) return null;
     if (p.code) |c| {
         if (c.stamp == compile.current()) return c;

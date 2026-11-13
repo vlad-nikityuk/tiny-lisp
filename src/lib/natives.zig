@@ -6,6 +6,7 @@ const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
 const machine = @import("../runtime/machine.zig");
+const node = @import("../runtime/node.zig");
 const V = rt.V;
 const Fn = rt.Fn;
 const Frame = machine.Frame;
@@ -82,7 +83,7 @@ fn concat(_: *Fn, a: []const V) E!V {
 
 /// (range n) is the list (0 1 ... n-1).
 fn range(_: *Fn, a: []const V) E!V {
-    const r = rt.list(&.{}, rt.rangeLen(arg(a, 0)));
+    const r = rt.list(&.{}, node.rangeLen(arg(a, 0)));
     for (r.asList().items(), 0..) |*x, i| x.* = V.num(@floatFromInt(i));
     return r;
 }
@@ -163,13 +164,13 @@ fn def(e: *rt.Env, k: [*:0]const u8, f: rt.Native) V {
 pub fn install(e: *rt.Env) void {
     _ = def(e, "print", .{ .plain = print });
     _ = def(e, "list?", .{ .plain = isList });
-    rt.map_v = rt.pin(def(e, "map", .{ .step = mapper(true) }));
-    rt.each_v = rt.pin(def(e, "each", .{ .step = mapper(false) }));
+    node.map_v = rt.pin(def(e, "map", .{ .step = mapper(true) }));
+    node.each_v = rt.pin(def(e, "each", .{ .step = mapper(false) }));
     _ = def(e, "reduce", .{ .step = reduce });
     _ = def(e, "apply", .{ .step = apply });
     _ = def(e, "partial", .{ .plain = partial });
     _ = def(e, "concat", .{ .plain = concat });
-    rt.range_v = rt.pin(def(e, "range", .{ .plain = range }));
+    node.range_v = rt.pin(def(e, "range", .{ .plain = range }));
     _ = def(e, "zip", .{ .plain = zip });
     _ = def(e, "read-file", .{ .plain = readFile });
     _ = def(e, "write-file", .{ .plain = writeFile });

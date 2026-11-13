@@ -11,6 +11,7 @@ const Ins = bytecode.Ins;
 const prims = @import("../runtime/primitives.zig");
 const compile = @import("../lang/compile.zig");
 const machine = @import("../runtime/machine.zig");
+const node = @import("../runtime/node.zig");
 const V = rt.V;
 const E = rt.E;
 const Op = bytecode.Opcode;
@@ -26,7 +27,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
 /// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
-inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *rt.Sym, g: *?*V) ?*V {
+inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     if (ins.b != 0 and ins.c == scope.shape) {
         var s = e;
         var hops = ins.b >> 16;
@@ -37,7 +38,7 @@ inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *rt.Sym, g: *?*V) ?*V {
     return outerLook(e, ins, sym, g);
 }
 
-noinline fn outerLook(e: *rt.Env, ins: *Ins, sym: *rt.Sym, g: *?*V) ?*V {
+noinline fn outerLook(e: *rt.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     var s = e;
     var hops: u32 = 0;
     var fixed = true; // every scope passed so far is a tier-2 scope
@@ -296,7 +297,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .map => { // as each, with the list of results (the body's values) between the index and that place
             st[sp] = V.num(-1);
-            st[sp + 1] = rt.list(&.{}, if (ip[0].b != 0) rt.rangeLen(st[sp - 1]) else rt.items(st[sp - 1]).len);
+            st[sp + 1] = rt.list(&.{}, if (ip[0].b != 0) node.rangeLen(st[sp - 1]) else rt.items(st[sp - 1]).len);
             st[sp + 2] = V.nil;
             sp += 3;
             ip += 1;
@@ -330,7 +331,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             const idx = st[ib].asNum() + 1;
             const counted = ip[0].b != 0;
             const items = rt.items(st[ib - 1]);
-            const len = if (counted) rt.rangeLen(st[ib - 1]) else items.len;
+            const len = if (counted) node.rangeLen(st[ib - 1]) else items.len;
             if (is_map and idx > 0) st[ib + 1].asList().items()[@intFromFloat(idx - 1)] = st[top];
             if (idx >= @as(f64, @floatFromInt(len))) { // done: the value of the loop is nil (each) or the results (map)
                 if (idx > 0) { // there is a loop frame

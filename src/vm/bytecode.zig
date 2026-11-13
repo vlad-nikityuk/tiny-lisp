@@ -1,7 +1,7 @@
 // Tier 2, the format: a function body as a stack bytecode over fixed scope slots. compiler.zig produces it, exec.zig runs it.
 const rt = @import("../runtime/runtime.zig");
 const V = rt.V;
-const node = rt;
+const node = @import("../runtime/node.zig");
 
 // zig fmt: off
 /// The instructions. a, b: the operands in the instruction (Ins); "push", "pop" and "top" are about the stack of values.

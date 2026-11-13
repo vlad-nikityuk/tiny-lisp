@@ -2,11 +2,12 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const node = @import("node.zig");
 const V = rt.V;
 const E = rt.E;
-const Key = rt.Key;
-const Sym = rt.Sym;
-const Proto = rt.Proto;
+const Key = node.Key;
+const Sym = node.Sym;
+const Proto = node.Proto;
 const Lam = rt.Lam;
 
 /// A scope: the variables of one call. The root scope has none: its names are in the global table.
@@ -88,12 +89,12 @@ pub fn globalOf(sym: *Sym) ?*V {
     return if (sym.local) null else slot(root, sym.key, false);
 }
 
-pub fn fetch(env: *Env, r: *rt.Ref) V {
+pub fn fetch(env: *Env, r: *node.Ref) V {
     return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
 }
 
 /// define or set!.
-pub fn assign(d: *rt.Def, e: *Env, v: V) E!void {
+pub fn assign(d: *node.Def, e: *Env, v: V) E!void {
     const sym = d.sym orelse return rt.fail(rt.str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
         if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
@@ -128,7 +129,7 @@ fn compiledInto(v: V) bool {
 // closures and recycling
 // ----------------------------------------------------------------
 /// A closure of p over e. It holds the scope and, through it, the enclosing ones: none can be recycled when its call ends.
-/// Except the body of a loop (the lambda given to the native each or map, see rt.Guard): it is dead once the loop is over.
+/// Except the body of a loop (the lambda given to the native each or map, see node.Guard): it is dead once the loop is over.
 pub fn lambda(p: *Proto, e: *Env) V {
     const loop_body = if (p.guard) |d| !d.sym.local and d.g.* == d.f else false;
     var s: ?*Env = if (loop_body) null else e;
