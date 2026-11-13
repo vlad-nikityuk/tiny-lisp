@@ -154,35 +154,43 @@ const Comp = struct {
         if (n.stamp != lang.current()) try lang.force(n);
     }
 
-    /// The names a nested lambda reads or sets count as used where the lambda is made (it may run before a later define of the same name).
+    /// A use of a name (a read or a set!). After a region that defined the name it cannot be compiled; otherwise it is
+    /// remembered, so that a later define of the name is rejected.
+    fn use(c: *Comp, sym: *rt.Sym) !void {
+        if (has(c.closed.items, sym)) return error.Bail;
+        if (c.slotOf(sym) == null and !has(c.seen.items, sym)) _ = add(rt.Key, &c.seen, sym.key);
+    }
+
+    fn has(keys: []const rt.Key, sym: *rt.Sym) bool {
+        for (keys) |k| if (k == sym.key) return true;
+        return false;
+    }
+
+    /// The names a nested lambda reads or sets count as used where the lambda is made (it may run before a later define of
+    /// the same name). Its own defines are not this function's: they get no slot here.
     fn scanUses(c: *Comp, n: *Node, depth: usize) !void {
         if (depth > max_depth) return error.Bail;
         try forced(n);
         switch (n.code) {
             .val => {},
-            .ref => |r| {
-                if (c.isClosed(r.sym)) return error.Bail;
-                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = add(rt.Key, &c.seen, r.sym.key);
-            },
+            .ref => |r| try c.use(r.sym),
             .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |k| try c.scanUses(k, depth + 1),
             .prim => |p| for (p.c[1..]) |k| try c.scanUses(k, depth + 1),
             .def => |d| {
                 try c.scanUses(d.val, depth + 1);
-                if (!d.define) if (d.sym) |sym| {
-                    if (c.isClosed(sym)) return error.Bail;
-                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = add(rt.Key, &c.seen, sym.key);
-                };
+                if (!d.define) if (d.sym) |sym| try c.use(sym);
             },
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
             else => return error.Bail,
         }
     }
 
+    /// Start of a region that may not run (a branch of an if, a later operand of && or ||).
     fn enter(c: *Comp) void {
         c.conditional_depth += 1;
     }
 
-    /// End of a region that may not run: the names it defined can no longer be used (they are bound from the start of the call,
+    /// End of such a region: the names it defined can no longer be used (they are bound from the start of the call,
     /// but only defined if the region ran).
     fn leave(c: *Comp) void {
         c.conditional_depth -= 1;
@@ -190,16 +198,6 @@ const Comp = struct {
             _ = add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
             c.held.items.len -= 1;
         }
-    }
-
-    fn isClosed(c: *Comp, sym: *rt.Sym) bool {
-        for (c.closed.items) |k| if (k == sym.key) return true;
-        return false;
-    }
-
-    fn seenBefore(c: *Comp, sym: *rt.Sym) bool {
-        for (c.seen.items) |k| if (k == sym.key) return true;
-        return false;
     }
 
     /// Find the defines of the body (they get slots) and reject what this tier does not do. A name a define adds is bound from the
@@ -211,10 +209,7 @@ const Comp = struct {
         switch (n.code) {
             .val => {},
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
-            .ref => |r| {
-                if (c.isClosed(r.sym)) return error.Bail;
-                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = add(rt.Key, &c.seen, r.sym.key);
-            },
+            .ref => |r| try c.use(r.sym),
             .@"if" => |k| {
                 try c.scan(k[0], depth + 1);
                 c.enter();
@@ -234,15 +229,11 @@ const Comp = struct {
             .def => |d| {
                 try c.scan(d.val, depth + 1);
                 const sym = d.sym orelse return error.Bail;
-                if (c.isClosed(sym)) return error.Bail;
-                if (!d.define) {
-                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = add(rt.Key, &c.seen, sym.key);
-                } else {
-                    if (c.seenBefore(sym)) return error.Bail;
-                    if (c.slotOf(sym) == null) _ = add(rt.Key, &c.keys, sym.key);
-                    if (c.conditional_depth > 0) _ = add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.conditional_depth });
-                    sym.local = true;
-                }
+                if (!d.define) return c.use(sym);
+                if (has(c.closed.items, sym) or has(c.seen.items, sym)) return error.Bail;
+                if (c.slotOf(sym) == null) _ = add(rt.Key, &c.keys, sym.key);
+                if (c.conditional_depth > 0) _ = add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.conditional_depth });
+                sym.local = true;
             },
             else => return error.Bail,
         }
@@ -254,46 +245,45 @@ const Comp = struct {
     }
 
     /// Code that leaves the value of n on the stack; in tail position it returns it (or tail-calls) instead.
-    fn gen(c: *Comp, n: *Node, tail: bool) !void {
+    fn gen(c: *Comp, n: *Node, tail: bool) error{Bail}!void {
         switch (n.code) {
-            .val => |v| {
-                _ = c.emit(.konst, add(V, &c.consts, v), 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
-            },
-            .ref => |*r| {
-                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*rt.Ref, &c.refs, r), 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
-            },
+            // if, begin and calls pass the tail position on
             .@"if" => |k| {
-                try c.genAll(k[0], false);
+                try c.gen(k[0], false);
                 const jf = c.emit(.jmpf, 0, 0);
-                try c.genAll(k[1], tail);
+                try c.gen(k[1], tail);
                 const j = if (tail) 0 else c.emit(.jmp, 0, 0);
                 c.patch(jf);
-                try c.genAll(k[2], tail);
+                try c.gen(k[2], tail);
                 if (!tail) c.patch(j);
+                return;
             },
             .begin => |k| {
                 for (k[0 .. k.len - 1]) |s| {
-                    try c.genAll(s, false);
+                    try c.gen(s, false);
                     _ = c.emit(.pop, 0, 0);
                 }
-                try c.genAll(k[k.len - 1], tail);
+                return c.gen(k[k.len - 1], tail);
+            },
+            .call => |k| return c.genCall(k, tail),
+            // the rest leave a value, which a tail position returns
+            .val => |v| _ = c.emit(.konst, add(V, &c.consts, v), 0),
+            .ref => |*r| {
+                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*rt.Ref, &c.refs, r), 0);
             },
             .@"&&", .@"||" => |k| {
                 var jumps: [max_short_circuit_operands]usize = undefined;
                 if (k.len > jumps.len) return error.Bail;
                 for (k[0 .. k.len - 1], 0..) |x, i| {
-                    try c.genAll(x, false);
+                    try c.gen(x, false);
                     jumps[i] = c.emit(if (n.code == .@"&&") .andj else .orj, 0, 0);
                 }
-                try c.genAll(k[k.len - 1], false);
+                try c.gen(k[k.len - 1], false);
                 for (jumps[0 .. k.len - 1]) |at| c.patch(at);
-                if (tail) _ = c.emit(.ret, 0, 0);
             },
             .prim => |p| {
                 if (p.sym.local or p.g.* != p.f) return c.genCall(p.c, tail); // rebound since it was compiled: an ordinary call
-                for (p.c[1..]) |x| try c.genAll(x, false);
+                for (p.c[1..]) |x| try c.gen(x, false);
                 const op: Op = switch (p.op) {
                     .not => .not,
                     .abs, .floor, .sqrt, .exp, .log, .cos => .prim1,
@@ -303,27 +293,20 @@ const Comp = struct {
                 };
                 const pi = add(*rt.Prim, &c.prims, p);
                 if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
             },
-            .call => |k| try c.genCall(k, tail),
             .lambda => |lp| {
                 const at = add(*rt.Proto, &c.protos, lp);
                 _ = add(?*Bytecode, &c.bodies, null);
                 _ = c.emit(.lambda, at, 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
             },
             .def => |d| {
-                try c.genAll(d.val, false);
-                if (d.sym) |sym| if (c.slotOf(sym)) |i| {
-                    _ = c.emit(.setlocal, i, 0);
-                    if (tail) _ = c.emit(.ret, 0, 0);
-                    return;
-                };
-                _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*rt.Def, &c.defs, d), 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
+                try c.gen(d.val, false);
+                const slot = if (d.sym) |sym| c.slotOf(sym) else null;
+                if (slot) |i| _ = c.emit(.setlocal, i, 0) else _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*rt.Def, &c.defs, d), 0);
             },
             else => return error.Bail,
         }
+        if (tail) _ = c.emit(.ret, 0, 0);
     }
 
     /// The operands just pushed: (op local local) and (op local constant) become one instruction (b: first slot << 16 | second);
@@ -388,13 +371,11 @@ const Comp = struct {
 
     /// (f args...) where f is a small global function without closures: its body is generated here, with slots of its own for its
     /// parameters and defines and its free names read as globals. Redefining f compiles this code again (epoch).
-    fn genInline(c: *Comp, k: []const *Node, tail: bool) !bool {
+    fn genInline(c: *Comp, k: []const *Node, tail: bool) error{Bail}!bool {
         if (c.inline_scope != null or c.inline_sites >= max_inline_sites or k[0].code != .ref) return false;
-        const sym = k[0].code.ref.sym;
-        const g = rt.globalOf(sym);
-        const f = (g orelse return false).*;
-        if (!f.is(.lam)) return false;
-        const l = f.asLam();
+        const g = rt.globalOf(k[0].code.ref.sym) orelse return false;
+        if (!g.*.is(.lam)) return false;
+        const l = g.*.asLam();
         if (l.env != rt.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
         var sub: Comp = .{};
         defer sub.deinit();
@@ -402,7 +383,7 @@ const Comp = struct {
         sub.scan(l.proto.body, 0) catch return false;
         var count: usize = 0;
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
-        for (k[1..]) |x| try c.genAll(x, false);
+        for (k[1..]) |x| try c.gen(x, false);
         const base = c.keys.items.len;
         for (sub.keys.items) |_| _ = add(rt.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
         var i = k.len - 1;
@@ -411,65 +392,67 @@ const Comp = struct {
         c.inline_scope = .{ .keys = sub.keys.items, .base = base };
         c.inline_sites += 1;
         defer c.inline_scope = null;
-        try c.genAll(l.proto.body, tail); // at a tail call site the body's own tail calls stay tail calls
+        try c.gen(l.proto.body, tail); // at a tail call site the body's own tail calls stay tail calls
         return true;
     }
 
-    fn genCall(c: *Comp, k: []const *Node, tail: bool) !void {
+    /// (each list (lambda (x) ...)) or (map list (lambda (x) ...)), while the name is the native: a loop of the bytecode, with
+    /// the lambda's body compiled on its own. Over (range n) it counts to n and builds no list.
+    fn genLoop(c: *Comp, k: []const *Node) error{Bail}!bool {
+        if (k.len != 3 or k[0].code != .ref or k[2].code != .lambda or k[2].guard == null) return false;
+        const sym = k[0].code.ref.sym;
+        const lp = k[2].code.lambda;
+        const g = rt.globalOf(sym) orelse return false;
+        const is_map = g.* == rt.map_v;
+        if (!(is_map or g.* == rt.each_v) or lp.params.len != 1 or lp.rest) return false;
+        const body = ready(lp) orelse return false;
+        sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
+        var counted: usize = 0;
+        var source = k[1];
+        if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
+            const range = k[1].code.call[0].code.ref.sym;
+            if (rt.globalOf(range)) |rg| if (rg.* == rt.range_v) {
+                counted = 1;
+                source = k[1].code.call[1];
+                range.inlined = true; // rebinding range makes epoch change
+            };
+        }
+        try c.gen(source, false);
+        const at = add(*rt.Proto, &c.protos, lp);
+        _ = add(?*Bytecode, &c.bodies, body);
+        _ = c.emit(if (is_map) .map else .each, at, counted);
+        _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
+        return true;
+    }
+
+    /// (vset! list index value), while vset! is the native: an instruction.
+    fn genVset(c: *Comp, k: []const *Node) error{Bail}!bool {
+        if (k.len != 4 or k[0].code != .ref) return false;
+        const sym = k[0].code.ref.sym;
+        const g = rt.globalOf(sym) orelse return false;
+        if (!prims.isVset(g.*)) return false;
+        sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
+        const native = add(V, &c.consts, g.*);
+        const list = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
+        const index = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
+        if (list != null and index != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
+            try c.gen(k[3], false);
+            _ = c.emit(.vset_ll, native, (list.? << 16) | index.?);
+        } else {
+            for (k[1..]) |x| try c.gen(x, false);
+            _ = c.emit(.vset, native, 0);
+        }
+        return true;
+    }
+
+    fn genCall(c: *Comp, k: []const *Node, tail: bool) error{Bail}!void {
         if (try c.genInline(k, tail)) return;
-        if (k.len == 3 and k[0].code == .ref and k[2].code == .lambda and k[2].guard != null) loop: { // (each list (lambda (x) ...)) as a loop of the bytecode
-            const sym = k[0].code.ref.sym;
-            const lp = k[2].code.lambda;
-            const g = rt.globalOf(sym);
-            const is_each = g != null and g.?.* == rt.each_v;
-            const is_map = g != null and g.?.* == rt.map_v;
-            if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
-            const body = ready(lp) orelse break :loop;
-            sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
-            var counted: usize = 0; // a loop over (range n): count to n, no list
-            var source = k[1];
-            if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
-                const rsym = k[1].code.call[0].code.ref.sym;
-                const rg = rt.globalOf(rsym);
-                if (rg != null and rg.?.* == rt.range_v) {
-                    counted = 1;
-                    source = k[1].code.call[1];
-                    rsym.inlined = true; // rebinding range makes epoch change
-                }
-            }
-            try c.genAll(source, false);
-            const at = add(*rt.Proto, &c.protos, lp);
-            _ = add(?*Bytecode, &c.bodies, body);
-            _ = c.emit(if (is_map) .map else .each, at, counted);
-            _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
+        if (try c.genLoop(k) or try c.genVset(k)) {
             if (tail) _ = c.emit(.ret, 0, 0);
             return;
         }
-        if (k.len == 4 and k[0].code == .ref) { // (vset! list index value), while vset! is the native
-            const sym = k[0].code.ref.sym;
-            const g = rt.globalOf(sym);
-            if (g) |slotp| if (prims.isVset(slotp.*)) {
-                sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
-                const lo = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
-                const io = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
-                if (lo != null and io != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
-                    try c.genAll(k[3], false);
-                    _ = c.emit(.vset_ll, add(V, &c.consts, slotp.*), (lo.? << 16) | io.?);
-                    if (tail) _ = c.emit(.ret, 0, 0);
-                    return;
-                }
-                for (k[1..]) |x| try c.genAll(x, false);
-                _ = c.emit(.vset, add(V, &c.consts, slotp.*), 0);
-                if (tail) _ = c.emit(.ret, 0, 0);
-                return;
-            };
-        }
-        for (k) |x| try c.genAll(x, false);
+        for (k) |x| try c.gen(x, false);
         _ = c.emit(if (tail) .tailcall else .call, k.len - 1, add(V, &c.consts, k[0].ast));
-    }
-
-    fn genAll(c: *Comp, n: *Node, tail: bool) error{Bail}!void {
-        c.gen(n, tail) catch return error.Bail;
     }
 };
 
