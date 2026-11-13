@@ -244,7 +244,8 @@ pub fn num(v: V) f64 {
     };
 }
 
-// ---------------------------------------------------------------- scopes
+// scopes
+// ----------------------------------------------------------------
 pub var macros: std.ArrayList(*V) = .empty; // root slots of the macro/* functions
 pub var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
 pub var gv: [1 << 13]V = @splat(.nil);
@@ -341,7 +342,8 @@ pub fn release(e: *Env) void {
     env_pool = e;
 }
 
-// ---------------------------------------------------------------- primitives
+// primitives
+// ----------------------------------------------------------------
 const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", trampoline, @"vset!", exp, log, sqrt, cos, floor };
 
 fn binop(op: Op, x: V, y: V) V {
@@ -426,7 +428,8 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
     }
 }
 
-// ---------------------------------------------------------------- natives that call back into Lisp
+// natives that call back into Lisp
+// ----------------------------------------------------------------
 // They run as frames: a native frame's arguments sit on vs right after the native itself (vs[k.base]),
 // its state goes after them.
 

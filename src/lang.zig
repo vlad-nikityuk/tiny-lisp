@@ -4,11 +4,10 @@ const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
 const V = rt.V; const Node = rt.Node;
-
 pub var out: *std.Io.Writer = undefined;
 pub var errv: V = .nil;
-
-// ---------------------------------------------------------------- compiler
+// compiler
+// ----------------------------------------------------------------
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
 // runs. Every macro/* runs once per node; a new or redefined one (rt.epoch) makes all nodes compile again. Nodes and symbols
 // are permanent; the AST they came from is pinned (rt.pin).
@@ -84,7 +83,8 @@ fn atom(n: *Node, e: *rt.Env) rt.E!?V { // the value if n is a constant or a var
     if (n.stamp != current()) try force(n);
     return switch (n.code) { .val => |v| v, .ref => |*r| rt.fetch(e, r), else => null };
 }
-// ---------------------------------------------------------------- evaluator
+// evaluator
+// ----------------------------------------------------------------
 // No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected on
 // rt.vs, and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 pub fn eval(ast: V, env: *rt.Env) rt.E!V { return exec(.{ .eval = stub(ast) }, env); }
@@ -156,8 +156,8 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
         },
     }
 }
-
-// ---------------------------------------------------------------- parser
+// parser
+// ----------------------------------------------------------------
 // Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.
 var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r";
 const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";

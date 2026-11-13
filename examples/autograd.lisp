@@ -12,7 +12,8 @@
 (define topo-stamp 0) ; each backward uses a new stamp, so no mark ever needs clearing
 (define topo-head nil) ; the value finished last: the head of the reverse topological order
 
-;; ---------------------------------------------------------------- val: infix arithmetic on values
+;; val: infix arithmetic on values
+;; ----------------------------------------------------------------
 ;; each level returns (expr rest-of-tokens); operands are the tokens themselves
 (defn val/op? (x) (|| (eq? x "+") (eq? x "-") (eq? x "*") (eq? x "/") (eq? x "**")))
 
@@ -50,7 +51,8 @@
   (lambda (ast)
     (if (eq? (first ast) "val") (first (val/sum (rest ast))) ast)))
 
-;; ---------------------------------------------------------------- Value
+;; Value
+;; ----------------------------------------------------------------
 ;; Field access reads like attributes and costs nothing: (data v) is (at v 0), (grad v) is (at v 1), and so on;
 ;; (Value data children local-grads) is the list with the other fields at their start values.
 (define slot-names (list "data" "grad" "children" "local-grads"))
