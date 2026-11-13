@@ -46,14 +46,14 @@ inline fn math(op: Op, n: f64) f64 {
     };
 }
 
-/// One step of a folding primitive on any two values: + joins strings, everything else becomes a number first.
+/// One step of a folding primitive: two numbers are computed as they are; of other values + joins strings, && and ||
+/// choose one, and the rest take them as numbers (rt.num).
 fn binop(comptime op: Op, x: V, y: V) V {
-    return switch (op) {
-        .@"&&" => if (truthy(x)) y else x,
-        .@"||" => if (truthy(x)) x else y,
-        .@"+" => if (x.is(.s) or x.is(.lit) or y.is(.s) or y.is(.lit)) str("{f}{f}", .{ x, y }) else numeric(op, num(x), num(y)),
-        else => numeric(op, num(x), num(y)),
-    };
+    if (op == .@"&&") return if (truthy(x)) y else x;
+    if (op == .@"||") return if (truthy(x)) x else y;
+    if (x.isNum() and y.isNum()) return numeric(op, x.asNum(), y.asNum());
+    if (op == .@"+" and (x.is(.s) or x.is(.lit) or y.is(.s) or y.is(.lit))) return str("{f}{f}", .{ x, y });
+    return numeric(op, num(x), num(y));
 }
 
 /// One native per op, so each is specialised at compile time.
@@ -71,7 +71,6 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
         .@"+", .@"-", .@"*", .@"/", .mod, .@">", .@"<", .@">=", .@"<=", .@"&&", .@"||" => true,
         else => false,
     }) { // arithmetic, comparison, && and ||: fold left
-        if (op != .@"&&" and op != .@"||" and a.len == 2 and a[0].isNum() and a[1].isNum()) return numeric(op, a[0].asNum(), a[1].asNum());
         var r = x;
         for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
