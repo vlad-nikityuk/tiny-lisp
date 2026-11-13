@@ -61,7 +61,7 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 ## What the numbers say
 
 - **The evaluator has two tiers.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
-  parameters and defines (`src/bytecode.zig`, run by `src/vm.zig`); the tree evaluator in `src/lang.zig` still runs everything else and defines the
+  parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); the tree evaluator in `src/lang/` still runs everything else and defines the
   semantics. Bytecode expands the whole body on first call and sees primitive rebinding only on subsequent calls,
   as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
   and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.

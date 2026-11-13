@@ -24,7 +24,7 @@ or grows it with `cons` is quadratic. A `range` written as `(cons i acc)` over 5
 each and stops at the shortest. `(for/list ((a b) (zip xs ys)) body)` expands to exactly that. Destructuring a list of
 pairs (`(for/list ((a b) pairs) …)`) works but costs two `define`s and two `at`s per item; use it off the hot path.
 
-**Loops.** `for` and `for/list` over one list are loops that the second tier (`src/vm.zig`) runs inside a function's bytecode, reusing the
+**Loops.** `for` and `for/list` over one list are loops that the second tier (`src/vm/exec.zig`) runs inside a function's bytecode, reusing the
   scope of an iteration unless the body creates a closure: about 10 ns an iteration, about as fast as CPython's `for`. A loop in a
   body that is not in a function (top level of a file) is run by the tree evaluator and costs about 25 ns an iteration, so put hot
   loops in a `defn`. Keep inner bodies flat: a closure created in an iteration, or a body that calls a function that is not
@@ -96,6 +96,6 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
   (`deftest` adds that when it expands, via `patch-asserts`), so write plain `(assert …)`.
 - Beware assertions that cannot fail: before trusting an `equal?` on a result, check that a wrong value would be caught.
 - REPL-visible behaviour goes in `spec/repl.py`. Add a case for every change.
-- After changing a native or the evaluator, stress the collector: build with a tiny `limit` in `src/gc.zig` (2048)
+- After changing a native or the evaluator, stress the collector: build with a tiny `limit` in `src/runtime/gc.zig` (2048)
   and run both suites and the microgpt example, then put the limit back.
 - Do not name a test helper like a macro the specs define (`twice`, …): the macro rewrites it.

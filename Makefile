@@ -25,7 +25,7 @@ endef
 test-tree: # the bytecode tier off: the tree evaluator runs everything, and must give the same results
 	$(call test-variant,tree,vm/compiler.zig,const enabled = true;,const enabled = false;)
 
-test-gc: # a collection after every 2 KB allocated: whatever the collector cannot reach from a root is freed at once
+test-gc: # collect once 2 KB were allocated (the threshold is at least 2 KB, then half the live size): whatever the collector cannot reach from a root is freed early
 	$(call test-variant,gc,runtime/gc.zig,2 << 20,2048)
 
 bench: $(BINARY) # tinylisp against CPython on bench/*, e.g. make bench ARGS="-n 1 nbody life"
