@@ -14,16 +14,16 @@ make test                  # spec/repl.py + spec/specs.lisp
 make bench                 # bench/run.py: 18 programs in Python and tinylisp, same output checked, times compared (ARGS="-n 1 nbody")
 make fast                  # ReleaseFast build without the checks (a previously measured ~4% faster): ./tinylisp-fast
 ./tinylisp [-f file.lisp] [--debug]
-zig fmt --check src/       # lang.zig opts out; all other Zig sources stay formatted
+zig fmt --check src/       # every Zig source is zig fmt clean
 ```
 
 ## Architecture
 
-`src/lang.zig` is the compiler, the explicit-stack evaluator (`eval`/`exec`, which runs compiled nodes); `src/parser.zig` holds the iterative parser (also available as `lang.parse`), and `src/vm.zig` is the second tier (below). Keep it at **200 lines or fewer**, including comments and blank lines: it starts with `// zig fmt: off`, groups related statements, and keeps short section comments. Keep names meaningful and the total source small; move support code rather than hiding evaluator control flow.
+`src/lang.zig` is the compiler, the explicit-stack evaluator (`eval`/`exec`, which runs compiled nodes); `src/parser.zig` holds the iterative parser (also available as `lang.parse`), and `src/vm.zig` is the second tier (below). Keep names meaningful and the total source small; keep the evaluator's control flow visible in `run` rather than hidden behind helpers.
 
 The compiler turns the AST into typed nodes (`runtime.Node`/`Code`: constant, variable, if, begin, &&/||, define/set!, lambda, call, prim) lazily, the first time a node is evaluated: macro/* expansion happens there (once per node; `runtime.epoch` is bumped when a macro/* changes and nodes compile again; `in_macro` turns expansion off inside macros), symbols are interned (`Sym`; scope keys compare by address; a name no scope has ever bound (`Sym.local`) is looked up in the global table directly, with the slot cached in the node). Nodes, their arrays and symbols are permanent (`gc.perm`); the AST they came from (and macro expansions) is pinned for good with `runtime.pin`, so frames and closures (`Lam.proto`) point at nodes freely.
 
-`src/runtime.zig` holds values (and the printer, `V.format`), the machine state (`K`, `Go`, `ks`, `vs`), constructors, scopes and macro registration, primitives, the natives that call back into Lisp (as machine frames: `start`/`step`/`finish`/`callback`/`tail`, `try`, `recover`, the trampoline), and root-scope initialization. It raises errors through `lang.errv`; other modules import `runtime.zig` directly; `lang.zig` also exposes `force`, `current`, `in_macro` and `stub` to other modules, alongside `eval`, `parse`, `out` and `errv`. Primitives (`+ - car cons try ...`) are one function, `prim`, dispatched on the `Op` enum. All Zig files other than `lang.zig` use normal `zig fmt` formatting.
+`src/runtime.zig` holds values (and the printer, `V.format`), the machine state (`K`, `Go`, `ks`, `vs`), constructors, scopes and macro registration, primitives, the natives that call back into Lisp (as machine frames: `start`/`step`/`finish`/`callback`/`tail`, `try`, `recover`, the trampoline), and root-scope initialization. It raises errors through `lang.errv`; other modules import `runtime.zig` directly; `lang.zig` also exposes `force`, `current`, `in_macro` and `stub` to other modules, alongside `eval`, `parse`, `out` and `errv`. Primitives (`+ - car cons try ...`) are one function, `prim`, dispatched on the `Op` enum. All Zig sources use normal `zig fmt` formatting.
 
 `src/repl.zig` is the CLI/REPL: it installs the native stdlib (`src/stdlib_native.zig`, which also holds the whole-file natives `read-file write-file split load`; `load` is a `step` native that returns `.eval` for the parsed file), then loads `src/stdlib.lisp` (path relative to the repo root), then runs a file or the REPL. `src/gc.zig` is memory management. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `lang.errv`.
 
