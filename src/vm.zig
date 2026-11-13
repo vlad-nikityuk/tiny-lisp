@@ -27,6 +27,9 @@ const Comp = struct {
     cond: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
     held: std.ArrayList(struct { key: rt.Key, level: usize }) = .empty, // names defined in the regions being scanned
     closed: std.ArrayList(rt.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
+    self: ?*rt.Proto = null,
+    inl: ?struct { keys: []const rt.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
+    sites: usize = 0, // functions inlined so far
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
     fn emit(c: *Comp, op: Op, a: usize, b: usize) usize {
@@ -41,6 +44,10 @@ const Comp = struct {
     }
 
     fn slotOf(c: *Comp, sym: *rt.Sym) ?usize {
+        if (c.inl) |i| {
+            for (i.keys, 0..) |k, j| if (k == sym.key) return i.base + j;
+            return null;
+        }
         for (c.keys.items, 0..) |k, i| if (k == sym.key) return i;
         return null;
     }
@@ -156,7 +163,7 @@ const Comp = struct {
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .ref => |*r| {
-                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(.outer, c.add(*rt.Ref, &c.refs, r), 0);
+                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inl != null) .global else .outer, c.add(*rt.Ref, &c.refs, r), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .@"if" => |k| {
@@ -222,7 +229,7 @@ const Comp = struct {
                     if (tail) _ = c.emit(.ret, 0, 0);
                     return;
                 };
-                _ = c.emit(.setouter, c.add(*rt.Def, &c.defs, d), 0);
+                _ = c.emit(if (c.inl != null) .setglobal else .setouter, c.add(*rt.Def, &c.defs, d), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             else => return error.Bail,
@@ -245,7 +252,54 @@ const Comp = struct {
         return true;
     }
 
+    /// Is this body something to inline: small, no closures?
+    fn inlinable(n: *Node, depth: usize, count: *usize) bool {
+        count.* += 1;
+        if (depth > 24 or count.* > 48) return false;
+        return switch (n.code) {
+            .val, .ref => true,
+            .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |x| {
+                if (!inlinable(x, depth + 1, count)) break false;
+            } else true,
+            .prim => |p| for (p.c[1..]) |x| {
+                if (!inlinable(x, depth + 1, count)) break false;
+            } else true,
+            .def => |d| inlinable(d.val, depth + 1, count),
+            else => false,
+        };
+    }
+
+    /// (f args...) where f is a small global function without closures: its body is generated here, with slots of its own for its
+    /// parameters and defines and its free names read as globals. Redefining f compiles this code again (epoch).
+    fn genInline(c: *Comp, k: []const *Node, tail: bool) !bool {
+        if (c.inl != null or c.sites >= 8 or k[0].code != .ref) return false;
+        const sym = k[0].code.ref.sym;
+        const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+        const f = (g orelse return false).*;
+        if (!f.is(.lam)) return false;
+        const l = f.asLam();
+        if (l.env != rt.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
+        var sub: Comp = .{};
+        defer inline for (.{ &sub.ins, &sub.consts, &sub.refs, &sub.prims, &sub.defs, &sub.protos, &sub.bodies, &sub.keys, &sub.seen, &sub.held, &sub.closed }) |list| list.deinit(std.heap.c_allocator);
+        for (l.proto.params) |pk| _ = sub.add(rt.Key, &sub.keys, pk);
+        sub.scan(l.proto.body, 0) catch return false;
+        var count: usize = 0;
+        if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > 8) return false;
+        for (k[1..]) |x| try c.genAll(x, false);
+        const base = c.keys.items.len;
+        for (sub.keys.items) |_| _ = c.add(rt.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
+        var i = k.len - 1;
+        while (i > 0) : (i -= 1) _ = c.emit(.storelocal, base + i - 1, 0);
+        l.proto.inlined = true;
+        c.inl = .{ .keys = sub.keys.items, .base = base };
+        c.sites += 1;
+        defer c.inl = null;
+        try c.genAll(l.proto.body, tail); // at a tail call site the body's own tail calls stay tail calls
+        return true;
+    }
+
     fn gen_call(c: *Comp, k: []const *Node, tail: bool) !void {
+        if (try c.genInline(k, tail)) return;
         if (k.len == 3 and k[0].code == .ref and k[2].code == .lambda and k[2].guard != null) loop: { // (each list (lambda (x) ...)) as a loop of the bytecode
             const sym = k[0].code.ref.sym;
             const lp = k[2].code.lambda;
@@ -286,7 +340,7 @@ const Comp = struct {
 
 fn compile(p: *rt.Proto) void {
     p.tried = true;
-    var c: Comp = .{};
+    var c: Comp = .{ .self = p };
     defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |l| l.deinit(std.heap.c_allocator);
     for (p.params) |k| _ = c.add(rt.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
@@ -474,7 +528,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
         .setouter => {
             const d = code.defs[ip[0].a];
             if (d.define) try rt.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| {
-                if (p.*.is(.f)) rt.epoch +%= 1; // as rt.assign does
+                if (rt.compiledInto(p.*)) rt.epoch +%= 1; // as rt.assign does
                 p.* = st[sp - 1];
             }
             ip += 1;
@@ -621,6 +675,30 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             st[sp + 1] = rt.list(&.{}, rt.items(st[sp - 1]).len);
             st[sp + 2] = V.nil;
             sp += 3;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .global => { // a name of an inlined function's body: only the global scope is looked at
+            const r = code.refs[ip[0].a];
+            if (r.g == null) r.g = rt.slotOf(rt.root, r.sym.key);
+            st[sp] = if (r.g) |p| p.* else V.nil;
+            sp += 1;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .setglobal => {
+            const d = code.defs[ip[0].a];
+            if (d.g == null) d.g = rt.slotOf(rt.root, d.sym.?.key);
+            if (d.g) |p| {
+                if (rt.compiledInto(p.*)) rt.epoch +%= 1;
+                p.* = st[sp - 1];
+            }
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .storelocal => {
+            e.vars[ip[0].a].v = st[sp - 1];
+            sp -= 1;
             ip += 1;
             continue :sw ip[0].op;
         },

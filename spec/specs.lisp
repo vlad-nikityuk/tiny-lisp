@@ -853,4 +853,24 @@
   (assert (eq? (/ 1 0) (/ 1 0)))
   (assert (eq? (len (arith-ops "x" 2)) 6))) ; text is not a number: the arithmetic gives nan, like the tree evaluator
 
+(define inl-counter 100)
+(defn inl-read-counter () inl-counter)
+(defn inl-bump (n) (begin (set! inl-counter (+ inl-counter n)) inl-counter))
+(defn inl-with-def (x) (begin (define y (* x 2)) (+ y 1)))
+(defn inl-caller (inl-counter) (list (inl-read-counter) inl-counter (inl-with-def inl-counter) (inl-bump 5)))
+(defn inl-inc (x) (+ x 1))
+(defn inl-use (n) (+ (inl-inc n) (inl-inc (inl-inc n))))
+(defn inl-clash (x y) (list (inl-with-def y) x y))
+(defn inl-a (n acc) (if (eq? n 0) acc (inl-b n acc)))
+(defn inl-b (n acc) (inl-a (- n 1) (+ acc 1)))
+(define inl-first (inl-use 10))
+(defn inl-inc (x) (+ x 1000))
+(deftest "tier 2: small functions inlined into their callers"
+  (assert (equal? (inl-caller 7) (list 100 7 15 105)))
+  (assert (eq? inl-counter 105))
+  (assert (eq? inl-first 23))
+  (assert (eq? (inl-use 10) 3020))
+  (assert (equal? (inl-clash 1 2) (list 5 1 2)))
+  (assert (eq? (inl-a 1000000 0) 1000000)))
+
 (run-tests)

@@ -131,10 +131,10 @@ pub const Sym = struct { key: Key, local: bool = false, prim: bool = false }; //
 pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // slow: an operand is a call, so it is never computed in place
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
-pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
+pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false, inlined: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
+pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, global, setglobal, storelocal, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
 pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, bodies: []const ?*Bytecode, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
@@ -311,7 +311,7 @@ pub fn assign(d: *Def, e: *Env, v: V) E!void {
         sym.local = sym.local or e.p != null;
         set(e, sym.key, v);
     } else if (find(e, sym, &d.g)) |p| {
-        if (p.*.is(.f)) epoch +%= 1;
+        if (compiledInto(p.*)) epoch +%= 1;
         p.* = v;
     }
 }
@@ -323,9 +323,14 @@ pub fn set(e: *Env, key: Key, v: V) void {
         if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
         break :blk s;
     };
-    if (e.p == null and s.*.is(.f)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) is replaced
+    if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) or an inlined function is replaced
     s.* = v;
     if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) epoch +%= 1;
+}
+
+/// Replacing this value must compile the tier-2 code again: it is a native, or a function that other functions' code contains.
+pub fn compiledInto(v: V) bool {
+    return v.is(.f) or (v.is(.lam) and v.asLam().proto.inlined);
 }
 
 pub fn lambda(p: *Proto, e: *Env) V {
