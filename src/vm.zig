@@ -46,6 +46,28 @@ const Comp = struct {
         if (n.stamp != lang.current()) try lang.force(n);
     }
 
+    /// The names a nested lambda reads or sets count as used where the lambda is made (it may run before a later define of the same name).
+    fn scanUses(c: *Comp, n: *Node, depth: usize) !void {
+        if (depth > max_depth) return error.Bail;
+        try forced(n);
+        switch (n.code) {
+            .val => {},
+            .ref => |r| if (!c.seenBefore(r.sym)) {
+                _ = c.add(rt.Key, &c.seen, r.sym.key);
+            },
+            .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |k| try c.scanUses(k, depth + 1),
+            .prim => |p| for (p.c[1..]) |k| try c.scanUses(k, depth + 1),
+            .def => |d| {
+                try c.scanUses(d.val, depth + 1);
+                if (!d.define) if (d.sym) |sym| if (!c.seenBefore(sym)) {
+                    _ = c.add(rt.Key, &c.seen, sym.key);
+                };
+            },
+            .lambda => |lp| try c.scanUses(lp.body, depth + 1),
+            else => return error.Bail,
+        }
+    }
+
     fn seenBefore(c: *Comp, sym: *rt.Sym) bool {
         for (c.seen.items) |k| if (k == sym.key) return true;
         return false;
@@ -58,7 +80,8 @@ const Comp = struct {
         if (depth > max_depth) return error.Bail;
         try forced(n);
         switch (n.code) {
-            .val, .lambda => {}, // a lambda's body is compiled when it is called
+            .val => {},
+            .lambda => |lp| try c.scanUses(lp.body, depth + 1),
             .ref => |r| if (!c.seenBefore(r.sym)) {
                 _ = c.add(rt.Key, &c.seen, r.sym.key);
             },
