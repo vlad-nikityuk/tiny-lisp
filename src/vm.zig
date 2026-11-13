@@ -186,7 +186,7 @@ fn compile(p: *rt.Proto) void {
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];
-    code.* = .{ .ins = dup(rt.Ins, c.ins.items), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current() };
+    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current() };
     for (code.consts) |v| _ = rt.pin(v);
     p.code = code;
 }
@@ -243,6 +243,37 @@ inline fn arith(comptime op: Op, vs: *std.ArrayList(V)) bool {
     return true;
 }
 
+/// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
+/// ((hops + 1) << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
+/// and only check the key.
+inline fn outerSlot(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
+    if (ins.b != 0) {
+        var s = e;
+        var hops = ins.b >> 16;
+        while (hops > 0) : (hops -= 1) s = s.p.?;
+        const i = ins.b & 0xffff;
+        if (i < s.vars.len and s.vars[i].k == sym.key) return &s.vars[i].v;
+    }
+    return outerLook(e, ins, sym, g);
+}
+
+noinline fn outerLook(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
+    var s = e;
+    var hops: u32 = 0;
+    var fixed = true; // every scope passed so far is a tier-2 scope
+    while (sym.local and s.p != null) : (s = s.p.?) {
+        var i = s.vars.len;
+        while (i > 0) : (i -= 1) if (s.vars[i - 1].k == sym.key) {
+            if (fixed and hops < 0x7fff and i - 1 < 0x10000) ins.b = (hops << 16) | @as(u32, @intCast(i - 1));
+            return &s.vars[i - 1].v;
+        };
+        fixed = fixed and s.proto != null and s.proto.?.code != null;
+        hops += 1;
+    }
+    if (g.* == null) g.* = rt.slotOf(rt.root, sym.key);
+    return g.*;
+}
+
 /// An operation on values it does not compute in place: call whatever its name is now (it was a primitive when compiled).
 fn slow(m: *rt.M, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go {
     const p = code.prims[ip[0].a];
@@ -272,7 +303,8 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         .outer => {
-            gc.push(V, vs, rt.fetch(e, code.refs[ip[0].a]));
+            const r = code.refs[ip[0].a];
+            gc.push(V, vs, if (outerSlot(e, &ip[0], r.sym, &r.g)) |p| p.* else V.nil);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -282,7 +314,11 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         .setouter => {
-            try rt.assign(code.defs[ip[0].a], e, vs.items[vs.items.len - 1]);
+            const d = code.defs[ip[0].a];
+            if (d.define) try rt.assign(d, e, vs.items[vs.items.len - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| {
+                if (p.*.is(.f)) rt.epoch +%= 1; // as rt.assign does
+                p.* = vs.items[vs.items.len - 1];
+            }
             ip += 1;
             continue :sw ip[0].op;
         },
