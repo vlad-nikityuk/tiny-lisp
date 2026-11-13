@@ -170,7 +170,7 @@ The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, argume
 
 ## History
 
-1. **CoffeeScript**: the first version.
+1. **CoffeeScript** (2015): the project started here, with the first version.
 2. **TypeScript**: a straight port. For a long time it had no proper tail calls, and macro expansion was recursive, so deep programs overflowed the JavaScript stack.
 3. **Coding agents**: fixing that became much easier with AI coding agents: a stack-safe evaluator, iterative macro expansion, tests shared across runtimes.
 4. **Zig**: a rewrite with an explicit-stack evaluator and its own memory management, about 5× faster than the TypeScript version on Node.js. The first attempt was in C, but it was less readable than Zig, so the Zig port replaced it.

@@ -19,7 +19,8 @@
         (list "define" (first body) (list "lambda" (first (rest body)) (seq (rest (rest body))))))
       ast)))
 
-;; (fn (args) expr...) is a lambda whose body may be several expressions
+;; a lambda whose body may be several expressions
+;; (fn (args) expr...) -> (lambda (args) (begin expr...))
 (define macro/fn
   (lambda (ast)
     (if (eq? (first ast) "fn")
@@ -177,7 +178,7 @@
       (begin
         (define body (rest ast))
         (define name (first body))
-        (define test (first (rest body)))
+        (define test (seq (rest body)))
         ;; test-name ; test-fn pair
         (define test-definition (list "list" (list "quote" name) name))
         (define tests-var "*TESTS*")
