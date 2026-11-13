@@ -13,7 +13,6 @@ const bytecode = @import("bytecode.zig");
 const Scan = @import("scan.zig").Scan;
 const V = value.V;
 const Node = node.Node;
-const E = value.E;
 const Op = bytecode.Opcode;
 const Ins = bytecode.Ins;
 const Bytecode = bytecode.Bytecode;

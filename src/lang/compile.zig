@@ -112,7 +112,7 @@ fn form(a: []const V) value.E!node.Code {
 
 /// The code of the call a (c: its items). Two kinds of call are recognised by their head, while it is a global no scope binds:
 /// - the native each or map with a lambda as the last operand: the lambda gets a guard, so making it captures nothing (scope.lambda);
-/// - a primitive that `primitives.fast` knows, with one or two operands: a Prim node, computed in place (`inplace` below).
+/// - a primitive that `primitives.fast` knows, with one or two operands: a Prim node, computed in place (`inplace` in eval.zig).
 fn call(a: []const V, c: []const *Node) node.Code {
     if (!a[0].is(.s)) return .{ .call = c };
     const sym = intern(a[0]);
