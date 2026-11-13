@@ -32,9 +32,29 @@ fn lex() V {
     return if (lit) V.literal(text) else V.string(text);
 }
 
+/// The whole text is one expression.
 pub fn parse(text: []const u8) value.E!V {
     src = text;
     pos = 0;
+    const x = try expression();
+    skip();
+    if (peek() != 0) return value.fail(value.str(unexpected, .{}));
+    return x;
+}
+
+/// The next expression of text from position at on (which moves past it), or null when only blanks and comments remain: a file is
+/// read form by form, so that the macros one form defines are known when the next one is expanded.
+pub fn parseNext(text: []const u8, at: *usize) value.E!?V {
+    src = text;
+    pos = at.*;
+    skip();
+    if (peek() == 0) return null;
+    const x = try expression();
+    at.* = pos;
+    return x;
+}
+
+fn expression() value.E!V {
     var done: std.ArrayList(V) = .empty;
     defer done.deinit(std.heap.c_allocator); // finished items, the open lists' items among them
     var open: std.ArrayList(i64) = .empty;
@@ -67,7 +87,5 @@ pub fn parse(text: []const u8) value.E!V {
         while (open.items.len > 0 and open.getLast() < 0) : (_ = open.pop()) d = value.list(&.{ V.string(value.mkstr(prefixes[@intCast(-1 - open.getLast())], true)), d }, 2); // 'x is (quote x)
         gc.push(V, &done, d);
     }
-    skip();
-    if (peek() != 0) return value.fail(value.str(unexpected, .{}));
     return done.items[0];
 }

@@ -1,6 +1,5 @@
-// The tree tier's compiler: the AST (parser.zig) becomes nodes, which eval.zig runs and vm/compiler.zig compiles further.
-// This file and eval.zig need each other: expanding macros runs Lisp functions (`expand` calls eval.exec), and the evaluator
-// compiles a node the first time it meets it (`force`).
+// The tree tier's compiler: the AST (parser.zig, after expand.zig has run the macros over it) becomes nodes, which eval.zig runs
+// and vm/compiler.zig compiles further. A node is compiled the first time it is evaluated (`force`); no macro runs here.
 const std = @import("std");
 const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
@@ -8,16 +7,11 @@ const scope = @import("../runtime/scope.zig");
 const node = @import("../runtime/node.zig");
 const machine = @import("../runtime/machine.zig");
 const primitives = @import("../runtime/primitives.zig");
-const eval = @import("eval.zig");
 const V = value.V;
 const Node = node.Node;
 
-// The AST becomes nodes (node.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
-// runs. Every macro/* runs once per node; a new or redefined one (scope.epoch) recompiles all nodes. Nodes and symbols are
-// permanent; their AST is pinned.
-
-/// While a macro runs, code is not expanded (so expansion nests one level).
-pub var in_macro = false;
+// The AST becomes nodes (node.Node) once, lazily: a node is compiled when first evaluated. The AST is already macro-expanded
+// (expand.zig does that for a whole top-level form before it runs). Nodes and symbols are permanent; their AST is pinned.
 
 const make = node.make;
 var interned: std.StringHashMapUnmanaged(*node.Sym) = .empty;
@@ -48,28 +42,17 @@ fn kids(a: []const V, n: usize) []const *Node {
     return c;
 }
 
-/// The stamp of up-to-date code; 0 means not compiled yet.
+/// The stamp of up-to-date code (scope.epoch changes when code that was compiled around a rebound primitive is out of date); 0 means not compiled yet.
 pub fn current() u32 {
-    return scope.epoch *% 2 +% @intFromBool(in_macro) +% 1;
-}
-
-/// Every macro/* over x in turn; one that returns a false value leaves x as it was.
-fn expand(x: V) value.E!V {
-    in_macro = true;
-    defer in_macro = false;
-    var y = x;
-    for (scope.macros.items) |macro| {
-        const b = machine.vs.items.len;
-        defer machine.vs.items.len = b;
-        gc.push(V, &machine.vs, macro.*);
-        gc.push(V, &machine.vs, y);
-        const z = try eval.exec(.{ .apply = b }, scope.root);
-        if (value.truthy(z)) y = z;
-    }
-    return y;
+    return scope.epoch +% 1;
 }
 
 const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
+
+/// Is name a special form (or defmacro, which the expander itself understands)? No macro may take such a name.
+pub fn isSpecial(name: []const u8) bool {
+    return std.mem.eql(u8, name, "defmacro") or (std.meta.stringToEnum(Form, name) orelse .apply) != .apply;
+}
 
 /// The code of a list: a special form by its head, or a call.
 fn form(a: []const V) value.E!node.Code {
@@ -133,18 +116,16 @@ fn call(a: []const V, c: []const *Node) node.Code {
     return .{ .call = c };
 }
 
-/// Expand macros over n's AST, then build its code unless they changed nothing.
+/// Build the code of n from its AST (once), and stamp it as up to date.
 pub fn force(n: *Node) value.E!void {
-    const x = if (in_macro or value.ptr(n.ast) == null) n.ast else try expand(n.ast);
-    if (n.code == .raw or x != n.src) {
-        n.code = switch (x.tag()) {
-            .s => .{ .ref = .{ .sym = intern(x) } },
-            .lit => .{ .val = V.string(x.asStr()) }, // a string literal evaluates to a string
-            .l => try form(x.asList().items()),
-            else => .{ .val = x },
+    if (n.code == .raw) {
+        n.code = switch (n.ast.tag()) {
+            .s => .{ .ref = .{ .sym = intern(n.ast) } },
+            .lit => .{ .val = V.string(n.ast.asStr()) }, // a string literal evaluates to a string
+            .l => try form(n.ast.asList().items()),
+            else => .{ .val = n.ast },
         };
         if (n.code == .lambda) n.code.lambda.guard = n.guard;
-        n.src = gc.pin(x);
     }
     n.stamp = current();
 }

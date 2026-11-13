@@ -7,7 +7,6 @@ const scope = @import("../runtime/scope.zig");
 const node = @import("../runtime/node.zig");
 const machine = @import("../runtime/machine.zig");
 const primitives = @import("../runtime/primitives.zig");
-const compile = @import("../lang/compile.zig");
 const bytecode = @import("bytecode.zig");
 const Bytecode = bytecode.Bytecode;
 const Ins = bytecode.Ins;
@@ -346,7 +345,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             if (idx == 0) resumeFrame(.loop, e, code, pcOf(code, ip), top); // the body comes back to this instruction
             const k = &ks.items[ks.items.len - 1];
             st[ib] = V.num(idx);
-            if (!compile.in_macro and gc.due()) {
+            if (gc.due()) {
                 vs.items.len = sp;
                 gc.collect();
             }

@@ -22,7 +22,7 @@ pub const Scan = struct {
         inline for (.{ &s.keys, &s.seen, &s.held, &s.closed }) |list| list.deinit(value.gpa);
     }
 
-    /// The slots of a function, or error.Bail (or the error of a macro) if it cannot be compiled.
+    /// The slots of a function, or error.Bail (or the error of compiling a node) if it cannot be compiled.
     pub fn function(s: *Scan, p: *node.Proto) !void {
         for (p.params) |k| gc.push(node.Key, &s.keys, k);
         try s.body(p.body, 0);

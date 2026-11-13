@@ -6,6 +6,8 @@ const scope = @import("../runtime/scope.zig");
 const node = @import("../runtime/node.zig");
 const machine = @import("../runtime/machine.zig");
 const compile = @import("../lang/compile.zig");
+const parser = @import("../lang/parser.zig");
+const expand = @import("../lang/expand.zig");
 const source = @import("source.zig");
 const V = value.V;
 const Fn = value.Fn;
@@ -148,11 +150,24 @@ fn split(_: *Fn, a: []const V) E!V {
     return value.list(parts.items, parts.items.len);
 }
 
-/// (load "file.lisp") evaluates the file's expressions in the caller's scope; the frame hands on the last value.
+/// (load "file.lisp") runs the file's forms in the caller's scope, one after the other: each is read, expanded and run before the
+/// next is read. The frame keeps the file's text after its argument and the read position in k.i, and hands on the last value.
 fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
+    const a = machine.frameArgs(k, 2);
+    if (v == null) {
+        const body = try source.readText(io, text(a[0]));
+        defer gpa.free(body);
+        a[1] = V.string(value.mkstr(body, false));
+        k.i = 0;
+    }
+    const x = try parser.parseNext(text(a[1]), &k.i) orelse return machine.finish(k, v orelse .nil);
+    return .{ .eval = compile.stub(try expand.form(x, true)) }; // (expanding runs Lisp: a and k are not used after it)
+}
+
+/// (eval form) runs a form of its own, as a top-level form (so it may be a defmacro), in the caller's scope.
+fn evalForm(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| return machine.finish(k, r);
-    const path = text(machine.frameArgs(k, 1)[0]);
-    return .{ .eval = compile.stub(try source.readProgram(io, path)) };
+    return .{ .eval = compile.stub(try expand.form(machine.frameArgs(k, 1)[0], true)) };
 }
 
 fn def(e: *scope.Env, k: [*:0]const u8, f: value.Native) V {
@@ -177,4 +192,5 @@ pub fn install(e: *scope.Env) void {
     _ = def(e, "write-file", .{ .plain = writeFile });
     _ = def(e, "split", .{ .plain = split });
     _ = def(e, "load", .{ .step = load });
+    _ = def(e, "eval", .{ .step = evalForm });
 }

@@ -49,10 +49,6 @@ fn inplace(p: *node.Prim, e: *scope.Env, depth: u8) value.E!?V {
 // No native recursion per call, nesting level or callback: pending work is a frame on machine.ks, a call's values are collected
 // on machine.vs, and each step is a machine.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 
-pub fn eval(ast: V, env: *scope.Env) value.E!V {
-    return exec(.{ .eval = compile.stub(ast) }, env);
-}
-
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
 pub fn exec(go: machine.Go, env: *scope.Env) value.E!V {
     var m: machine.Machine = .{ .e = env, .base = machine.ks.items.len }; // ks[base..] are this run's frames
@@ -72,7 +68,7 @@ fn run(m: *machine.Machine, go: machine.Go) value.E!V {
     const vs = &machine.vs;
     sw: switch (go) {
         .eval => |n| {
-            if (!compile.in_macro and gc.due()) gc.collect(); // all live managed values are rooted
+            if (gc.due()) gc.collect(); // all live managed values are rooted
             if (try atom(n, m.e)) |v| continue :sw .{ .ret = v };
             switch (n.code) {
                 .lambda => |p| continue :sw .{ .ret = scope.lambda(p, m.e) },
@@ -103,7 +99,7 @@ fn run(m: *machine.Machine, go: machine.Go) value.E!V {
             }
         },
         .vm => |x| {
-            if (!compile.in_macro and gc.due()) gc.collect();
+            if (gc.due()) gc.collect();
             continue :sw try vm.exec(m, x.code, x.pc);
         },
         .ret => |v| {
@@ -174,7 +170,7 @@ fn run(m: *machine.Machine, go: machine.Go) value.E!V {
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
                     const l = f.asLam();
-                    const code = compiler.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
+                    const code = compiler.ready(l.proto); // (compiling a body does not run Lisp; the arguments are still taken after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) scope.release(m.e); // no frame needs the old one
                     m.e = scope.bind(l, vs.items[b + 1 ..]);
                     vs.items.len = b;

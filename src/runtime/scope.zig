@@ -25,8 +25,8 @@ pub const Var = struct { k: Key, v: V };
 // The root scope keeps its names in the global table: open addressing, FNV-1a.
 pub var gk: [1 << 13]?[*:0]const u8 = @splat(null);
 pub var gv: [1 << 13]V = @splat(.nil);
-/// The root slots of the macro/* functions.
-pub var macros: std.ArrayList(*V) = .empty;
+/// The macros: name -> function, filled by defmacro (lang/expand.zig). The collector marks the functions.
+pub var macros: std.StringHashMapUnmanaged(V) = .empty;
 pub var root: *Env = undefined;
 
 /// Create the root scope: it lives forever.
@@ -37,8 +37,8 @@ pub fn init() *Env {
 }
 
 // Two counters say when compiled code is out of date.
-/// Bumped when a macro/* is defined, or when a value that tier-2 code was compiled with (a native, an inlined function) is
-/// replaced: all code compiles again (compile.current in lang/).
+/// Bumped when a value that tier-2 code was compiled with (a native, an inlined function) is replaced: all code compiles
+/// again (compile.current in lang/).
 pub var epoch: u32 = 0;
 /// Bumped when a name is added to a scope whose layout tier-2 code relies on (by load, say): remembered lookups are void.
 pub var shape: u32 = 1;
@@ -112,14 +112,9 @@ pub inline fn replace(p: *V, v: V) void {
 
 /// Root keys are copied to permanent memory; scope keys are interned already.
 pub fn set(e: *Env, key: Key, v: V) void {
-    const s = slot(e, key, false) orelse blk: {
-        const s = slot(e, if (e.p != null) key else value.mkstr(std.mem.span(key), true), true).?;
-        if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
-        break :blk s;
-    };
+    const s = slot(e, key, false) orelse slot(e, if (e.p != null) key else value.mkstr(std.mem.span(key), true), true).?;
     if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) or an inlined function is replaced
     s.* = v;
-    if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) epoch +%= 1;
 }
 
 /// Replacing this value must compile the tier-2 code again: it is a native, or a function that other functions' code contains.

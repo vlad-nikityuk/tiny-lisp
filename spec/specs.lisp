@@ -278,11 +278,7 @@
   (assert (eq? 3 (+ 1 2))))
 
 ;; macros
-(define macro/unless
-  (lambda (ast)
-    (if (eq? (first ast) "unless")
-      (list "if" (first (rest ast)) nil (first (rest (rest ast))))
-      ast)))
+(defmacro unless (test body) (list "if" test nil body))
 
 (deftest "macros: user defined"
   (assert (eq? 1 (unless #f 1)))
@@ -421,17 +417,81 @@
   (assert (eq? "caught" (try (lambda () (read-file "/nonexistent/file")) (lambda (e) "caught"))))
   (assert (eq? "caught" (try (lambda () (load "/nonexistent/file")) (lambda (e) "caught")))))
 
-;; macro expansions are cached per node; redefining a macro must invalidate them
-(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "+" (first (rest ast)) (first (rest ast))) ast)))
+;; A macro is expanded once, when the top-level form that contains it is read: redefining it changes the forms after that only.
+(defmacro probe (x) (list "+" x x))
 (defn use-twice () (probe 4))
 (define twice-before (use-twice))
 (define twice-again (use-twice))
-(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "*" (first (rest ast)) 10) ast)))
+(defmacro probe (x) (list "*" x 10))
+(defn use-ten-times () (probe 4))
 (define twice-after (use-twice))
-(deftest "macros: cache is cleared when a macro changes"
+(deftest "macros: redefining a macro changes only the code expanded after it"
   (assert (eq? twice-before 8))
   (assert (eq? twice-again 8))
-  (assert (eq? twice-after 40)))
+  (assert (eq? twice-after 8)) ; use-twice was expanded before: it keeps the old expansion
+  (assert (eq? (use-ten-times) 40)))
+
+;; a macro body may use macros (and so may the functions it calls), the ones defined before it
+(defn macro-squares-of (xs) (for/list (x xs) `(* ~x ~x)))
+(defmacro macro-squares (& xs) `(list ~@(macro-squares-of xs)))
+(defmacro sum-squares (& xs) `(+ ~@(for/list (x (macro-squares-of xs)) x)))
+(deftest "macros: macro bodies are macro-expanded"
+  (assert (equal? (macro-squares 1 2 3) '(1 4 9)))
+  (assert (eq? (sum-squares 1 2 3) 14)))
+
+;; defmacro is a top-level form: directly in the file, in a begin at top level, or made by a macro
+(begin
+  (defmacro in-begin () 11)
+  (begin (defmacro in-nested-begin () 12))
+  (define in-begin-value (in-begin)))
+(defmacro def-constant (name v) `(defmacro ~name () ~v))
+(def-constant seven 7)
+(deftest "macros: defmacro at top level"
+  (assert (eq? in-begin-value 11))
+  (assert (eq? (in-nested-begin) 12))
+  (assert (eq? (seven) 7)))
+
+(define ran-before-error 0)
+(define defmacro-top-level-message "TinyLisp: defmacro is only allowed at top level")
+(defn message-of (thunk) (try thunk (lambda (e) e)))
+(deftest "macros: defmacro anywhere else is an error, found before any of the form runs"
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(define f (lambda () (defmacro m () 1))))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(if #t (defmacro m () 1) 0))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(+ 1 (defmacro m () 1)))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(define v (defmacro m () 1)))))))
+  (assert (eq? defmacro-top-level-message
+    (message-of (lambda () (eval '(begin (set! ran-before-error 1) (define f (lambda () (defmacro m () 1)))))))))
+  (assert (eq? ran-before-error 0)))
+
+(deftest "macros: eval takes its form as a top-level form"
+  (eval '(defmacro from-eval (x) `(+ ~x 1)))
+  (assert (eq? (eval '(from-eval 4)) 5))
+  (assert (eq? (eval '(begin (defmacro from-eval-begin () 6) (from-eval-begin))) 6)))
+
+(deftest "macros: a special form cannot be a macro"
+  (assert (eq? "TinyLisp: if is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro if (a) a))))))
+  (assert (eq? "TinyLisp: defmacro is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro defmacro (a) a))))))
+  (assert (eq? "TinyLisp: lambda is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro lambda (a) a)))))))
+
+(deftest "macros: a template inside a template is an error"
+  (assert (eq? "TinyLisp: nested quasiquote is not supported" (message-of (lambda () (eval '(define g (lambda (x) `(a `(b ~x)))))))))
+  (assert (eq? "TinyLisp: nested quasiquote is not supported" (message-of (lambda () (eval '``a)))))
+  (assert (equal? '(a (b 1)) (let-nested 1))) ; a template inside an unquote is fine
+  (assert (equal? '(a b) (eval '`(a ~(first '(b)))))))
+(defn let-nested (x) `(a ~(first `((b ~x)))))
+
+;; a file is read, expanded and run form by form: a macro defined by one form is in effect for the next, and a macro body may
+;; call the functions that the earlier forms defined
+(write-file "/tmp/tinylisp-spec-macros.lisp" "(define add-one (lambda (x) (+ x 1)))
+(defmacro next-of (x) (list 'quote (add-one x)))
+(define from-file-value (next-of 41))
+(defmacro file-twice (x) `(list ~x ~x))
+(define file-twice-value (file-twice 3))")
+(load "/tmp/tinylisp-spec-macros.lisp")
+(deftest "macros: a loaded file is expanded form by form"
+  (assert (eq? from-file-value 42))
+  (assert (equal? file-twice-value '(3 3)))
+  (assert (eq? (next-of 6) 7))) ; the macros stay defined after the file
 
 ;; compiled code resolves names at run time: a define inside a function can shadow a global that was already used
 (define shadowed 1)
@@ -761,10 +821,12 @@
 (defn mut-param (a) (begin (set! a (+ a 1)) (define b (* a 2)) (list a b)))
 (define use-tier-first (use-tier-mm))
 (defmacro tier-mm () 2)
+(defn use-tier-mm-later () (tier-mm))
 (deftest "tier 2: names, macros and arguments"
   (assert (equal? (closure-before-define) (list 100 5)))
   (assert (eq? use-tier-first 1))
-  (assert (eq? (use-tier-mm) 2))
+  (assert (eq? (use-tier-mm) 1)) ; compiled from the code expanded when it was defined
+  (assert (eq? (use-tier-mm-later) 2))
   (assert (equal? (rest-tier 1 2 3) (list 1 (list 2 3))))
   (assert (equal? (rest-tier 1) (list 1 (list))))
   (assert (equal? (mut-param 5) (list 6 12))))

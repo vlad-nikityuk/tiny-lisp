@@ -1,6 +1,6 @@
 // Tier 2, the compiler (after scan.zig has found the slots): the body of a function becomes, on its first call, a stack bytecode, and the function's parameters
 // and defines get fixed slots in its scope (scope.bind creates them all up front). exec.zig runs the bytecode. Anything this
-// compiler does not know (a body nested too deep, a define that may not run, an error while expanding macros) leaves the
+// compiler does not know (a body nested too deep, a define that may not run, an error while compiling a node) leaves the
 // function to the tree evaluator, which stays the reference semantics.
 const std = @import("std");
 const value = @import("../runtime/value.zig");
@@ -325,9 +325,9 @@ fn dup(comptime T: type, xs: []const T) []const T {
 /// `make test-tree` builds with false: every function stays with the tree evaluator, and the tests must still pass.
 const enabled = true;
 
-/// The bytecode of p, compiled on first use and again after a macro changed; null if p stays with the tree evaluator.
+/// The bytecode of p, compiled on first use and again after a rebound primitive made it out of date; null if p stays with the tree evaluator.
 pub fn ready(p: *node.Proto) ?*Bytecode {
-    if (!enabled or compile.in_macro) return null;
+    if (!enabled) return null;
     if (p.code) |c| {
         if (c.stamp == compile.current()) return c;
         p.code = null;

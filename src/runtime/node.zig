@@ -51,10 +51,9 @@ pub const Code = union(enum) {
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (scope.lambda).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
-/// One expression. Its code is built from the AST when it is first evaluated, and again when `stamp` is out of date.
+/// One expression. Its code is built from the (macro-expanded) AST when it is first evaluated.
 pub const Node = struct {
     ast: V,
-    src: V = .nil, // the (macro-expanded) form that code was built from
     stamp: u32 = 0, // compile.current() when code was built; 0: never
     code: Code = .raw,
     guard: ?*Guard = null, // set on the lambda operand of each/map

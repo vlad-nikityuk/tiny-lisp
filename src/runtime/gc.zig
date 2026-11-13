@@ -161,7 +161,7 @@ fn bytesOf(h: *H) usize {
     return n + @sizeOf(H);
 }
 
-/// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
+/// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the macros, the error value.
 fn markRoots() void {
     scope.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
     for (machine.ks.items) |k| {
@@ -172,6 +172,8 @@ fn markRoots() void {
     for (machine.machines.items) |m| markPtr(m.e);
     for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
     for (pins.items) |v| markV(v);
+    var macros = scope.macros.valueIterator();
+    while (macros.next()) |f| markV(f.*);
     markV(value.errv);
 }
 
