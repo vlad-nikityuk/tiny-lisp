@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## This is an educational project
+
+Readability and understandability come first: someone should be able to read the source to learn how a small Lisp is built. Prefer the simple, explicit design over the clever one, name things for what they mean, keep comments for the why, keep modules small and each with one job, and delete code that does not pay for itself. Both execution tiers stay: the tree evaluator (`src/lang.zig`) is the reference semantics and the bytecode tier (`src/vm.zig`) is the fast path; simplify around them, not by removing either. A speed-up or a simplification is only kept if the tests pass and `make bench` does not get slower (see Tests).
+
 ## Commands
 
 ```bash
