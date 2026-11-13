@@ -247,15 +247,17 @@ const Comp = struct {
             const sym = k[0].code.ref.sym;
             const lp = k[2].code.lambda;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
-            const is_each = g != null and g.?.*.is(.f) and g.?.*.asFn().f == .step and std.mem.eql(u8, std.mem.span(sym.key), "each");
-            if (!is_each or lp.params.len != 1 or lp.rest) break :loop;
+            const native = g != null and g.?.*.is(.f) and g.?.*.asFn().f == .step;
+            const is_each = native and std.mem.eql(u8, std.mem.span(sym.key), "each");
+            const is_map = native and std.mem.eql(u8, std.mem.span(sym.key), "map");
+            if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
             const body = ready(lp) orelse break :loop;
-            sym.prim = true; // rebinding each makes epoch change, so this code is compiled again
+            sym.prim = true; // rebinding each or map makes epoch change, so this code is compiled again
             try c.genAll(k[1], false);
             const at = c.add(*rt.Proto, &c.protos, lp);
             _ = c.add(?*rt.Bytecode, &c.bodies, body);
-            _ = c.emit(.each, at, 0);
-            _ = c.emit(.eachnext, at, 0);
+            _ = c.emit(if (is_map) .map else .each, at, 0);
+            _ = c.emit(if (is_map) .mapnext else .eachnext, at, 0);
             if (tail) _ = c.emit(.ret, 0, 0);
             return;
         }
@@ -287,9 +289,19 @@ fn compile(p: *rt.Proto) void {
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];
-    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .bodies = dup(?*rt.Bytecode, c.bodies.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current(), .room = c.ins.items.len + 2 }; // every instruction pushes at most one value
+    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .bodies = dup(?*rt.Bytecode, c.bodies.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current(), .room = room(c.ins.items) }; // every instruction pushes at most one value, the start of a loop 2 or 3
     for (code.consts) |v| _ = rt.pin(v);
     p.code = code;
+}
+
+fn room(ins: []const rt.Ins) usize {
+    var n: usize = 2;
+    for (ins) |i| n += switch (i.op) {
+        .map => 4,
+        .each => 3,
+        else => 1,
+    };
+    return n;
 }
 
 fn dup(comptime T: type, xs: []const T) []const T {
@@ -592,18 +604,29 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             ip += 1;
             continue :sw ip[0].op;
         },
-        .eachnext => { // [list, index, body value]: the next iteration, or the end of the loop (the value is nil)
+        .map => { // as each, with the list of results (the body's values) between the index and that place
+            st[sp] = V.num(-1);
+            st[sp + 1] = rt.list(&.{}, rt.items(st[sp - 1]).len);
+            st[sp + 2] = V.nil;
+            sp += 3;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        inline .eachnext, .mapnext => |op| { // [list, index, (results,) body value]: the next iteration, or the end of the loop
+            const is_map = op == .mapnext;
             const top = sp - 1;
-            const idx = st[top - 1].asNum() + 1;
-            const items = rt.items(st[top - 2]);
-            if (idx >= @as(f64, @floatFromInt(items.len))) {
+            const ib = if (is_map) top - 2 else top - 1; // the index
+            const idx = st[ib].asNum() + 1;
+            const items = rt.items(st[ib - 1]);
+            if (is_map and idx > 0) st[ib + 1].asList().items()[@intFromFloat(idx - 1)] = st[top];
+            if (idx >= @as(f64, @floatFromInt(items.len))) { // done: the value of the loop is nil (each) or the results (map)
                 if (idx > 0) { // there is a loop frame
                     const k = &ks.items[ks.items.len - 1];
                     if (k.env2) |x| if (!x.captured) rt.release(x);
                     ks.items.len -= 1;
                 }
-                st[top - 2] = V.nil;
-                sp = top - 1;
+                st[ib - 1] = if (is_map) st[ib + 1] else V.nil;
+                sp = ib;
                 ip += 1;
                 continue :sw ip[0].op;
             }
@@ -614,7 +637,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
                 k.code = code;
             }
             const k = &ks.items[ks.items.len - 1];
-            st[top - 1] = V.num(idx);
+            st[ib] = V.num(idx);
             if (!lang.in_macro and gc.due()) {
                 vs.items.len = sp;
                 gc.collect();

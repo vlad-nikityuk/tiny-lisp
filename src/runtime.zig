@@ -134,7 +134,7 @@ pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; 
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
+pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
 pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, bodies: []const ?*Bytecode, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
