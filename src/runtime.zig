@@ -115,24 +115,48 @@ pub const Lst = struct {
         return gc.after(V, self)[0..self.len];
     }
 };
+/// A native function. d0, d1: its own data (the function and the fixed arguments of a partial, say); i: the trampoline's state.
 pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 };
 /// plain: computes its value directly. step: calls back into Lisp, so it runs as a frame of the machine: it is
 /// invoked with null first, then with each callback's value, and says what the machine does next.
-pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *K, ?V) E!Go };
+pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *Frame, ?V) E!Go };
+/// A closure: code and the scope it was made in.
 pub const Lam = struct { proto: *Proto, env: *Env };
-pub const Env = struct { p: ?*Env, vars: []Var, cap: usize, proto: ?*Proto = null, esc: bool = false, captured: bool = false }; // esc: not to be recycled; captured: a closure holds it // vars are stored inline until they outgrow cap; the root scope uses the global table
+/// A scope: the variables of one call. The root scope has none: its names are in the global table.
+pub const Env = struct {
+    p: ?*Env, // the enclosing scope
+    vars: []Var, // stored inline, right after the Env, until they outgrow cap
+    cap: usize,
+    proto: ?*Proto = null, // the function whose call this is
+    recyclable: bool = false, // `release` may hand it to a free list: it has a pooled size, no closure holds it or an inner scope, and it is not on a list yet
+    captured: bool = false, // a closure holds it or an inner scope: a loop or a self tail call must not use it again
+};
 pub const Var = struct { k: Key, v: V };
 
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
-pub const Sym = struct { key: Key, local: bool = false, prim: bool = false }; // prim: the head of a Prim node, so tier-2 code inlines it (rebinding it bumps epoch) // local: some scope binds this name (a parameter, or a define inside a function)
+pub const Sym = struct {
+    key: Key,
+    local: bool = false, // some scope binds this name (a parameter, or a define inside a function); otherwise it can only be global
+    inlined: bool = false, // compiled code relies on the global value of this name (a primitive, each, map, range): binding it locally bumps epoch
+};
 /// A call of a primitive with one or two operands, compiled as such while its name is global and still bound to that primitive.
 /// The evaluator computes it in place when each operand is a constant, a variable or (a few levels deep) another such call, and the
 /// values are numbers (or a list and an index); otherwise it makes the ordinary call c. slow: an operand cannot be computed that way.
 pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false };
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
-pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false, inlined: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
+/// The code of a lambda, shared by the closures made from it.
+pub const Proto = struct {
+    params: []const Key,
+    body: *Node,
+    cap: usize = 0, // room for the scope of a call, grown by defines
+    rest: bool = false, // the last parameter takes the extra arguments as a list
+    guard: ?*Guard = null,
+    code: ?*Bytecode = null, // the tier-2 form of the body (vm.zig)
+    tried: bool = false, // tier 2 compiled the body or rejected it (a rejected body is not tried again)
+    inlined: bool = false, // other functions' bytecode contains this body: replacing the function bumps epoch
+};
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
 pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, global, setglobal, storelocal, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, add_sk, add_sl, sub_sk, sub_sl, mul_sk, mul_sl, lt_sk, lt_sl, gt_sk, gt_sl, le_sk, le_sl, ge_sk, ge_sl, eq_sk, eq_sl, at_sk, at_sl, vset_ll, prim1, call, tailcall, ret };
@@ -141,17 +165,35 @@ pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref,
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
-pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw, guard: ?*Guard = null }; // src: the (expanded) form that code was built from
+/// One expression. Its code is built from the AST when it is first evaluated, and again when `stamp` is out of date.
+pub const Node = struct {
+    ast: V,
+    src: V = .nil, // the (macro-expanded) form that code was built from
+    stamp: u32 = 0, // lang.current() when code was built; 0: never
+    code: Code = .raw,
+    guard: ?*Guard = null, // set on the lambda operand of each/map
+};
 
 pub const gpa = std.heap.c_allocator;
 
 // The machine's state: pending work lives in heap frames, so nothing grows the native stack.
 pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
 pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm, loop };
-pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env, code: *Bytecode = undefined, env2: ?*Env = null }; // vm frames: i is the pc to resume at; loop frames (a for loop run by the bytecode) also keep the scope of the last iteration, to reuse it
-/// A running evaluator loop: its scope is a root for the collector.
-pub const M = struct { e: *Env, base: usize };
-pub var machines: std.ArrayList(*M) = .empty;
+/// Pending work: what to do with the next value. One flat struct for every kind (a frame is pushed per call, so it stays small
+/// and is written in one go); each kind uses the fields it needs.
+pub const Frame = struct {
+    kind: Kind,
+    i: usize, // begin, &&, ||, call: the item being evaluated; native: its own state; vm, loop: the instruction to resume at
+    base: usize, // call, native: where the function and its arguments start on vs; vm, loop: the top of vs to return to
+    c: []const *Node, // if, begin, &&, ||, call: the items
+    d: *Def = undefined, // def
+    e: *Env, // the scope to go back to
+    code: *Bytecode = undefined, // vm, loop: the bytecode to resume
+    iter_env: ?*Env = null, // loop: the scope of the iteration that is running, which the next one reuses if nothing captured it
+};
+/// A running evaluator loop: its scope is a root for the collector. ks[base..] are its frames.
+pub const Machine = struct { e: *Env, base: usize };
+pub var machines: std.ArrayList(*Machine) = .empty;
 /// Values that permanent compiled nodes point to (the AST and its expansions) stay alive for good.
 pub var pins: std.ArrayList(V) = .empty;
 
@@ -159,20 +201,23 @@ pub fn pin(v: V) V {
     gc.push(V, &pins, v);
     return v;
 }
-pub const Go = union(enum) { eval: *Node, ret: V, vm: struct { code: *Bytecode, pc: usize }, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } }; // apply: the function at vs[apply], then its arguments; args: collecting them from c[i] on, they start at vs[b]
+/// What the machine does next. eval: evaluate a node; ret: hand a value to the innermost frame; vm: run bytecode from pc;
+/// apply: call the function at vs[apply] with the arguments after it; args: collect a call's items from c[i] on, they start at vs[b].
+pub const Go = union(enum) { eval: *Node, ret: V, vm: struct { code: *Bytecode, pc: usize }, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } };
+
+pub var ks: std.ArrayList(Frame) = .empty; // the frames
+pub var vs: std.ArrayList(V) = .empty; // the values: functions and arguments being collected, native frames' state, the bytecode's stack
+
+pub fn frame(kind: Kind, c: []const *Node, e: *Env) *Frame {
+    gc.push(Frame, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
+    return &ks.items[ks.items.len - 1];
+}
 
 /// Push the value of c[i], an item of a call: the function first, which must exist.
 pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
     if (i == 0 and v == V.nil) return fail(str("TinyLisp: Function {f} is not defined", .{c[0].ast}));
     gc.push(V, &vs, v);
 }
-
-pub fn frame(kind: Kind, c: []const *Node, e: *Env) *K {
-    gc.push(K, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
-    return &ks.items[ks.items.len - 1];
-}
-pub var ks: std.ArrayList(K) = .empty;
-pub var vs: std.ArrayList(V) = .empty; // function + arguments being collected, native frames' state
 
 pub fn ptr(v: V) ?*anyopaque {
     return switch (v.tag()) {
@@ -322,7 +367,7 @@ pub fn fetch(env: *Env, r: *Ref) V {
 pub fn assign(d: *Def, e: *Env, v: V) E!void {
     const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
-        if (sym.prim and !sym.local and e.p != null) epoch +%= 1;
+        if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
         sym.local = sym.local or e.p != null;
         set(e, sym.key, v);
     } else if (find(e, sym, &d.g)) |p| {
@@ -352,7 +397,7 @@ pub fn lambda(p: *Proto, e: *Env) V {
     if (p.guard) |d| if (!d.sym.local and d.g.* == d.f) return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e })); // a loop body: dead once the loop is over
     var s: ?*Env = e; // a closure holds the scope and, through it, the enclosing ones: none can be recycled when its call ends
     while (s) |x| : (s = x.p) {
-        x.esc = true;
+        x.recyclable = false;
         x.captured = true;
     }
     return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
@@ -393,7 +438,7 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
         env_pools[pool.?] = e.p;
         break :blk e;
     } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
-    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .esc = pool == null };
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .recyclable = pool != null };
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
@@ -405,9 +450,9 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
 
 /// The call that ran in e is over (nothing but a closure could still use it).
 pub fn release(e: *Env) void {
-    if (e.esc or e.p == null or e.vars.ptr != gc.after(Var, e)) return;
+    if (!e.recyclable or e.p == null or e.vars.ptr != gc.after(Var, e)) return;
     const pool = poolOf(e.cap) orelse return;
-    e.esc = true; // never twice
+    e.recyclable = false; // never twice
     e.p = env_pools[pool];
     env_pools[pool] = e;
 }
@@ -534,13 +579,13 @@ pub fn start(b: usize, e: *Env) E!Go {
 }
 
 /// Resume a native frame with the value of its callback (null: first step).
-pub fn step(k: *K, v: ?V) E!Go {
+pub fn step(k: *Frame, v: ?V) E!Go {
     const n = vs.items[k.base].asFn();
     return n.f.step(n, k, v);
 }
 
 /// The frame's arguments, padded with nil or cut to exactly n (so state can follow them).
-pub fn frameArgs(k: *K, n: usize) []V {
+pub fn frameArgs(k: *Frame, n: usize) []V {
     const end = k.base + 1 + n;
     while (vs.items.len < end) gc.push(V, &vs, .nil);
     vs.items.len = end;
@@ -548,7 +593,7 @@ pub fn frameArgs(k: *K, n: usize) []V {
 }
 
 /// Pop the frame and hand v to the next one.
-pub fn finish(k: *K, v: V) Go {
+pub fn finish(k: *Frame, v: V) Go {
     vs.items.len = k.base;
     ks.items.len -= 1;
     return .{ .ret = v };
@@ -563,7 +608,7 @@ pub fn callback(f: V, xs: []const V) Go {
 }
 
 /// Replace the frame by a call of f with pre, then (if keep) the frame's arguments: f runs in tail position.
-pub fn tail(k: *K, f: V, pre: []const V, keep: bool) Go {
+pub fn tail(k: *Frame, f: V, pre: []const V, keep: bool) Go {
     const b = k.base;
     if (!keep) vs.items.len = b + 1;
     vs.items[b] = f;
@@ -573,7 +618,7 @@ pub fn tail(k: *K, f: V, pre: []const V, keep: bool) Go {
 }
 
 /// (try thunk handler) calls thunk; after an error, `recover` resumes the frame with k.i = 1 and the error value.
-fn tryRun(_: *Fn, k: *K, v: ?V) E!Go {
+fn tryRun(_: *Fn, k: *Frame, v: ?V) E!Go {
     const a = frameArgs(k, 2);
     const r = v orelse return callback(a[0], &.{});
     return if (k.i == 1) tail(k, a[1], &.{r}, false) else finish(k, r);
@@ -595,13 +640,13 @@ pub fn recover(base: usize) ?Go {
 }
 
 // trampoline: nested calls while active return thunks, the outermost runs them in a loop
-fn thunk(s: *Fn, k: *K, _: ?V) E!Go {
+fn thunk(s: *Fn, k: *Frame, _: ?V) E!Go {
     return tail(k, s.d0, s.d1.asList().items(), false);
 }
 
 /// s.i - 1 is the index of the outermost run's frame. It is checked, not trusted: a frame dropped by an error
 /// never finishes and so never clears it.
-fn trampRun(s: *Fn, k: *K, v: ?V) E!Go {
+fn trampRun(s: *Fn, k: *Frame, v: ?V) E!Go {
     const frames = ks.items;
     const r = v orelse {
         const j = s.i -% 1;
@@ -680,7 +725,7 @@ pub fn special(a: []const V, c: []const *Node) Code {
         const g = if (sym.local) null else slot(root, sym.key, false);
         if (g) |slotp| if (primOp(slotp.*)) |op| if (a.len == 2 and unary(op) or a.len == 3 and !unary(op)) {
             const p = &make(Prim, 1)[0];
-            sym.prim = true;
+            sym.inlined = true;
             p.* = .{ .op = op, .sym = sym, .g = slotp, .f = pin(slotp.*), .c = c };
             return .{ .prim = p };
         };

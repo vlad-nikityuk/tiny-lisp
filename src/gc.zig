@@ -157,7 +157,7 @@ fn markRoots() void {
     rt.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
     for (rt.ks.items) |k| {
         markPtr(k.e);
-        if (k.kind == .loop) markPtr(k.env2);
+        if (k.kind == .loop) markPtr(k.iter_env);
     }
     for (rt.vs.items) |v| markV(v);
     for (rt.machines.items) |m| markPtr(m.e);

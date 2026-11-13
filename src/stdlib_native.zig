@@ -6,7 +6,7 @@ const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
 const V = rt.V;
 const Fn = rt.Fn;
-const K = rt.K;
+const Frame = rt.Frame;
 const Go = rt.Go;
 const E = rt.E;
 const arg = rt.arg;
@@ -24,9 +24,9 @@ fn isList(_: *Fn, a: []const V) E!V {
 // map and reduce call back into Lisp, so they run as frames (see runtime.zig).
 // (map l1 ... ln f) calls f with the next item of every list, as many times as the shortest list is long:
 // vs holds the lists and f after the native, then the results and the number of arguments; k.i is the next index.
-fn mapper(comptime keep: bool) *const fn (*Fn, *K, ?V) E!Go {
+fn mapper(comptime keep: bool) *const fn (*Fn, *Frame, ?V) E!Go {
     return struct {
-        fn f(_: *Fn, k: *K, v: ?V) E!Go {
+        fn f(_: *Fn, k: *Frame, v: ?V) E!Go {
             const vs = &rt.vs;
             if (v == null) {
                 const n = vs.items.len - k.base - 1;
@@ -52,7 +52,7 @@ fn mapper(comptime keep: bool) *const fn (*Fn, *K, ?V) E!Go {
     }.f;
 }
 
-fn reduce(_: *Fn, k: *K, v: ?V) E!Go {
+fn reduce(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| {
         rt.vs.items[k.base + 3] = r;
         k.i += 1;
@@ -92,12 +92,12 @@ fn zip(_: *Fn, a: []const V) E!V {
 }
 
 /// (apply f args) calls f with the items of the list args as its arguments.
-fn apply(_: *Fn, k: *K, _: ?V) E!Go {
+fn apply(_: *Fn, k: *Frame, _: ?V) E!Go {
     const a = rt.frameArgs(k, 2);
     return rt.tail(k, a[0], rt.items(a[1]), false);
 }
 
-fn partialRun(s: *Fn, k: *K, _: ?V) E!Go {
+fn partialRun(s: *Fn, k: *Frame, _: ?V) E!Go {
     return rt.tail(k, s.d0, rt.items(s.d1), true); // the fixed arguments go before the frame's
 }
 
@@ -143,7 +143,7 @@ fn split(_: *Fn, a: []const V) E!V {
 }
 
 /// (load "file.lisp") evaluates the file's expressions in the caller's scope; the frame hands on the last value.
-fn load(_: *Fn, k: *K, v: ?V) E!Go {
+fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| return rt.finish(k, r);
     const path = text(rt.frameArgs(k, 1)[0]);
     return .{ .eval = lang.stub(try source.readProgram(io, path)) };

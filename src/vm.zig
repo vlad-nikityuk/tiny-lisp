@@ -346,7 +346,7 @@ const Comp = struct {
             const is_map = g != null and g.?.* == rt.map_v;
             if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
             const body = ready(lp) orelse break :loop;
-            sym.prim = true; // rebinding each or map makes epoch change, so this code is compiled again
+            sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
             var counted: usize = 0; // a loop over (range n): count to n, no list
             var source = k[1];
             if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
@@ -355,7 +355,7 @@ const Comp = struct {
                 if (rg != null and rg.?.* == rt.range_v) {
                     counted = 1;
                     source = k[1].code.call[1];
-                    rsym.prim = true; // rebinding range makes epoch change
+                    rsym.inlined = true; // rebinding range makes epoch change
                 }
             }
             try c.genAll(source, false);
@@ -370,7 +370,7 @@ const Comp = struct {
             const sym = k[0].code.ref.sym;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
             if (g) |slotp| if (rt.isVset(slotp.*)) {
-                sym.prim = true; // rebinding it makes epoch change, so this code is compiled again
+                sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
                 const lo = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
                 const io = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
                 if (lo != null and io != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
@@ -530,7 +530,7 @@ noinline fn outerLook(e: *rt.Env, ins: *rt.Ins, sym: *rt.Sym, g: *?*V) ?*V {
 }
 
 /// An operation on values it does not compute in place: call whatever its name is now (it was a primitive when compiled).
-fn slow(m: *rt.M, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go {
+fn slow(m: *rt.Machine, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go {
     const p = code.prims[ip[0].a];
     const vs = &rt.vs;
     const n = vs.items.len;
@@ -543,7 +543,7 @@ fn slow(m: *rt.M, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go
 
 /// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
 /// function reserved up front, so its top is kept in a local (sp) and rt.vs.items.len is brought up to date only when leaving.
-pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
+pub noinline fn exec(m: *rt.Machine, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
     const vs = &rt.vs;
     const ks = &rt.ks;
     var e = m.e;
@@ -822,7 +822,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             if (idx >= @as(f64, @floatFromInt(len))) { // done: the value of the loop is nil (each) or the results (map)
                 if (idx > 0) { // there is a loop frame
                     const k = &ks.items[ks.items.len - 1];
-                    if (k.env2) |x| if (!x.captured) rt.release(x);
+                    if (k.iter_env) |x| if (!x.captured) rt.release(x);
                     ks.items.len -= 1;
                 }
                 st[ib - 1] = if (is_map) st[ib + 1] else V.nil;
@@ -844,19 +844,19 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             }
             const body = code.bodies[ip[0].a].?;
             const item = if (counted) V.num(idx) else items[@intFromFloat(idx)];
-            if (k.env2) |x| if (!x.captured and x.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
+            if (k.iter_env) |x| if (!x.captured and x.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
                 x.vars[0].v = item;
                 for (x.vars[1..]) |*v| v.v = V.nil;
                 e = x;
             } else {
-                k.env2 = null;
+                k.iter_env = null;
                 var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
                 e = rt.bindWith(&lam, &.{item}, body);
             } else {
                 var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
                 e = rt.bindWith(&lam, &.{item}, body);
             }
-            k.env2 = e;
+            k.iter_env = e;
             m.e = e;
             depth += 1;
             code = body;
@@ -873,7 +873,7 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
 }
 
 /// A call that is not a tail call: leave a frame that resumes at pc with the value pushed.
-fn call(m: *rt.M, b: usize, code: *rt.Bytecode, pc: usize) rt.Go {
+fn call(m: *rt.Machine, b: usize, code: *rt.Bytecode, pc: usize) rt.Go {
     const k = rt.frame(.vm, &.{}, m.e);
     k.i = pc;
     k.base = b;

@@ -64,7 +64,7 @@ fn form(a: []const V) rt.E!rt.Code {
                     continue;
                 }
                 const sym = intern(p);
-                if (sym.prim and !sym.local) rt.epoch +%= 1;
+                if (sym.inlined and !sym.local) rt.epoch +%= 1;
                 sym.local = true;
                 params[n] = sym.key;
                 n += 1;
@@ -146,9 +146,9 @@ pub fn eval(ast: V, env: *rt.Env) rt.E!V {
 
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
 fn exec(go: rt.Go, env: *rt.Env) rt.E!V {
-    var m: rt.M = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
+    var m: rt.Machine = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
     const vbase = rt.vs.items.len;
-    gc.push(*rt.M, &rt.machines, &m); // its scope is a collector root
+    gc.push(*rt.Machine, &rt.machines, &m); // its scope is a collector root
     defer rt.machines.items.len -= 1;
     errdefer rt.ks.items.len, rt.vs.items.len = .{ m.base, vbase };
     var step = go;
@@ -158,7 +158,7 @@ fn exec(go: rt.Go, env: *rt.Env) rt.E!V {
     };
 }
 
-fn run(m: *rt.M, go: rt.Go) rt.E!V {
+fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
     const ks = &rt.ks;
     const vs = &rt.vs;
     sw: switch (go) {
@@ -235,7 +235,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                     continue :sw .{ .vm = .{ .code = code, .pc = pc } };
                 },
                 .loop => {
-                    k.env2 = null; // the iteration's scope was released above
+                    k.iter_env = null; // the iteration's scope was released above
                     gc.push(V, vs, v);
                     continue :sw .{ .vm = .{ .code = k.code, .pc = k.i } };
                 },
