@@ -463,6 +463,42 @@
     (message-of (lambda () (eval '(begin (set! ran-before-error 1) (define f (lambda () (defmacro m () 1)))))))))
   (assert (eq? ran-before-error 0)))
 
+;; eval runs its form at top level (the global scope), whatever scope calls it
+(define eval-x 7)
+(define eval-in-function (lambda () (list (eval 'eval-x) (define eval-x 2) (eval 'eval-x))))
+(deftest "macros: eval runs in the global scope"
+  (assert (equal? (eval-in-function) (list 7 2 7)))
+  (assert (equal? ((lambda (eval-x) (eval 'eval-x)) 5) 7)))
+
+;; expansion is eager: it happens when the top-level form is read, not when the code first runs
+(defmacro eager-m () 1)
+(defn defined-before-redefinition () (eager-m))
+(defmacro eager-m () 2)
+(define expansions 0)
+(defmacro count-expansion () (begin (set! expansions (+ expansions 1)) 0))
+(define never-called (lambda () (count-expansion)))
+(define expansions-after-lambda expansions)
+(define untaken-branch (lambda (flag) (if flag 1 (count-expansion))))
+(define expansions-after-branch expansions)
+(deftest "macros: expansion is eager, not at the first call"
+  (assert (eq? (defined-before-redefinition) 1)) ; first called after the redefinition
+  (assert (eq? expansions-after-lambda 1))
+  (assert (eq? expansions-after-branch 2))
+  (assert (eq? (untaken-branch #t) 1))
+  (assert (eq? expansions 2)))
+
+;; the operator of a form is expanded too: if that makes a macro name, the whole form is expanded again
+(defmacro name-of-target () 'macro-target)
+(defmacro macro-target () 7)
+(deftest "macros: an operator that expands to a macro name"
+  (assert (eq? ((name-of-target)) 7)))
+
+;; a macro may change the form around it, and the collector may run meanwhile: what the expander walks must stay alive
+(define zapped-ast '(list (list (zap) (+ 2 3))))
+(defmacro zap () (begin (vset! zapped-ast 1 nil) (range 1000000) ((lambda (x) x) 1)))
+(deftest "macros: a form being expanded stays alive when a macro detaches it"
+  (assert (equal? (eval zapped-ast) '((1 5)))))
+
 (deftest "macros: eval takes its form as a top-level form"
   (eval '(defmacro from-eval (x) `(+ ~x 1)))
   (assert (eq? (eval '(from-eval 4)) 5))

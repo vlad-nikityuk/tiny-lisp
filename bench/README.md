@@ -62,7 +62,7 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 
 - **The evaluator has two tiers.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
   parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); the tree evaluator in `src/lang/` still runs everything else and defines the
-  semantics. Bytecode expands the whole body on first call and sees primitive rebinding only on subsequent calls,
+  semantics. Macros are expanded eagerly for a whole top-level form before it runs; the bytecode is compiled lazily at the first call (from the expanded code), and sees primitive rebinding only on subsequent calls,
   as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
   and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.
 - **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,

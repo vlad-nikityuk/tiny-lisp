@@ -72,8 +72,13 @@ fn head(x0: V, top: bool) value.E!V {
     return x;
 }
 
-/// A list being rebuilt: its parts so far are on machine.vs from `base` on.
-const Walk = struct { items: []const V, list: V, i: usize, base: usize, top: bool };
+/// A list being rebuilt: the list itself is on machine.vs (a macro may change what else refers to it, and the collector must not free it
+/// while it is walked), then its parts so far, from `base` on. top: its parts are top-level forms; form_top: the list itself is.
+const Walk = struct { items: []const V, list: V, i: usize, base: usize, top: bool, form_top: bool };
+
+fn headChanged(old: []const V, parts: []const V) bool {
+    return old[0].is(.l) and parts[0] != old[0];
+}
 
 /// x with every macro call in it expanded. `top`: x is a top-level form, so defmacro is allowed in it, and in the parts of a
 /// begin that is one. The parts are walked with an explicit stack (the nesting is not limited), and a list none of whose parts
@@ -92,7 +97,8 @@ pub fn form(x0: V, top: bool) value.E!V {
         const items = value.items(x);
         if (items.len > 0 and !headIs(items, "quote")) { // a form with parts to expand; (lambda (params) ...) keeps its parameters
             const kept: usize = if (headIs(items, "lambda") and items.len > 1) 2 else 0;
-            gc.push(Walk, &walks, .{ .items = items, .list = x, .i = kept, .base = vs.items.len, .top = is_top and headIs(items, "begin") });
+            gc.push(V, vs, x);
+            gc.push(Walk, &walks, .{ .items = items, .list = x, .i = kept, .base = vs.items.len, .top = is_top and headIs(items, "begin"), .form_top = is_top });
             vs.appendSlice(value.gpa, items[0..kept]) catch gc.oom();
         } else if (walks.items.len == 0) {
             return x;
@@ -107,8 +113,15 @@ pub fn form(x0: V, top: bool) value.E!V {
             }
             const parts = vs.items[w.base..];
             const done = if (std.mem.eql(V, parts, w.items)) w.list else gc.pin(value.list(parts, parts.len));
-            vs.items.len = w.base;
+            const redo = headChanged(w.items, parts);
+            const was_top = w.form_top;
+            vs.items.len = w.base - 1;
             walks.items.len -= 1;
+            if (redo) { // an operator that is a form became something else (a macro name, say): the whole form is looked at again
+                x = done;
+                is_top = was_top;
+                break;
+            }
             if (walks.items.len == 0) return done;
             gc.push(V, vs, done);
         }
