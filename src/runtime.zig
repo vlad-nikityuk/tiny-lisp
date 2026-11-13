@@ -125,25 +125,29 @@ pub const Var = struct { k: Key, v: V };
 
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
-pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
+pub const Sym = struct { key: Key, local: bool = false, prim: bool = false }; // prim: the head of a Prim node, so tier-2 code inlines it (rebinding it bumps epoch) // local: some scope binds this name (a parameter, or a define inside a function)
 /// A call of a primitive on two operands, compiled as such while its name is global and still bound to that primitive: the evaluator
 /// computes it in place when both operands are constants or variables holding numbers (or a list and an index), else it is the call c.
 pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // slow: an operand is a call, so it is never computed in place
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
-pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null }; // cap: room for the scope of a call, grown by defines
+pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
+/// Tier 2 (vm.zig): a function body without lambdas as a stack bytecode over fixed scope slots (keys: parameters, then defines).
+pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, add, sub, mul, lt, gt, le, ge, eq, at, prim1, prim2, call, tailcall, ret };
+pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
+pub const Bytecode = struct { ins: []const Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, keys: []const Key, stamp: u32 };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
 pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw, guard: ?*Guard = null }; // src: the (expanded) form that code was built from
 
-const gpa = std.heap.c_allocator;
+pub const gpa = std.heap.c_allocator;
 
 // The machine's state: pending work lives in heap frames, so nothing grows the native stack.
 pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
-pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native };
-pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env };
+pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm };
+pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env, code: *Bytecode = undefined }; // vm frames: i is the pc to resume at
 /// A running evaluator loop: its scope is a root for the collector.
 pub const M = struct { e: *Env, base: usize };
 pub var machines: std.ArrayList(*M) = .empty;
@@ -154,7 +158,7 @@ pub fn pin(v: V) V {
     gc.push(V, &pins, v);
     return v;
 }
-pub const Go = union(enum) { eval: *Node, ret: V, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } }; // apply: the function at vs[apply], then its arguments; args: collecting them from c[i] on, they start at vs[b]
+pub const Go = union(enum) { eval: *Node, ret: V, vm: struct { code: *Bytecode, pc: usize }, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } }; // apply: the function at vs[apply], then its arguments; args: collecting them from c[i] on, they start at vs[b]
 
 /// Push the value of c[i], an item of a call: the function first, which must exist.
 pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
@@ -234,7 +238,7 @@ fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
     return std.mem.orderZ(u8, a, b) == .eq;
 }
 
-fn eq(a: V, b: V) bool {
+pub fn eq(a: V, b: V) bool {
     if (isNil(a) or isNil(b)) return isNil(a) and isNil(b);
     if ((a.is(.s) and b.is(.s)) or (a.is(.lit) and b.is(.lit))) return streq(a.asStr(), b.asStr());
     if (a.isNum() and b.isNum()) return a.asNum() == b.asNum();
@@ -299,9 +303,11 @@ pub fn fetch(env: *Env, r: *Ref) V {
 pub fn assign(d: *Def, e: *Env, v: V) E!void {
     const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
+        if (sym.prim and !sym.local and e.p != null) epoch +%= 1;
         sym.local = sym.local or e.p != null;
         set(e, sym.key, v);
     } else if (find(e, sym, &d.g)) |p| {
+        if (p.*.is(.f)) epoch +%= 1;
         p.* = v;
     }
 }
@@ -313,6 +319,7 @@ pub fn set(e: *Env, key: Key, v: V) void {
         if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
         break :blk s;
     };
+    if (e.p == null and s.*.is(.f)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) is replaced
     s.* = v;
     if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) epoch +%= 1;
 }
@@ -331,16 +338,20 @@ pub var env_pool: ?*Env = null;
 
 pub fn bind(f: *Lam, a: []const V) *Env {
     const ps = f.proto.params;
-    const cap = @max(f.proto.cap, ps.len, env_cap);
+    const n = if (f.proto.code) |c| c.keys.len else ps.len; // tier 2: the defines of the body have their slots from the start
+    const cap = @max(f.proto.cap, n, env_cap);
     const e = if (cap == env_cap and env_pool != null) blk: {
         const e = env_pool.?;
         env_pool = e.p;
         break :blk e;
     } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
-    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..ps.len], .cap = cap, .proto = f.proto, .esc = cap != env_cap };
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .esc = cap != env_cap };
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
+    if (f.proto.code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
+        x.* = .{ .k = k, .v = .nil };
+    };
     return e;
 }
 
@@ -614,6 +625,7 @@ pub fn special(a: []const V, c: []const *Node) Code {
         const g = if (sym.local) null else slot(root, sym.key, false);
         if (g) |slotp| if (primOp(slotp.*)) |op| if (a.len == 2 and unary(op) or a.len == 3 and !unary(op)) {
             const p = &make(Prim, 1)[0];
+            sym.prim = true;
             p.* = .{ .op = op, .sym = sym, .g = slotp, .f = pin(slotp.*), .c = c };
             return .{ .prim = p };
         };

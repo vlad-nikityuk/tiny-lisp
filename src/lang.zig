@@ -3,6 +3,7 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const vm = @import("vm.zig");
 const V = rt.V; const Node = rt.Node;
 pub var out: *std.Io.Writer = undefined;
 pub var errv: V = .nil;
@@ -10,9 +11,9 @@ pub var errv: V = .nil;
 // ----------------------------------------------------------------
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it runs.
 // Every macro/* runs once per node; a new or redefined one (rt.epoch) recompiles all nodes. Nodes and symbols are permanent; their AST is pinned.
-var in_macro = false; // while a macro runs, code is not expanded (so expansion nests one level)
+pub var in_macro = false; // while a macro runs, code is not expanded (so expansion nests one level)
 const make = rt.make; pub const stub = rt.stub; const kids = rt.kids; const intern = rt.intern; // compiler support code is in runtime.zig
-fn current() u32 { return rt.epoch *% 2 +% @intFromBool(in_macro) +% 1; } // the stamp of up-to-date code; 0 means not compiled yet
+pub fn current() u32 { return rt.epoch *% 2 +% @intFromBool(in_macro) +% 1; } // the stamp of up-to-date code; 0 means not compiled yet
 fn expand(x: V) rt.E!V { // every macro/* over x in turn; one that returns a false value leaves x as it was
     in_macro = true;
     defer in_macro = false;
@@ -33,7 +34,7 @@ fn form(a: []const V) rt.E!rt.Code {
         .lambda => {
             const ps = rt.items(rt.arg(a, 1)); const params = make(rt.Key, ps.len); var n: usize = 0; // (a b & rest): rest takes the extra arguments
             const proto = &make(rt.Proto, 1)[0]; proto.* = .{ .params = params[0..0], .body = stub(rt.arg(a, 2)) };
-            for (ps) |p| { if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { proto.rest = true; continue; } const sym = intern(p); sym.local = true; params[n] = sym.key; n += 1; proto.params = params[0..n]; }
+            for (ps) |p| { if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { proto.rest = true; continue; } const sym = intern(p); if (sym.prim and !sym.local) rt.epoch +%= 1; sym.local = true; params[n] = sym.key; n += 1; proto.params = params[0..n]; }
             return .{ .lambda = proto };
         },
         .@"if" => return .{ .@"if" = kids(a[1..], 3) },
@@ -47,7 +48,7 @@ fn form(a: []const V) rt.E!rt.Code {
         .apply => return rt.special(a, kids(a, a.len)),
     }
 }
-fn force(n: *Node) rt.E!void { // expand macros over n's AST, then build its code unless they changed nothing
+pub fn force(n: *Node) rt.E!void { // expand macros over n's AST, then build its code unless they changed nothing
     const x = if (in_macro or rt.ptr(n.ast) == null) n.ast else try expand(n.ast);
     if (n.code == .raw or x != n.src) {
         n.code = switch (x.tag()) {
@@ -110,6 +111,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                 else => unreachable,
             }
         },
+        .vm => |x| { if (!in_macro and gc.due()) gc.collect(); continue :sw try vm.exec(m, x.code, x.pc); },
         .ret => |v| {
             if (ks.items.len == m.base) return v;
             const k = &ks.items[ks.items.len - 1]; const c = k.c;
@@ -121,6 +123,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                 .@"&&", .@"||" => if (rt.truthy(v) == (k.kind == .@"&&")) { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; } else { ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .native => continue :sw try rt.step(k, v),
+                .vm => { const code = k.code; const pc = k.i; ks.items.len -= 1; gc.push(V, vs, v); continue :sw .{ .vm = .{ .code = code, .pc = pc } }; },
                 .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },
             }
         },
@@ -136,10 +139,10 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
             const f = vs.items[b]; const args = vs.items[b + 1 ..];
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
-                    const l = f.asLam();
+                    const l = f.asLam(); const code = vm.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) rt.release(m.e); // no frame needs the old one
-                    m.e = rt.bind(l, args); vs.items.len = b;
-                    continue :sw .{ .eval = l.proto.body };
+                    m.e = rt.bind(l, vs.items[b + 1 ..]); vs.items.len = b;
+                    continue :sw if (code) |c| .{ .vm = .{ .code = c, .pc = 0 } } else .{ .eval = l.proto.body };
                 },
                 .f => { const n = f.asFn(); switch (n.f) {
                     .plain => |p| { const v = try p(n, args); vs.items.len = b; continue :sw .{ .ret = v }; },
