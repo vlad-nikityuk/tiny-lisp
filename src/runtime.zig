@@ -134,9 +134,9 @@ pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; 
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
+pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, prim1, prim2, call, tailcall, ret };
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
-pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, keys: []const Key, stamp: u32, room: usize };
+pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, bodies: []const ?*Bytecode, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
@@ -146,8 +146,8 @@ pub const gpa = std.heap.c_allocator;
 
 // The machine's state: pending work lives in heap frames, so nothing grows the native stack.
 pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
-pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm };
-pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env, code: *Bytecode = undefined }; // vm frames: i is the pc to resume at
+pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm, loop };
+pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env, code: *Bytecode = undefined, env2: ?*Env = null }; // vm frames: i is the pc to resume at; loop frames (a for loop run by the bytecode) also keep the scope of the last iteration, to reuse it
 /// A running evaluator loop: its scope is a root for the collector.
 pub const M = struct { e: *Env, base: usize };
 pub var machines: std.ArrayList(*M) = .empty;
@@ -344,8 +344,13 @@ const env_cap = 4;
 pub var env_pool: ?*Env = null;
 
 pub fn bind(f: *Lam, a: []const V) *Env {
+    return bindWith(f, a, f.proto.code);
+}
+
+/// The scope of a call of f; for tier-2 code (`code`), the defines of the body have their slots from the start.
+pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
     const ps = f.proto.params;
-    const n = if (f.proto.code) |c| c.keys.len else ps.len; // tier 2: the defines of the body have their slots from the start
+    const n = if (code) |c| c.keys.len else ps.len;
     const cap = @max(f.proto.cap, n, env_cap);
     const e = if (cap == env_cap and env_pool != null) blk: {
         const e = env_pool.?;
@@ -356,7 +361,7 @@ pub fn bind(f: *Lam, a: []const V) *Env {
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
-    if (f.proto.code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
+    if (code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
         x.* = .{ .k = k, .v = .nil };
     };
     return e;

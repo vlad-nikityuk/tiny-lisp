@@ -21,9 +21,12 @@ const Comp = struct {
     prims: std.ArrayList(*rt.Prim) = .empty,
     defs: std.ArrayList(*rt.Def) = .empty,
     protos: std.ArrayList(*rt.Proto) = .empty,
+    bodies: std.ArrayList(?*rt.Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
     keys: std.ArrayList(rt.Key) = .empty,
     seen: std.ArrayList(rt.Key) = .empty, // names read or set! so far, in scan order
-    cond: usize = 0, // > 0 while scanning code that may not run
+    cond: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
+    held: std.ArrayList(struct { key: rt.Key, level: usize }) = .empty, // names defined in the regions being scanned
+    closed: std.ArrayList(rt.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
     fn emit(c: *Comp, op: Op, a: usize, b: usize) usize {
@@ -52,20 +55,41 @@ const Comp = struct {
         try forced(n);
         switch (n.code) {
             .val => {},
-            .ref => |r| if (!c.seenBefore(r.sym)) {
-                _ = c.add(rt.Key, &c.seen, r.sym.key);
+            .ref => |r| {
+                if (c.isClosed(r.sym)) return error.Bail;
+                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = c.add(rt.Key, &c.seen, r.sym.key);
             },
             .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |k| try c.scanUses(k, depth + 1),
             .prim => |p| for (p.c[1..]) |k| try c.scanUses(k, depth + 1),
             .def => |d| {
                 try c.scanUses(d.val, depth + 1);
-                if (!d.define) if (d.sym) |sym| if (!c.seenBefore(sym)) {
-                    _ = c.add(rt.Key, &c.seen, sym.key);
+                if (!d.define) if (d.sym) |sym| {
+                    if (c.isClosed(sym)) return error.Bail;
+                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = c.add(rt.Key, &c.seen, sym.key);
                 };
             },
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
             else => return error.Bail,
         }
+    }
+
+    fn enter(c: *Comp) void {
+        c.cond += 1;
+    }
+
+    /// End of a region that may not run: the names it defined can no longer be used (they are bound from the start of the call,
+    /// but only defined if the region ran).
+    fn leave(c: *Comp) void {
+        c.cond -= 1;
+        while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.cond) {
+            _ = c.add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
+            c.held.items.len -= 1;
+        }
+    }
+
+    fn isClosed(c: *Comp, sym: *rt.Sym) bool {
+        for (c.closed.items) |k| if (k == sym.key) return true;
+        return false;
     }
 
     fn seenBefore(c: *Comp, sym: *rt.Sym) bool {
@@ -82,30 +106,36 @@ const Comp = struct {
         switch (n.code) {
             .val => {},
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
-            .ref => |r| if (!c.seenBefore(r.sym)) {
-                _ = c.add(rt.Key, &c.seen, r.sym.key);
+            .ref => |r| {
+                if (c.isClosed(r.sym)) return error.Bail;
+                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = c.add(rt.Key, &c.seen, r.sym.key);
             },
             .@"if" => |k| {
                 try c.scan(k[0], depth + 1);
-                c.cond += 1;
-                defer c.cond -= 1;
+                c.enter();
                 try c.scan(k[1], depth + 1);
+                c.leave();
+                c.enter();
                 try c.scan(k[2], depth + 1);
+                c.leave();
             },
             .@"&&", .@"||" => |k| for (k, 0..) |x, i| {
-                if (i > 0) c.cond += 1;
+                if (i > 0) c.enter();
                 try c.scan(x, depth + 1);
+                if (i > 0) c.leave();
             },
             .begin, .call => |kids| for (kids) |k| try c.scan(k, depth + 1),
             .prim => |p| for (p.c[1..]) |k| try c.scan(k, depth + 1),
             .def => |d| {
                 try c.scan(d.val, depth + 1);
                 const sym = d.sym orelse return error.Bail;
+                if (c.isClosed(sym)) return error.Bail;
                 if (!d.define) {
-                    if (!c.seenBefore(sym)) _ = c.add(rt.Key, &c.seen, sym.key);
+                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = c.add(rt.Key, &c.seen, sym.key);
                 } else {
-                    if (c.cond > 0 or c.seenBefore(sym)) return error.Bail;
+                    if (c.seenBefore(sym)) return error.Bail;
                     if (c.slotOf(sym) == null) _ = c.add(rt.Key, &c.keys, sym.key);
+                    if (c.cond > 0) _ = c.add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.cond });
                     sym.local = true;
                 }
             },
@@ -177,7 +207,9 @@ const Comp = struct {
             },
             .call => |k| try c.gen_call(k, tail),
             .lambda => |lp| {
-                _ = c.emit(.lambda, c.add(*rt.Proto, &c.protos, lp), 0);
+                const at = c.add(*rt.Proto, &c.protos, lp);
+                _ = c.add(?*rt.Bytecode, &c.bodies, null);
+                _ = c.emit(.lambda, at, 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .def => |d| {
@@ -211,6 +243,22 @@ const Comp = struct {
     }
 
     fn gen_call(c: *Comp, k: []const *Node, tail: bool) !void {
+        if (k.len == 3 and k[0].code == .ref and k[2].code == .lambda and k[2].guard != null) loop: { // (each list (lambda (x) ...)) as a loop of the bytecode
+            const sym = k[0].code.ref.sym;
+            const lp = k[2].code.lambda;
+            const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+            const is_each = g != null and g.?.*.is(.f) and g.?.*.asFn().f == .step and std.mem.eql(u8, std.mem.span(sym.key), "each");
+            if (!is_each or lp.params.len != 1 or lp.rest) break :loop;
+            const body = ready(lp) orelse break :loop;
+            sym.prim = true; // rebinding each makes epoch change, so this code is compiled again
+            try c.genAll(k[1], false);
+            const at = c.add(*rt.Proto, &c.protos, lp);
+            _ = c.add(?*rt.Bytecode, &c.bodies, body);
+            _ = c.emit(.each, at, 0);
+            _ = c.emit(.eachnext, at, 0);
+            if (tail) _ = c.emit(.ret, 0, 0);
+            return;
+        }
         if (k.len == 4 and k[0].code == .ref) { // (vset! list index value), while vset! is the native
             const sym = k[0].code.ref.sym;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
@@ -234,12 +282,12 @@ const Comp = struct {
 fn compile(p: *rt.Proto) void {
     p.tried = true;
     var c: Comp = .{};
-    defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.keys, &c.seen }) |l| l.deinit(std.heap.c_allocator);
+    defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |l| l.deinit(std.heap.c_allocator);
     for (p.params) |k| _ = c.add(rt.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];
-    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current(), .room = c.ins.items.len + 2 }; // every instruction pushes at most one value
+    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .bodies = dup(?*rt.Bytecode, c.bodies.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current(), .room = c.ins.items.len + 2 }; // every instruction pushes at most one value
     for (code.consts) |v| _ = rt.pin(v);
     p.code = code;
 }
@@ -363,13 +411,16 @@ fn slow(m: *rt.M, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go
 
 /// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
 /// function reserved up front, so its top is kept in a local (sp) and rt.vs.items.len is brought up to date only when leaving.
-pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
+pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
     const vs = &rt.vs;
-    const e = m.e;
+    const ks = &rt.ks;
+    var e = m.e;
+    var code = code0;
     var ip = code.ins.ptr + pc0;
     if (vs.capacity - vs.items.len < code.room) vs.ensureTotalCapacity(rt.gpa, vs.items.len + code.room) catch gc.oom();
-    const st = vs.items.ptr;
+    var st = vs.items.ptr;
     var sp = vs.items.len;
+    var depth: usize = 0; // loop bodies being run by this call of exec (each has a loop frame under the frames of its calls)
     sw: switch (ip[0].op) {
         .konst => {
             st[sp] = code.consts[ip[0].a];
@@ -518,8 +569,82 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             return .{ .apply = b };
         },
         .ret => {
+            if (depth > 0) { // the body of a loop run here is done: back to the loop, which keeps its frame
+                depth -= 1;
+                const k = ks.items[ks.items.len - 1];
+                const v = st[sp - 1];
+                e = k.e;
+                m.e = e;
+                code = k.code;
+                ip = code.ins.ptr + k.i;
+                sp = k.base;
+                st[sp] = v;
+                sp += 1;
+                continue :sw ip[0].op;
+            }
             vs.items.len = sp - 1;
             return .{ .ret = st[sp - 1] };
+        },
+        .each => { // the list is on the stack: add the index and a place for the body's value
+            st[sp] = V.num(-1);
+            st[sp + 1] = V.nil;
+            sp += 2;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .eachnext => { // [list, index, body value]: the next iteration, or the end of the loop (the value is nil)
+            const top = sp - 1;
+            const idx = st[top - 1].asNum() + 1;
+            const items = rt.items(st[top - 2]);
+            if (idx >= @as(f64, @floatFromInt(items.len))) {
+                if (idx > 0) { // there is a loop frame
+                    const k = &ks.items[ks.items.len - 1];
+                    if (k.env2) |x| if (!x.captured) rt.release(x);
+                    ks.items.len -= 1;
+                }
+                st[top - 2] = V.nil;
+                sp = top - 1;
+                ip += 1;
+                continue :sw ip[0].op;
+            }
+            if (idx == 0) {
+                const k = rt.frame(.loop, &.{}, e);
+                k.i = (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(rt.Ins);
+                k.base = top;
+                k.code = code;
+            }
+            const k = &ks.items[ks.items.len - 1];
+            st[top - 1] = V.num(idx);
+            if (!lang.in_macro and gc.due()) {
+                vs.items.len = sp;
+                gc.collect();
+            }
+            const body = code.bodies[ip[0].a].?;
+            const item = items[@intFromFloat(idx)];
+            if (k.env2) |x| if (!x.captured and x.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
+                x.vars[0].v = item;
+                for (x.vars[1..]) |*v| v.v = V.nil;
+                e = x;
+            } else {
+                k.env2 = null;
+                var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
+                e = rt.bindWith(&lam, &.{item}, body);
+            } else {
+                var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
+                e = rt.bindWith(&lam, &.{item}, body);
+            }
+            k.env2 = e;
+            m.e = e;
+            depth += 1;
+            code = body;
+            ip = code.ins.ptr;
+            sp = top;
+            if (vs.capacity < top + code.room) {
+                vs.items.len = sp;
+                vs.ensureTotalCapacity(rt.gpa, top + code.room) catch gc.oom();
+                st = vs.items.ptr;
+            }
+            continue :sw ip[0].op;
         },
     }
 }

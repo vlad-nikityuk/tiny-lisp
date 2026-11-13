@@ -124,6 +124,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                 .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .native => continue :sw try rt.step(k, v),
                 .vm => { const code = k.code; const pc = k.i; ks.items.len -= 1; gc.push(V, vs, v); continue :sw .{ .vm = .{ .code = code, .pc = pc } }; },
+                .loop => { k.env2 = null; gc.push(V, vs, v); continue :sw .{ .vm = .{ .code = k.code, .pc = k.i } }; }, // the iteration's scope was released above
                 .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },
             }
         },

@@ -796,4 +796,27 @@
   (assert (equal? (defines-reset 3 (list)) (list 1 2 2)))
   (assert (eq? (fewer-args 3 5) nil)))
 
+(define cond-name 100)
+(defn define-in-branch (flag)
+  (if flag
+    (begin (define cond-name 5) (+ cond-name 1))
+    cond-name))
+(defn define-then-use-outside (flag)
+  (begin
+    (if flag (define cond-name 7) 0)
+    cond-name))
+(defn branch-total (n)
+  (if (eq? n 0) 0
+    (begin
+      (define total 0)
+      (for (i (range n)) (set! total (+ total i)))
+      total)))
+(deftest "tier 2: defines inside a branch"
+  (assert (eq? (define-in-branch 1) 6))
+  (assert (eq? (define-in-branch 0) 100))
+  (assert (eq? (define-then-use-outside 1) 7))
+  (assert (eq? (define-then-use-outside 0) 100))
+  (assert (eq? (branch-total 5) 10))
+  (assert (eq? (branch-total 0) 0)))
+
 (run-tests)
