@@ -529,4 +529,73 @@
     (assert (eq? (c1) 12))
     (assert (eq? (c2) 101))))
 
+;; defn takes a body of several expressions; for and for/list are loops with Python's shape
+(defn sum-squares (a b)
+  (define sa (* a a))
+  (define sb (* b b))
+  (+ sa sb))
+(deftest macros--defn-with-several-expressions
+  (assert (eq? 25 (sum-squares 3 4))))
+
+(deftest macros--for-and-for-list
+  (begin
+    (define total 0)
+    (for (x '(1 2 3)) (set! total (+ total x)) (set! total (+ total 10)))
+    (assert (eq? 36 total))
+    (assert (equal? '(1 4 9) (for/list (x '(1 2 3)) (* x x))))
+    (define grid (for/list (i (range 2)) (for/list (j (range 2)) (+ i j))))
+    (assert (equal? '(0 1) (first grid)))
+    (assert (equal? '(1 2) (first (rest grid))))
+    (assert (equal? '() (for/list (x '()) x)))))
+
+;; a pattern takes each item apart; over (zip ...) the lists are walked side by side
+(deftest macros--for-patterns-and-zip
+  (begin
+    (define total 0)
+    (assert (equal? '(5 7 9) (for/list ((a b) (zip '(1 2 3) '(4 5 6))) (+ a b))))
+    (assert (equal? '(3 7) (for/list ((a b) '((1 2) (3 4))) (+ a b))))
+    (for ((a b) (zip '(1 2) '(3 4))) (set! total (+ total (* a b))))
+    (assert (eq? 11 total))))
+
+(deftest lists--range-zip-and-multi-list-map
+  (begin
+    (assert (equal? '(0 1 2) (range 3)))
+    (assert (equal? '() (range 0)))
+    (assert (eq? 3 (len (range 3))))
+    (assert (equal? '(11 22) (map '(1 2 3) '(10 20) +)))
+    (assert (equal? '(9 12) (map '(1 2) '(3 4) '(5 6) (lambda (a b c) (+ a b c)))))
+    (assert (eq? 2 (len (zip '(1 2 3) '(4 5)))))
+    (assert (eq? 100000 (len (range 100000))))
+    (assert (eq? 0 (first (for/list (i (range 100000)) 0))))))
+
+;; -> threads a value through steps; chain builds a function from blocks; fn is a lambda with a longer body
+(defn inc (x) (+ x 1))
+(defn times (x n) (* x n))
+(deftest macros--thread-and-chain
+  (begin
+    (assert (eq? 41 (-> 3 inc (times 10) inc)))
+    (assert (eq? 3 (-> 3)))
+    (define f (chain inc (lambda (x) (* x 2)) (chain inc inc)))
+    (assert (eq? 6 (f 1)))
+    (assert (eq? 6 ((chain inc) 5)))
+    (define scale (fn (x) (define k 3) (* x k)))
+    (assert (eq? 11 ((chain scale inc inc) 3)))))
+
+;; examples/autograd.lisp: (val ...) is Python's arithmetic on values, with the same graph
+(load "examples/autograd.lisp")
+(defn close? (x y) (< (- x y) 0.000001))
+(deftest macros--val-infix
+  (begin
+    (define a (param 2))
+    (define b (param 3))
+    (define y (val a * b + 0.5 - (a + b) ** 2 / 5))
+    (assert (close? (data y) 1.5))
+    (backward y)
+    (assert (close? (grad a) 1))
+    (assert (close? (grad b) 0))
+    (assert (eq? (data (val - a)) -2))
+    (assert (eq? (data (val 10 + a)) 12))
+    (assert (eq? a (first (children (val 10 * a)))))
+    (assert (eq? (val - 3) -3))))
+
 (run-tests)

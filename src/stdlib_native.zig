@@ -26,19 +26,31 @@ fn at(_: *Fn, a: []const V) E!V {
     return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else .nil;
 }
 
-// map and reduce call back into Lisp, so they run as frames (see runtime.zig):
-// vs holds (list f results-or-accumulator) after the native, k.i is the next index.
+// map and reduce call back into Lisp, so they run as frames (see runtime.zig).
+// (map l1 ... ln f) calls f with the next item of every list, as many times as the shortest list is long:
+// vs holds the lists and f after the native, then the results and the number of arguments; k.i is the next index.
 fn map(_: *Fn, k: *K, v: ?V) E!Go {
-    if (v) |r| {
-        runtime.vs.items[k.base + 3].asList().items()[k.i] = r;
-        k.i += 1;
-    } else {
-        const n = runtime.items(runtime.frameArgs(k, 2)[0]).len;
-        gc.push(V, &runtime.vs, runtime.list(&.{}, n));
+    const vs = &runtime.vs;
+    if (v == null) {
+        const n = vs.items.len - k.base - 1;
+        var len: usize = if (n < 2) 0 else std.math.maxInt(usize);
+        if (n >= 2) for (vs.items[k.base + 1 ..][0 .. n - 1]) |l| {
+            len = @min(len, runtime.items(l).len);
+        };
+        gc.push(V, vs, runtime.list(&.{}, len));
+        gc.push(V, vs, V.num(@floatFromInt(n)));
     }
-    const s = runtime.vs.items[k.base + 1 ..];
-    const l = runtime.items(s[0]);
-    return if (k.i < l.len) runtime.callback(k, s[1], l[k.i..][0..1]) else runtime.finish(k, s[2]);
+    const n: usize = @intFromFloat(vs.items[vs.items.len - 1].asNum());
+    const results = vs.items[vs.items.len - 2].asList().items();
+    if (v) |r| {
+        results[k.i] = r;
+        k.i += 1;
+    }
+    if (k.i == results.len) return runtime.finish(k, vs.items[vs.items.len - 2]);
+    var xs: [8]V = undefined;
+    std.debug.assert(n - 1 <= xs.len);
+    for (vs.items[k.base + 1 ..][0 .. n - 1], xs[0 .. n - 1]) |l, *x| x.* = runtime.items(l)[k.i];
+    return runtime.callback(k, vs.items[k.base + n], xs[0 .. n - 1]);
 }
 
 fn reduce(_: *Fn, k: *K, v: ?V) E!Go {
@@ -61,6 +73,22 @@ fn concat(_: *Fn, a: []const V) E!V {
         r.asList().items()[i] = x;
         i += 1;
     };
+    return r;
+}
+
+/// (range n) is the list (0 1 ... n-1).
+fn range(_: *Fn, a: []const V) E!V {
+    const r = runtime.list(&.{}, @intFromFloat(@max(0, runtime.num(arg(a, 0)))));
+    for (r.asList().items(), 0..) |*x, i| x.* = V.num(@floatFromInt(i));
+    return r;
+}
+
+/// (zip l1 l2) is the list of pairs (a b), as long as the shorter list.
+fn zip(_: *Fn, a: []const V) E!V {
+    const x, const y = .{ runtime.items(arg(a, 0)), runtime.items(arg(a, 1)) };
+    const n = @min(x.len, y.len);
+    const r = runtime.list(&.{}, n);
+    for (r.asList().items(), x[0..n], y[0..n]) |*p, a_i, b_i| p.* = runtime.list(&.{ a_i, b_i }, 2);
     return r;
 }
 
@@ -133,6 +161,8 @@ pub fn install(e: *runtime.Env) void {
     def(e, "reduce", .{ .step = reduce });
     def(e, "partial", .{ .plain = partial });
     def(e, "concat", .{ .plain = concat });
+    def(e, "range", .{ .plain = range });
+    def(e, "zip", .{ .plain = zip });
     def(e, "read-file", .{ .plain = readFile });
     def(e, "write-file", .{ .plain = writeFile });
     def(e, "split", .{ .plain = split });

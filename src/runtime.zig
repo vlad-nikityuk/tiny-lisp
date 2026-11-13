@@ -127,7 +127,7 @@ pub const Var = struct { k: Key, v: V };
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
-pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // (define k v) or (set! k v)
+pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0 }; // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, call: []const *Node };
 pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw }; // src: the (expanded) form that code was built from
@@ -156,7 +156,6 @@ pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
     gc.push(V, &vs, v);
 }
 
-/// Push a frame of kind with children c (its pending work).
 pub fn frame(kind: Kind, c: []const *Node, e: *Env) *K {
     gc.push(K, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
     return &ks.items[ks.items.len - 1];
@@ -290,7 +289,6 @@ pub fn fetch(env: *Env, r: *Ref) V {
     return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
 }
 
-/// (define name v) or (set! name v).
 pub fn assign(d: *Def, e: *Env, v: V) E!void {
     const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
@@ -363,10 +361,33 @@ fn binop(op: Op, x: V, y: V) V {
     };
 }
 
-fn prim(s: *Fn, a: []const V) E!V {
-    const op: Op = @fromBackingInt(@intFromFloat(s.d0.asNum()));
+/// One native per op, so each is specialised at compile time.
+fn primFor(comptime op: Op) *const fn (*Fn, []const V) E!V {
+    return struct {
+        fn f(_: *Fn, a: []const V) E!V {
+            return prim(op, a);
+        }
+    }.f;
+}
+
+inline fn prim(comptime op: Op, a: []const V) E!V {
     const x = arg(a, 0);
     if (@backingInt(op) <= @backingInt(Op.@"||")) { // arithmetic, comparison, && and ||: fold left
+        if (a.len == 2 and a[0].isNum() and a[1].isNum()) {
+            const p = a[0].asNum();
+            const q = a[1].asNum();
+            switch (op) {
+                .@"+" => return V.num(p + q),
+                .@"-" => return V.num(p - q),
+                .@"*" => return V.num(p * q),
+                .@"/" => return V.num(p / q),
+                .@">" => return V.boolean(p > q),
+                .@"<" => return V.boolean(p < q),
+                .@">=" => return V.boolean(p >= q),
+                .@"<=" => return V.boolean(p <= q),
+                else => {},
+            }
+        }
         var r = x;
         for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
@@ -407,7 +428,7 @@ fn prim(s: *Fn, a: []const V) E!V {
 
 // ---------------------------------------------------------------- natives that call back into Lisp
 // They run as frames: a native frame's arguments sit on vs right after the native itself (vs[k.base]),
-// its state goes after them. Values held only there are not counted (see gc.zig).
+// its state goes after them.
 
 /// Push the frame of the native at vs[b] (its arguments follow it) and run its first step.
 pub fn start(b: usize, e: *Env) E!Go {
@@ -511,7 +532,7 @@ pub fn topLevel() *Env {
     set(e, "#t", V.boolean(true));
     set(e, "#f", V.boolean(false));
     set(e, "ESC", str("\x1b", .{}));
-    for (std.enums.values(Op)) |op| set(e, @tagName(op), V.fnOf(nf(.{ .plain = prim }, V.num(@floatFromInt(@backingInt(op))), .nil))); // d0: the op
+    inline for (comptime std.enums.values(Op)) |op| set(e, @tagName(op), V.fnOf(nf(.{ .plain = primFor(op) }, .nil, .nil)));
     set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
     return e;
 }

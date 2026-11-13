@@ -3,60 +3,112 @@
 ;; and backward finds a topological order by depth-first search, then walks it in reverse.
 ;; A value is a mutable list, like a slotted object: (data grad children local-grads visited next).
 ;; (vset! v i x) stores into it in place; `visited` is the search's mark and `next` links the finished values.
+;;
+;; (val a * b + 0.5) is Python's a * b + 0.5 on values: + - * / ** and unary - with Python's precedence. Operands are
+;; single expressions (a name, a number, a call) or parenthesised sub-expressions: (val (a + b) ** -0.5). A list whose second
+;; element is an operator is read as infix, anything else is an ordinary call. A number is wrapped in a value of its own,
+;; and a number on the left works like __radd__/__rmul__ (the value stays the first child).
+;; (val a - b) is a + (-b), (val a / b) is a * b ** -1, as in the class; -x or x / n on a plain number stays a number.
 (define topo-stamp 0) ; each backward uses a new stamp, so no mark ever needs clearing
 (define topo-head nil) ; the value finished last: the head of the reverse topological order
 
-(defn param (x) (list x 0 '() '() 0 nil))
-(defn const (x) (list x 0 '() '() 0 nil))
-(defn data (v) (at v 0))
-(defn grad (v) (at v 1))
-(defn v+ (a b) (list (+ (at a 0) (at b 0)) 0 (list a b) '(1 1) 0 nil))
-(defn v* (a b) (list (* (at a 0) (at b 0)) 0 (list a b) (list (at b 0) (at a 0)) 0 nil))
-(defn v+c (a x) (v+ a (const x)))
-(defn v*c (a x) (v* a (const x)))
-(defn vpow (a p)
+;; ---------------------------------------------------------------- val: infix arithmetic on values
+;; each level returns (expr rest-of-tokens); operands are the tokens themselves
+(defn val/op? (x) (|| (eq? x "+") (eq? x "-") (eq? x "*") (eq? x "/") (eq? x "**")))
+
+(defn val/atom (x) (if (&& (list? x) (val/op? (second x))) (first (val/sum x)) x))
+
+(defn val/unary (ts)               ; -x, x ** y (the exponent may be negative: x ** -y)
+  (if (eq? (first ts) "-")
+    (begin
+      (define operand (val/unary (rest ts)))
+      (list (list "vneg" (first operand)) (second operand)))
+    (if (eq? (second ts) "**")
+      (begin
+        (define exponent (val/unary (rest (rest ts))))
+        (list (list "vpow" (val/atom (first ts)) (first exponent)) (second exponent)))
+      (list (val/atom (first ts)) (rest ts)))))
+
+(defn val/fold (operand build op1 op2 acc ts)
+  (if (|| (eq? (first ts) op1) (eq? (first ts) op2))
+    (begin
+      (define rhs (operand (rest ts)))
+      (val/fold operand build op1 op2 (build (first ts) acc (first rhs)) (second rhs)))
+    (list acc ts)))
+
+(defn val/term (ts)
   (begin
-    (define d (at a 0))
-    (list (exp (* p (log d))) 0 (list a) (list (* p (exp (* (- p 1) (log d))))) 0 nil)))
-(defn vlog (a) (list (log (at a 0)) 0 (list a) (list (/ 1 (at a 0))) 0 nil))
+    (define lhs (val/unary ts))
+    (val/fold val/unary (lambda (op a b) (list (if (eq? op "*") "v*" "v/") a b)) "*" "/" (first lhs) (second lhs))))
+
+(defn val/sum (ts)
+  (begin
+    (define lhs (val/term ts))
+    (val/fold val/term (lambda (op a b) (list "v+" a (if (eq? op "+") b (list "vneg" b)))) "+" "-" (first lhs) (second lhs))))
+
+(define macro/val
+  (lambda (ast)
+    (if (eq? (first ast) "val") (first (val/sum (rest ast))) ast)))
+
+;; ---------------------------------------------------------------- Value
+;; Field access reads like attributes and costs nothing: (data v) is (at v 0), (grad v) is (at v 1), and so on;
+;; (Value data children local-grads) is the list with the other fields at their start values.
+(define slot-names (list "data" "grad" "children" "local-grads"))
+(defn slot-index (name i)
+  (if (eq? i (len slot-names)) nil
+    (if (eq? name (at slot-names i)) i (slot-index name (+ i 1)))))
+
+(define macro/slots
+  (lambda (ast)
+    (if (&& (list? ast) (eq? (len ast) 2) (not (eq? (slot-index (first ast) 0) nil)))
+      (list "at" (second ast) (slot-index (first ast) 0))
+      (if (&& (list? ast) (eq? (len ast) 4) (eq? (first ast) "Value"))
+        (list "list" (second ast) 0 (third ast) (at ast 3) 0 nil)
+        ast))))
+
+(defn param (x) (Value x '() '()))
+(defn const (x) (Value x '() '()))
+(defn value (x) (if (list? x) x (const x)))
+(defn set-data! (v x) (vset! v 0 x))
+(defn set-grad! (v x) (vset! v 1 x))
+
+(defn v+ (a b)
+  (define self (if (list? a) a b))
+  (define other (if (list? a) (value b) (const a)))
+  (Value (+ (data self) (data other)) (list self other) '(1 1)))
+(defn v* (a b)
+  (define self (if (list? a) a b))
+  (define other (if (list? a) (value b) (const a)))
+  (Value (* (data self) (data other)) (list self other) (list (data other) (data self))))
+(defn vpow (a p) (Value (exp (* p (log (data a)))) (list a) (list (* p (exp (* (- p 1) (log (data a))))))))
+(defn vlog (a) (Value (log (data a)) (list a) (list (/ 1 (data a)))))
 (defn vexp (a)
-  (begin
-    (define e (exp (at a 0)))
-    (list e 0 (list a) (list e) 0 nil)))
-(defn vrelu (a)
-  (begin
-    (define d (at a 0))
-    (list (if (> d 0) d 0) 0 (list a) (list (if (> d 0) 1 0)) 0 nil)))
-(defn vneg (a) (v*c a -1))
-(defn v/ (a b) (v* a (vpow b -1)))
+  (define e (exp (data a)))
+  (Value e (list a) (list e)))
+(defn vrelu (a) (Value (if (> (data a) 0) (data a) 0) (list a) (list (if (> (data a) 0) 1 0))))
+(defn vneg (a) (if (list? a) (val a * -1) (- 0 a)))   ; -x of a plain number stays a number
+(defn v/ (a b) (val a * (if (list? b) (vpow b -1) (/ 1 b))))
 (defn vsum (vs) (reduce vs v+ (const 0)))
 
 ;; depth-first: finish the children first, then v goes to the front of the list
 (defn build-topo (v)
   (if (eq? (at v 4) topo-stamp) 0
     (begin
-      (define children (at v 2))
       (vset! v 4 topo-stamp)
-      (if (> (len children) 0) (build-topo (at children 0)))
-      (if (> (len children) 1) (build-topo (at children 1)))
+      (for (child (children v)) (build-topo child))
       (vset! v 5 topo-head)
       (set! topo-head v))))
 
 ;; child.grad += local_grad * v.grad for each child
 (defn push-grads (v)
-  (begin
-    (define children (at v 2))
-    (define local-grads (at v 3))
-    (define g (at v 1))
-    (if (> (len children) 0) (vset! (at children 0) 1 (+ (at (at children 0) 1) (* (at local-grads 0) g))))
-    (if (> (len children) 1) (vset! (at children 1) 1 (+ (at (at children 1) 1) (* (at local-grads 1) g))))))
+  (for ((child local-grad) (zip (children v) (local-grads v)))
+    (vset! child 1 (+ (grad child) (* local-grad (grad v))))))
 
 (defn walk (v) (if (eq? v nil) 0 (begin (push-grads v) (walk (at v 5)))))
 
 (defn backward (loss)
-  (begin
-    (set! topo-stamp (+ topo-stamp 1))
-    (set! topo-head nil)
-    (build-topo loss)
-    (vset! loss 1 1)
-    (walk topo-head)))
+  (set! topo-stamp (+ topo-stamp 1))
+  (set! topo-head nil)
+  (build-topo loss)
+  (vset! loss 1 1)
+  (walk topo-head))

@@ -32,11 +32,11 @@ Pending work lives in heap frames, not on the native stack, so recursion is limi
 
 Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 4 MB) has been allocated, so a program that churns through garbage stays small.
 
-`examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class.
+`examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
 
 | microgpt, 10 steps + 5 samples | Python 3.14 | tinylisp |
 |---|---|---|
-| time | 0.93–0.97 s | 0.79 s |
+| time | 0.93–0.97 s | 0.81 s |
 | peak memory | 55 MB | 55 MB |
 
 Apple Silicon, best of 3 runs.
@@ -88,8 +88,15 @@ Numbers (`42`, `1.5`), booleans (`#t`, `#f`), `nil`, lists (`'(1 2 3)`), functio
 | `(set! name v)` | update the nearest existing variable |
 | `(lambda (args) body)` | a closure; missing arguments are `nil`, extra ones are ignored |
 | `(begin e1 e2 ...)` | evaluate in order, return the last |
-| `(defn name (args) body)` | shorthand for `define` + `lambda` |
+| `(defn name (args) body...)` | shorthand for `define` + `lambda`; several body expressions run as a `begin` |
 | `(defrec name (args) body)` | like `defn`, with self tail calls run in a loop |
+| `(fn (args) body...)` | a `lambda` with several body expressions |
+| `(-> x f (g a))` | thread a value through steps: `(g (f x) a)`, like a stream pipeline |
+| `(chain f g h)` | the function `x ↦ (h (g (f x)))`; each step is an expression evaluated once, like a Keras `Sequential` |
+| `(for (x lst) body...)` | run the body for each item (a loop, returns `nil`) |
+| `(for/list (x lst) body...)` | the list of the body's values, like a Python comprehension |
+
+In both loops the variable can be a pattern, `((a b) (zip xs ys))`, which walks the lists side by side.
 
 Operators: `+ - * /` (variadic; `+` concatenates when an argument is a string), `< > <= >=`, `eq?`, `&&`, `||`, `not`.
 
@@ -103,7 +110,8 @@ Lists are immutable arrays: `cons` and `cdr` copy. The list comes first in `map`
 | `(car '(a b))` / `first` | `a` | `nil` for an empty list |
 | `(cdr '(1))` / `rest` | `()` | |
 | `(len '(1 2 3))` | `3` | `(at '(a b c) 1)` → `b` |
-| `(map '(1 2 3) (lambda (x) (* x x)))` | `(1 4 9)` | |
+| `(map '(1 2 3) (lambda (x) (* x x)))` | `(1 4 9)` | `(map xs ys f)` calls `f` with one item of each |
+| `(range 3)` | `(0 1 2)` | |
 | `(reduce '(1 2 3 4) + 0)` | `10` | |
 | `(zip '(1 2) '(a b))` | `((1 a) (2 b))` | `(concat '(1 2) '(3 4))` → `(1 2 3 4)` |
 | `list?`, `empty?`, `equal?` | | `equal?` compares element-wise |
@@ -135,7 +143,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest not defn defrec empty? iterate zip concat equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defn defrec fn -> chain for for/list empty? iterate equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
 ### Files and strings
 
@@ -145,16 +153,16 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 Run from the repository root.
 
-- `examples/microgpt.lisp` (with `examples/autograd.lisp`): a port of Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) (scalar autograd, one-layer GPT, Adam, sampling).
+- `examples/microgpt.lisp` (with `examples/autograd.lisp` and the layers in `examples/nn.lisp`): a port of Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) (scalar autograd, one-layer GPT, Adam, sampling).
 
 ## Under the hood
 
 | File | |
 |---|---|
-| `src/lang.zig` | the compiler (AST to typed nodes, expanding macros), the evaluator (an explicit-stack machine over compiled nodes) and the parser |
-| `src/runtime.zig` | values (8-byte, NaN-boxed) and the printer, scopes, primitives, trampoline |
+| `src/lang.zig` | parser, compiler, evaluator |
+| `src/runtime.zig` | values, scopes, primitives, trampoline |
 | `src/gc.zig` | memory management (mark-sweep) |
-| `src/repl.zig` | command line and REPL |
+| `src/repl.zig` | REPL |
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
@@ -176,4 +184,4 @@ The first Zig version against the TypeScript one:
 | allocation-heavy churn | 6.59 s | 1.34 s (5×) |
 | peak memory | 51–146 MB | 2–3 MB |
 
-Apple Silicon, median of 5 runs. Since then the evaluator got a compiler, the memory manager a mark-sweep collector and values shrank to 8 bytes (see Performance).
+Apple Silicon, median of 5 runs.
