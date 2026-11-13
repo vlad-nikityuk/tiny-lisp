@@ -75,6 +75,7 @@ make                         # build ./tinylisp
 ./tinylisp                  # REPL
 ./tinylisp -f file.lisp     # run a file
 make test                    # run the tests
+make bench                   # compare with CPython on the programs in bench/
 ```
 
 Run it from the repository root: it loads `src/stdlib.lisp` on start.

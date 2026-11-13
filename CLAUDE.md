@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make                       # build ./tinylisp (Zig 0.17, ReleaseSafe: bounds/overflow checks, links libc)
 make test                  # spec/repl.py + spec/specs.lisp
+make bench                 # bench/run.py: 18 programs in Python and tinylisp, same output checked, times compared (ARGS="-n 1 nbody")
 make fast                  # ReleaseFast build without the checks (~4% faster): ./tinylisp-fast
 ./tinylisp [-f file.lisp] [--debug]
 zig fmt --check src/       # lang.zig opts out; all other Zig sources stay formatted
