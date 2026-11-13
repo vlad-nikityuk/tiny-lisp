@@ -2,12 +2,12 @@
 const std = @import("std");
 const source = @import("source.zig");
 const lang = @import("lang.zig");
-const runtime = @import("runtime.zig");
+const rt = @import("runtime.zig");
 const native = @import("stdlib_native.zig");
 
 const gpa = std.heap.c_allocator;
 
-fn load(io: std.Io, e: *runtime.Env, path: []const u8) runtime.E!void {
+fn load(io: std.Io, e: *rt.Env, path: []const u8) rt.E!void {
     _ = try lang.eval(try source.readProgram(io, path), e);
 }
 
@@ -23,12 +23,12 @@ pub fn main(init: std.process.Init) !void {
     const out = &ow.interface;
     lang.out = out;
     defer out.flush() catch {};
-    const e = runtime.topLevel();
+    const e = rt.topLevel();
     var file: ?[]const u8 = null;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, "--debug")) {
-            runtime.set(e, "*DEBUG*", runtime.V.boolean(true));
+            rt.set(e, "*DEBUG*", rt.V.boolean(true));
             try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];

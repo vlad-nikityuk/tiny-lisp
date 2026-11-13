@@ -6,9 +6,9 @@
 // worklist, never recursion; sweeping frees what stayed unmarked. Cycles (a closure stored in the scope it captures) are
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
 const std = @import("std");
-const lisp = @import("runtime.zig");
+const rt = @import("runtime.zig");
 const lang = @import("lang.zig");
-const V = lisp.V;
+const V = rt.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
 /// Header in front of every object, one word: the next object's address (16-aligned, so its low bits are free) with the
@@ -102,32 +102,32 @@ pub fn due() bool {
     return allocated > limit;
 }
 
-pub fn markPtr(p: ?*anyopaque) void {
+fn markPtr(p: ?*anyopaque) void {
     const h = header(p orelse return);
     if (kindOf(h) == .perm or isMarked(h)) return;
     h.link |= 1;
     if (kindOf(h) != .str) push(*H, &gray, h);
 }
 
-pub fn markV(v: V) void {
-    markPtr(lisp.ptr(v));
+fn markV(v: V) void {
+    markPtr(rt.ptr(v));
 }
 
 fn drain() void {
     while (gray.pop()) |h| {
         const p = body(h);
         switch (kindOf(h)) {
-            .list => for (@as(*lisp.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
+            .list => for (@as(*rt.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
             .func => {
-                const f: *lisp.Fn = @ptrCast(@alignCast(p));
+                const f: *rt.Fn = @ptrCast(@alignCast(p));
                 markV(f.d0);
                 markV(f.d1);
             },
             .lam => {
-                markPtr(@as(*lisp.Lam, @ptrCast(@alignCast(p))).env);
+                markPtr(@as(*rt.Lam, @ptrCast(@alignCast(p))).env);
             },
             .env => {
-                const e: *lisp.Env = @ptrCast(@alignCast(p));
+                const e: *rt.Env = @ptrCast(@alignCast(p));
                 markPtr(e.p);
                 for (e.vars) |x| {
                     markPtr(@constCast(x.k));
@@ -143,10 +143,10 @@ fn bytesOf(h: *H) usize {
     const p = body(h);
     const n: usize = switch (kindOf(h)) {
         .str => std.mem.len(@as([*:0]const u8, @ptrCast(p))) + 1,
-        .list => @sizeOf(lisp.Lst) + @as(*lisp.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
-        .func => @sizeOf(lisp.Fn),
-        .lam => @sizeOf(lisp.Lam),
-        .env => @sizeOf(lisp.Env) + @as(*lisp.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(lisp.Var),
+        .list => @sizeOf(rt.Lst) + @as(*rt.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
+        .func => @sizeOf(rt.Fn),
+        .lam => @sizeOf(rt.Lam),
+        .env => @sizeOf(rt.Env) + @as(*rt.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(rt.Var),
         .perm => 0,
     };
     return n + @sizeOf(H);
@@ -154,15 +154,15 @@ fn bytesOf(h: *H) usize {
 
 /// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
 fn markRoots() void {
-    lisp.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
-    for (lisp.ks.items) |k| {
+    rt.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
+    for (rt.ks.items) |k| {
         markPtr(k.e);
         if (k.kind == .loop) markPtr(k.env2);
     }
-    for (lisp.vs.items) |v| markV(v);
-    for (lisp.machines.items) |m| markPtr(m.e);
-    for (lisp.gk, lisp.gv) |k, v| if (k != null) markV(v);
-    for (lisp.pins.items) |v| markV(v);
+    for (rt.vs.items) |v| markV(v);
+    for (rt.machines.items) |m| markPtr(m.e);
+    for (rt.gk, rt.gv) |k, v| if (k != null) markV(v);
+    for (rt.pins.items) |v| markV(v);
     markV(lang.errv);
 }
 
@@ -183,8 +183,8 @@ pub fn collect() void {
         }
         if (prev) |q| setNext(q, next) else all = next;
         if (kindOf(h) == .env) {
-            const e: *lisp.Env = @ptrCast(@alignCast(body(h)));
-            if (e.vars.ptr != after(lisp.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
+            const e: *rt.Env = @ptrCast(@alignCast(body(h)));
+            if (e.vars.ptr != after(rt.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
         }
         std.c.free(h);
     }
