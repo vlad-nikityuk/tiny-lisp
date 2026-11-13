@@ -769,4 +769,15 @@
   (assert (equal? (rest-tier 1) (list 1 (list))))
   (assert (equal? (mut-param 5) (list 6 12))))
 
+(defn store (l i x) (vset! l i x))
+(defn store-twice (l) (begin (vset! l 0 (vset! l 1 9)) l))
+(deftest "tier 2: vset! in a compiled function"
+  (define l (list 1 2 3))
+  (assert (eq? (store l 1 20) 20))
+  (assert (equal? l (list 1 20 3)))
+  (assert (equal? (store-twice l) (list 9 9 3)))
+  (assert (equal? (try (lambda () (store l 3 0)) (lambda (e) "range")) "range"))
+  (assert (equal? (try (lambda () (store nil 0 0)) (lambda (e) "list")) "list"))
+  (assert (equal? l (list 9 9 3))))
+
 (run-tests)

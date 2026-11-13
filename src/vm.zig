@@ -211,6 +211,17 @@ const Comp = struct {
     }
 
     fn gen_call(c: *Comp, k: []const *Node, tail: bool) !void {
+        if (k.len == 4 and k[0].code == .ref) { // (vset! list index value), while vset! is the native
+            const sym = k[0].code.ref.sym;
+            const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+            if (g) |slotp| if (rt.isVset(slotp.*)) {
+                for (k[1..]) |x| try c.genAll(x, false);
+                sym.prim = true; // rebinding it makes epoch change, so this code is compiled again
+                _ = c.emit(.vset, c.add(V, &c.consts, slotp.*), 0);
+                if (tail) _ = c.emit(.ret, 0, 0);
+                return;
+            };
+        }
         for (k) |x| try c.genAll(x, false);
         _ = c.emit(if (tail) .tailcall else .call, k.len - 1, c.add(V, &c.consts, k[0].ast));
     }
@@ -356,7 +367,7 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
     const vs = &rt.vs;
     const e = m.e;
     var ip = code.ins.ptr + pc0;
-    vs.ensureTotalCapacity(rt.gpa, vs.items.len + code.room) catch gc.oom();
+    if (vs.capacity - vs.items.len < code.room) vs.ensureTotalCapacity(rt.gpa, vs.items.len + code.room) catch gc.oom();
     const st = vs.items.ptr;
     var sp = vs.items.len;
     sw: switch (ip[0].op) {
@@ -425,6 +436,28 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
                 vs.items.len = sp;
                 return slow(m, code, ip, 2);
             }
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .vset => { // (vset! list index value): the native itself does anything that is not an in-range store
+            const l = st[sp - 3];
+            const i = st[sp - 2];
+            if (l.is(.l) and i.isNum()) {
+                const items = l.asList().items();
+                const x = i.asNum();
+                if (x >= 0 and x < @as(f64, @floatFromInt(items.len))) {
+                    items[@intFromFloat(x)] = st[sp - 1];
+                    sp -= 2;
+                    st[sp - 1] = items[@intFromFloat(x)];
+                    ip += 1;
+                    continue :sw ip[0].op;
+                }
+            }
+            const n = code.consts[ip[0].a].asFn();
+            vs.items.len = sp;
+            const r = try n.f.plain(n, st[sp - 3 .. sp]);
+            sp -= 2;
+            st[sp - 1] = r;
             ip += 1;
             continue :sw ip[0].op;
         },
