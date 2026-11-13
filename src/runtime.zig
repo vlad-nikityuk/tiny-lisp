@@ -126,17 +126,23 @@ pub const Var = struct { k: Key, v: V };
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
+/// A call of a primitive on two operands, compiled as such while its name is global and still bound to that primitive: the evaluator
+/// computes it in place when both operands are constants or variables holding numbers (or a list and an index), else it is the call c.
+pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // slow: an operand is a call, so it is never computed in place
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
-pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false }; // cap: room for the scope of a call, grown by defines
-pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, call: []const *Node };
-pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw }; // src: the (expanded) form that code was built from
+pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null }; // cap: room for the scope of a call, grown by defines
+pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
+/// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
+/// calls it, so creating it does not capture its scope (lambda below).
+pub const Guard = struct { sym: *Sym, g: *V, f: V };
+pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw, guard: ?*Guard = null }; // src: the (expanded) form that code was built from
 
 const gpa = std.heap.c_allocator;
 
 // The machine's state: pending work lives in heap frames, so nothing grows the native stack.
-pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", apply }; // apply: anything else
-pub const Kind = enum { @"if", begin, def, call, native };
+pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
+pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native };
 pub const K = struct { kind: Kind, i: usize, base: usize, c: []const *Node, d: *Def = undefined, e: *Env };
 /// A running evaluator loop: its scope is a root for the collector.
 pub const M = struct { e: *Env, base: usize };
@@ -312,7 +318,9 @@ pub fn set(e: *Env, key: Key, v: V) void {
 }
 
 pub fn lambda(p: *Proto, e: *Env) V {
-    e.esc = true; // a closure holds the scope: it can no longer be recycled when its call ends
+    if (p.guard) |d| if (!d.sym.local and d.g.* == d.f) return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e })); // a loop body: dead once the loop is over
+    var s: ?*Env = e; // a closure holds the scope and, through it, the enclosing ones: none can be recycled when its call ends
+    while (s) |x| : (s = x.p) x.esc = true;
     return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
 }
 
@@ -346,7 +354,7 @@ pub fn release(e: *Env) void {
 
 // primitives
 // ----------------------------------------------------------------
-const Op = enum { @"+", @"-", @"*", @"/", @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", trampoline, @"vset!", exp, log, sqrt, cos, floor };
+pub const Op = enum { @"+", @"-", @"*", @"/", mod, @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", at, trampoline, @"vset!", not, min, max, exp, log, sqrt, cos, floor, abs };
 
 fn binop(op: Op, x: V, y: V) V {
     const a = num(x);
@@ -356,6 +364,7 @@ fn binop(op: Op, x: V, y: V) V {
         .@"-" => V.num(a - b),
         .@"*" => V.num(a * b),
         .@"/" => V.num(a / b),
+        .mod => V.num(a - b * @floor(a / b)),
         .@">" => V.boolean(a > b),
         .@"<" => V.boolean(a < b),
         .@">=" => V.boolean(a >= b),
@@ -385,6 +394,7 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
                 .@"-" => return V.num(p - q),
                 .@"*" => return V.num(p * q),
                 .@"/" => return V.num(p / q),
+                .mod => return V.num(p - q * @floor(p / q)),
                 .@">" => return V.boolean(p > q),
                 .@"<" => return V.boolean(p < q),
                 .@">=" => return V.boolean(p >= q),
@@ -403,14 +413,29 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
             .log => @log(n),
             .sqrt => @sqrt(n),
             .cos => @cos(n),
+            .abs => @abs(n),
             else => @floor(n),
         });
+    }
+    if (op == .not) return V.boolean(!truthy(x));
+    if (op == .min or op == .max) { // several numbers or one list, like Python's
+        const l = if (a.len == 1 and x.is(.l)) items(x) else a;
+        if (l.len == 0) return fail(str("TinyLisp: {s} of nothing", .{@tagName(op)}));
+        var r = l[0];
+        for (l[1..]) |y| if (if (op == .min) num(y) < num(r) else num(y) > num(r)) {
+            r = y;
+        };
+        return r;
     }
     const l = items(if (op == .cons) arg(a, 1) else x);
     switch (op) {
         .car => return arg(l, 0),
         .cdr => return list(l[@min(1, l.len)..], l.len -| 1),
         .len => return V.num(@floatFromInt(l.len)),
+        .at => {
+            const i = num(arg(a, 1));
+            return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else .nil;
+        },
         .list => return list(a, a.len),
         .@"error" => return fail(x),
         .trampoline => return V.fnOf(nf(.{ .step = trampRun }, x, .nil)),
@@ -540,4 +565,117 @@ pub fn topLevel() *Env {
     inline for (comptime std.enums.values(Op)) |op| set(e, @tagName(op), V.fnOf(nf(.{ .plain = primFor(op) }, .nil, .nil)));
     set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
     return e;
+}
+
+// compiler support
+// ----------------------------------------------------------------
+var interned: std.StringHashMapUnmanaged(*Sym) = .empty;
+
+pub fn make(comptime T: type, n: usize) []T {
+    return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n];
+}
+
+pub fn stub(v: V) *Node {
+    const n = &make(Node, 1)[0];
+    n.* = .{ .ast = pin(v) };
+    return n;
+}
+
+/// n nodes for the items of a, nil for missing ones.
+pub fn kids(a: []const V, n: usize) []const *Node {
+    const c = make(*Node, n);
+    for (c, 0..) |*x, i| x.* = stub(arg(a, i));
+    return c;
+}
+
+pub fn intern(v: V) *Sym { // equal names are the same symbol, so scopes compare keys by address
+    const name = std.mem.span(if (v.is(.s)) v.asStr() else str("{f}", .{v}).asStr());
+    const entry = interned.getOrPut(std.heap.c_allocator, name) catch gc.oom();
+    if (!entry.found_existing) { // the table's key is the symbol's own name
+        entry.value_ptr.* = &make(Sym, 1)[0];
+        entry.value_ptr.*.* = .{ .key = mkstr(name, true) };
+        entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
+    }
+    return entry.value_ptr.*;
+}
+
+/// The call c of a, as a Prim node if its head is a global bound to a primitive that `fast` knows.
+pub fn special(a: []const V, c: []const *Node) Code {
+    if (a.len >= 3 and a[0].is(.s) and items(a[a.len - 1]).len > 0 and items(a[a.len - 1])[0].is(.s) and streq(items(a[a.len - 1])[0].asStr(), "lambda")) {
+        const sym = intern(a[0]);
+        const g = if (sym.local) null else slot(root, sym.key, false);
+        if (g) |slotp| if (slotp.*.is(.f) and slotp.*.asFn().f == .step and (streq(sym.key, "each") or streq(sym.key, "map"))) {
+            c[c.len - 1].guard = &make(Guard, 1)[0];
+            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = slotp, .f = pin(slotp.*) };
+        };
+    }
+    if ((a.len == 2 or a.len == 3) and a[0].is(.s)) {
+        const sym = intern(a[0]);
+        const g = if (sym.local) null else slot(root, sym.key, false);
+        if (g) |slotp| if (primOp(slotp.*)) |op| if (a.len == 2 and unary(op) or a.len == 3 and !unary(op)) {
+            const p = &make(Prim, 1)[0];
+            p.* = .{ .op = op, .sym = sym, .g = slotp, .f = pin(slotp.*), .c = c };
+            return .{ .prim = p };
+        };
+    }
+    return .{ .call = c };
+}
+
+fn primOp(v: V) ?Op {
+    if (!v.is(.f) or v.asFn().f != .plain) return null;
+    inline for (comptime std.enums.values(Op)) |op| {
+        if (v.asFn().f.plain == primFor(op)) return switch (op) {
+            .@"+", .@"-", .@"*", .@"/", .mod, .@">", .@"<", .@">=", .@"<=", .@"eq?", .at, .not, .abs, .floor, .sqrt, .exp, .log, .cos => op,
+            else => null,
+        };
+    }
+    return null;
+}
+
+fn unary(op: Op) bool {
+    return switch (op) {
+        .not, .abs, .floor, .sqrt, .exp, .log, .cos => true,
+        else => false,
+    };
+}
+
+/// The value of (op x) for a one-operand primitive, null if x is not a number (not: always).
+pub fn fast1(op: Op, x: V) ?V {
+    if (op == .not) return V.boolean(!truthy(x));
+    if (!x.isNum()) return null;
+    const p = x.asNum();
+    return V.num(switch (op) {
+        .abs => @abs(p),
+        .floor => @floor(p),
+        .sqrt => @sqrt(p),
+        .exp => @exp(p),
+        .log => @log(p),
+        else => @cos(p),
+    });
+}
+
+/// The value of (op x y) when it needs no allocation and no error, else null.
+pub fn fast(op: Op, x: V, y: V) ?V {
+    if (op == .@"eq?") return V.boolean(eq(x, y));
+    if (!y.isNum()) return null;
+    const q = y.asNum();
+    if (op == .at) {
+        if (!x.is(.l)) return null;
+        const l = x.asList().items();
+        return if (q >= 0 and q < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(q)] else null;
+    }
+    if (!x.isNum()) return null;
+    const p = x.asNum();
+    return switch (op) {
+        .@"+" => V.num(p + q),
+        .@"-" => V.num(p - q),
+        .@"*" => V.num(p * q),
+        .@"/" => V.num(p / q),
+        .mod => V.num(p - q * @floor(p / q)),
+        .@">" => V.boolean(p > q),
+        .@"<" => V.boolean(p < q),
+        .@">=" => V.boolean(p >= q),
+        .@"<=" => V.boolean(p <= q),
+        else => null,
+    };
 }

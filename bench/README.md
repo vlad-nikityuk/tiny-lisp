@@ -64,7 +64,11 @@ Geometric mean: tinylisp takes 2.4x as long as CPython 3.14.
 - **Tight loops over indices are where CPython wins** (3x-7x): `nqueens`, `life`, `levenshtein`, `fannkuch`, `nbody`.
   Python's `for` and `while` are bytecode; here `for` is a `map` with a lambda, so every iteration is a call with a
   scope, and there is no `while`.
-- **`&&` and `||` evaluate all their operands.** `nqueens` with the three-way `&&` replaced by nested `if`s takes
-  1.5 s instead of 2.85 s (checked). Python's `and` stops at the first false operand. Making `&&`/`||` short-circuit
-  (a macro) is the cheapest likely win for `nqueens`, `life`, `dijkstra` and `levenshtein`.
+- **`&&` and `||` short-circuit** (special forms, like Python's `and`/`or`; they still return the deciding operand). They used to
+  evaluate every operand: `nqueens` took 2.9 s, now 1.5 s. `mod`, `abs`, `min`, `max` and `not` are natives rather than
+  Lisp functions (`life`, `levenshtein`, `knapsack`).
+- **Two-operand primitive calls on variables and constants are computed in place** (`Code.prim`): no frame, no call. A 10M-iteration
+  tail loop went from 0.47 s to 0.27 s; the geometric mean against CPython from 2.05x to 1.77x.
+- **Loop bodies passed to `each`/`map` do not capture their scope** (a `for` inside a `for` used to make the outer iteration's scope
+  unrecyclable). Nested short loops (`life`, `nbody`) got about 10% faster.
 - **Arithmetic on numbers is not the problem**: the float programs (`logreg`, `matmul`, `kmeans`) are within 1.3x.

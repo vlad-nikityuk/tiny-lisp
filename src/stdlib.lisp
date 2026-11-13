@@ -74,7 +74,6 @@
 (defmacro fn (args & body)
   `(lambda ~args ~(begin-of body)))
 
-(defn not (x) (if x #f #t))
 (defn second (l) (first (rest l)))
 (defn third (l) (first (rest (rest l))))
 
@@ -90,20 +89,20 @@
     (list "lambda" (list var) (begin-of body))))
 
 ;; the loop as a map call; over (zip xs ys) it walks the lists side by side, without building the pairs
-(defn for/map (var source body)
+(defn for/map (var source body head)
   (if (&& (list? var) (eq? (first source) "zip"))
-    (concat (list "map") (rest source) (list (list "lambda" var (begin-of body))))
-    (list "map" source (for/lambda var body))))
+    (concat (list head) (rest source) (list (list "lambda" var (begin-of body))))
+    (list head source (for/lambda var body))))
 
 ;; loops over a list, like Python's for and list comprehensions
-;; (for (x lst) body...)      -> (begin (map lst (lambda (x) body...)) nil)
+;; (for (x lst) body...)      -> (each lst (lambda (x) body...))   ; each is map without the result list; it returns nil
 ;; (for/list (x lst) body...) -> (map lst (lambda (x) body...))
 ;; (for/list ((a b) (zip xs ys)) (* a b)) -> (map xs ys (lambda (a b) (* a b)))
 (defmacro for (spec & body)
-  `(begin ~(for/map (first spec) (second spec) body) nil))
+  (for/map (first spec) (second spec) body "each"))
 
 (defmacro for/list (spec & body)
-  (for/map (first spec) (second spec) body))
+  (for/map (first spec) (second spec) body "map"))
 
 ;; (-> x step...) threads a value through the steps, like a stream pipeline: a name f is (f x), a form (f a) is (f x a)
 ;; (-> probs (at 3) vlog vneg) -> (vneg (vlog (at probs 3)))

@@ -8,31 +8,11 @@ pub var out: *std.Io.Writer = undefined;
 pub var errv: V = .nil;
 // compiler
 // ----------------------------------------------------------------
-// The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
-// runs. Every macro/* runs once per node; a new or redefined one (rt.epoch) makes all nodes compile again. Nodes and symbols
-// are permanent; the AST they came from is pinned (rt.pin).
+// The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it runs.
+// Every macro/* runs once per node; a new or redefined one (rt.epoch) recompiles all nodes. Nodes and symbols are permanent; their AST is pinned.
 var in_macro = false; // while a macro runs, code is not expanded (so expansion nests one level)
-var interned: std.StringHashMapUnmanaged(*rt.Sym) = .empty;
-
-fn make(comptime T: type, n: usize) []T { return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n]; }
-
-fn intern(v: V) *rt.Sym { // equal names are the same symbol, so scopes compare keys by address
-    const name = std.mem.span(if (v.is(.s)) v.asStr() else rt.str("{f}", .{v}).asStr());
-    const entry = interned.getOrPut(std.heap.c_allocator, name) catch gc.oom();
-    if (!entry.found_existing) { // the table's key is the symbol's own name
-        entry.value_ptr.* = &make(rt.Sym, 1)[0]; entry.value_ptr.*.* = .{ .key = rt.mkstr(name, true) }; entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
-    }
-    return entry.value_ptr.*;
-}
-
-pub fn stub(v: V) *Node { const n = &make(Node, 1)[0]; n.* = .{ .ast = rt.pin(v) }; return n; }
-fn kids(a: []const V, n: usize) []const *Node { // n nodes for the items of a, nil for missing ones
-    const c = make(*Node, n);
-    for (c, 0..) |*x, i| x.* = stub(rt.arg(a, i));
-    return c;
-}
+const make = rt.make; pub const stub = rt.stub; const kids = rt.kids; const intern = rt.intern; // compiler support code is in runtime.zig
 fn current() u32 { return rt.epoch *% 2 +% @intFromBool(in_macro) +% 1; } // the stamp of up-to-date code; 0 means not compiled yet
-
 fn expand(x: V) rt.E!V { // every macro/* over x in turn; one that returns a false value leaves x as it was
     in_macro = true;
     defer in_macro = false;
@@ -58,12 +38,13 @@ fn form(a: []const V) rt.E!rt.Code {
         },
         .@"if" => return .{ .@"if" = kids(a[1..], 3) },
         .begin => return .{ .begin = kids(a[1..], @max(a.len - 1, 1)) }, // (begin) is nil
+        .@"&&" => return .{ .@"&&" = kids(a[1..], @max(a.len - 1, 1)) }, .@"||" => return .{ .@"||" = kids(a[1..], @max(a.len - 1, 1)) }, // short-circuit
         .define, .@"set!" => {
             const d = &make(rt.Def, 1)[0];
             d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(rt.arg(a, 2)), .define = head == .define };
             return .{ .def = d };
         },
-        .apply => return .{ .call = kids(a, a.len) },
+        .apply => return rt.special(a, kids(a, a.len)),
     }
 }
 fn force(n: *Node) rt.E!void { // expand macros over n's AST, then build its code unless they changed nothing
@@ -75,18 +56,29 @@ fn force(n: *Node) rt.E!void { // expand macros over n's AST, then build its cod
             .l => try form(x.asList().items()),
             else => .{ .val = x },
         };
+        if (n.code == .lambda) n.code.lambda.guard = n.guard;
         n.src = rt.pin(x);
     }
     n.stamp = current();
 }
-fn atom(n: *Node, e: *rt.Env) rt.E!?V { // the value if n is a constant or a variable, else null; compiles n on demand
+inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V { // the value if n is a constant or a variable, else null; compiles n on demand
     if (n.stamp != current()) try force(n);
     return switch (n.code) { .val => |v| v, .ref => |*r| rt.fetch(e, r), else => null };
 }
+inline fn atom(n: *Node, e: *rt.Env) rt.E!?V { // a leaf, or a primitive call on leaves that computes in place (rt.Prim)
+    if (try leaf(n, e)) |v| return v;
+    return if (n.code == .prim and !n.code.prim.slow) try inplace(n.code.prim, e, 3) else null;
+}
+fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V { // operands may be primitive calls themselves, a few levels deep (so native recursion stays bounded)
+    if (p.sym.local or p.g.* != p.f) return null;
+    var x = [2]V{ .nil, .nil };
+    inline for (0..2) |i| if (i + 1 < p.c.len) { const n = p.c[i + 1]; x[i] = try leaf(n, e) orelse if (n.code == .prim and depth > 0 and !n.code.prim.slow) (try inplace(n.code.prim, e, depth - 1) orelse return null) else { p.slow = true; return null; }; }; // slow: never in place
+    return if (p.c.len == 2) rt.fast1(p.op, x[0]) else rt.fast(p.op, x[0], x[1]);
+}
 // evaluator
 // ----------------------------------------------------------------
-// No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected on
-// rt.vs, and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
+// No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected on rt.vs,
+// and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 pub fn eval(ast: V, env: *rt.Env) rt.E!V { return exec(.{ .eval = stub(ast) }, env); }
 fn exec(go: rt.Go, env: *rt.Env) rt.E!V { // run from go until its first step has a value; an error goes to the innermost `try`
     var m: rt.M = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
@@ -111,7 +103,9 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
                     continue :sw .{ .eval = c[0] };
                 },
                 .begin => |c| { if (c.len > 1) _ = rt.frame(.begin, c, m.e); continue :sw .{ .eval = c[0] }; },
-                .def => |d| { rt.frame(.def, &.{}, m.e).d = d; continue :sw .{ .eval = d.val }; },
+                .prim => |p| continue :sw .{ .args = .{ .c = p.c, .i = 0, .b = vs.items.len } }, // not computable in place: the plain call
+                .@"&&", .@"||" => |c| { if (c.len > 1) _ = rt.frame(if (n.code == .@"&&") .@"&&" else .@"||", c, m.e); continue :sw .{ .eval = c[0] }; },
+                .def => |d| { if (try atom(d.val, m.e)) |v| { try rt.assign(d, m.e, v); continue :sw .{ .ret = v }; } rt.frame(.def, &.{}, m.e).d = d; continue :sw .{ .eval = d.val }; },
                 .call => |c| continue :sw .{ .args = .{ .c = c, .i = 0, .b = vs.items.len } },
                 else => unreachable,
             }
@@ -124,6 +118,7 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
             switch (k.kind) {
                 .@"if" => { ks.items.len -= 1; continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] }; },
                 .begin => { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; }, // the last one is a tail position
+                .@"&&", .@"||" => if (rt.truthy(v) == (k.kind == .@"&&")) { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; } else { ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
                 .native => continue :sw try rt.step(k, v),
                 .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },

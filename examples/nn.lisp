@@ -7,15 +7,7 @@
 ;; Python builtins and helpers
 ;; ----------------------------------------------------------------
 (defn gauss (std) (* std (sqrt (* -2 (log (rand)))) (cos (* 2 pi (rand)))))
-;; like Python's, min and max take several arguments or one list: (max 1 2), (max '(1 2))
-(defn items-of (args) (if (&& (eq? (len args) 1) (list? (first args))) (first args) args))
-(defn min (& args)
-  (define l (items-of args))
-  (reduce (rest l) (lambda (m x) (if (< x m) x m)) (first l)))
-(defn max (& args)
-  (define l (items-of args))
-  (reduce (rest l) (lambda (m x) (if (> x m) x m)) (first l)))
-(defn mod (a b) (- a (* b (floor (/ a b)))))
+;; min, max (several numbers or one list, like Python's), mod and abs are native
 (defn slice (l start end) (for/list (i (range (- end start))) (at l (+ start i))))
 ;; a list that grows in place, like a Python list with .append(): a one-slot list holding the items
 (defn new-list () (list '()))

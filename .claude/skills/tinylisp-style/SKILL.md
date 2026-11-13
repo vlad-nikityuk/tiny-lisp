@@ -46,9 +46,8 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 ## Language features and traps
 
 - `0`, `""`, `nil` and `#f` are false; `'()` is true. `eq?` treats `'()` as `nil`.
-- **`&&` and `||` do not short-circuit**: every operand is evaluated (they return one of their operands). A guard like
-  `(&& (< i n) (at v i))` still evaluates `(at v i)`, and in a hot loop the extra operands cost real time (a three-way
-  `&&` in n-queens doubled the run time). Use nested `if` for guards and in hot paths.
+- `&&` and `||` short-circuit and return the operand that decided (`(|| 0 "x")` is `"x"`). They are special forms when called, ordinary functions when passed (`(reduce l && 1)`: no short-circuit there).
+- `mod`, `abs`, `min`, `max` (several numbers or one list) and `not` are natives.
 - `eq?` on lists is identity; `equal?` compares element-wise at any depth (and lengths). Elements are compared with `eq?`, so see the literal trap below.
 - Symbols and strings are the same type, **but a string literal inside quoted data does not `eq?` a string made at run
   time**: `'("a")` holds a literal, `'(a)` a symbol. In a spec, expect `(list 'a "")` rather than `'(a "")`. Compare AST names against symbols (`'(data grad)`) or `(list "data" …)`.

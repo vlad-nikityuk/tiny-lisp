@@ -20,37 +20,35 @@ fn isList(_: *Fn, a: []const V) E!V {
     return V.boolean(arg(a, 0).is(.l));
 }
 
-fn at(_: *Fn, a: []const V) E!V {
-    const l = runtime.items(arg(a, 0));
-    const i = runtime.num(arg(a, 1));
-    return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else .nil;
-}
-
 // map and reduce call back into Lisp, so they run as frames (see runtime.zig).
 // (map l1 ... ln f) calls f with the next item of every list, as many times as the shortest list is long:
 // vs holds the lists and f after the native, then the results and the number of arguments; k.i is the next index.
-fn map(_: *Fn, k: *K, v: ?V) E!Go {
-    const vs = &runtime.vs;
-    if (v == null) {
-        const n = vs.items.len - k.base - 1;
-        var len: usize = if (n < 2) 0 else std.math.maxInt(usize);
-        if (n >= 2) for (vs.items[k.base + 1 ..][0 .. n - 1]) |l| {
-            len = @min(len, runtime.items(l).len);
-        };
-        gc.push(V, vs, runtime.list(&.{}, len));
-        gc.push(V, vs, V.num(@floatFromInt(n)));
-    }
-    const n: usize = @intFromFloat(vs.items[vs.items.len - 1].asNum());
-    const results = vs.items[vs.items.len - 2].asList().items();
-    if (v) |r| {
-        results[k.i] = r;
-        k.i += 1;
-    }
-    if (k.i == results.len) return runtime.finish(k, vs.items[vs.items.len - 2]);
-    var xs: [8]V = undefined;
-    std.debug.assert(n - 1 <= xs.len);
-    for (vs.items[k.base + 1 ..][0 .. n - 1], xs[0 .. n - 1]) |l, *x| x.* = runtime.items(l)[k.i];
-    return runtime.callback(k, vs.items[k.base + n], xs[0 .. n - 1]);
+fn mapper(comptime keep: bool) *const fn (*Fn, *K, ?V) E!Go {
+    return struct {
+        fn f(_: *Fn, k: *K, v: ?V) E!Go {
+            const vs = &runtime.vs;
+            if (v == null) {
+                const n = vs.items.len - k.base - 1;
+                var len: usize = if (n < 2) 0 else std.math.maxInt(usize);
+                if (n >= 2) for (vs.items[k.base + 1 ..][0 .. n - 1]) |l| {
+                    len = @min(len, runtime.items(l).len);
+                };
+                gc.push(V, vs, if (keep) runtime.list(&.{}, len) else V.num(@floatFromInt(len))); // each keeps only the count
+                gc.push(V, vs, V.num(@floatFromInt(n)));
+            }
+            const n: usize = @intFromFloat(vs.items[vs.items.len - 1].asNum());
+            const state = vs.items[vs.items.len - 2];
+            if (v) |r| {
+                if (keep) state.asList().items()[k.i] = r;
+                k.i += 1;
+            }
+            if (k.i == (if (keep) state.asList().items().len else @as(usize, @intFromFloat(state.asNum())))) return runtime.finish(k, if (keep) state else .nil);
+            var xs: [8]V = undefined;
+            std.debug.assert(n - 1 <= xs.len);
+            for (vs.items[k.base + 1 ..][0 .. n - 1], xs[0 .. n - 1]) |l, *x| x.* = runtime.items(l)[k.i];
+            return runtime.callback(k, vs.items[k.base + n], xs[0 .. n - 1]);
+        }
+    }.f;
 }
 
 fn reduce(_: *Fn, k: *K, v: ?V) E!Go {
@@ -162,8 +160,8 @@ fn def(e: *runtime.Env, k: [*:0]const u8, f: runtime.Native) void {
 pub fn install(e: *runtime.Env) void {
     def(e, "print", .{ .plain = print });
     def(e, "list?", .{ .plain = isList });
-    def(e, "at", .{ .plain = at });
-    def(e, "map", .{ .step = map });
+    def(e, "map", .{ .step = mapper(true) });
+    def(e, "each", .{ .step = mapper(false) });
     def(e, "reduce", .{ .step = reduce });
     def(e, "apply", .{ .step = apply });
     def(e, "partial", .{ .plain = partial });
