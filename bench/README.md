@@ -36,26 +36,26 @@ Interpreter start is 0.021 s for Python and 0.003 s for tinylisp, and is include
 
 | benchmark | python | tinylisp | tinylisp / python |
 |---|---|---|---|
-| kmeans | 0.299 s | 0.093 s | 0.31x |
-| logreg | 0.358 s | 0.134 s | 0.37x |
-| matmul | 0.359 s | 0.135 s | 0.38x |
-| dijkstra | 0.344 s | 0.134 s | 0.39x |
-| mlp_xor (scalar autograd) | 0.302 s | 0.153 s | 0.51x |
-| knapsack | 0.405 s | 0.205 s | 0.51x |
-| linreg (scalar autograd) | 0.309 s | 0.160 s | 0.52x |
-| mandelbrot | 0.326 s | 0.183 s | 0.56x |
-| bpe | 0.302 s | 0.245 s | 0.81x |
-| sieve | 0.375 s | 0.379 s | 1.01x |
-| nbody | 0.360 s | 0.372 s | 1.03x |
-| bigram | 0.143 s | 0.150 s | 1.05x |
-| spectral_norm | 0.270 s | 0.330 s | 1.22x |
-| nqueens | 0.397 s | 0.497 s | 1.25x |
-| life | 0.339 s | 0.439 s | 1.29x |
-| levenshtein | 0.199 s | 0.288 s | 1.45x |
-| fannkuch | 0.410 s | 0.603 s | 1.47x |
-| quicksort | 0.195 s | 0.292 s | 1.50x |
+| kmeans | 0.290 s | 0.092 s | 0.32x |
+| logreg | 0.355 s | 0.131 s | 0.37x |
+| matmul | 0.362 s | 0.133 s | 0.37x |
+| dijkstra | 0.343 s | 0.126 s | 0.37x |
+| knapsack | 0.386 s | 0.167 s | 0.43x |
+| mlp_xor (scalar autograd) | 0.301 s | 0.150 s | 0.50x |
+| linreg (scalar autograd) | 0.305 s | 0.155 s | 0.51x |
+| mandelbrot | 0.323 s | 0.183 s | 0.57x |
+| bpe | 0.304 s | 0.184 s | 0.61x |
+| sieve | 0.377 s | 0.291 s | 0.77x |
+| spectral_norm | 0.272 s | 0.245 s | 0.90x |
+| nbody | 0.362 s | 0.346 s | 0.95x |
+| quicksort | 0.195 s | 0.191 s | 0.98x |
+| life | 0.342 s | 0.346 s | 1.01x |
+| bigram | 0.143 s | 0.147 s | 1.03x |
+| levenshtein | 0.199 s | 0.226 s | 1.13x |
+| nqueens | 0.396 s | 0.480 s | 1.21x |
+| fannkuch | 0.410 s | 0.553 s | 1.35x |
 
-Geometric mean: tinylisp takes 0.76x as long as CPython 3.14 (it was 2.4x before the second tier below).
+Geometric mean: tinylisp takes 0.67x as long as CPython 3.14 (it was 2.4x before the second tier below).
 
 ## What the numbers say
 
@@ -63,13 +63,14 @@ Geometric mean: tinylisp takes 0.76x as long as CPython 3.14 (it was 2.4x before
   parameters and defines (`src/vm.zig`); the tree evaluator in `src/lang.zig` still runs everything else and defines the
   semantics (the bytecode is only used where it behaves the same). Going from the tree evaluator alone (2.4x) to this: in-place
   primitive calls on variables and constants (2.1x), `&&`/`||` short-circuit and native `mod`/`min`/`max`/`abs`/`not`,
-  bytecode with fused arithmetic, outer-variable lookups remembered after the first (about 1.2x), then loops run by the bytecode
-  with the scope of an iteration reused (0.76x).
-- **Programs that call small functions and do arithmetic are now faster than CPython** (0.3x-0.6x): the autograd programs,
-  `matmul`, `kmeans`, `logreg`, `dijkstra`, `knapsack`, `mandelbrot` (a tail-recursive function that calls itself reuses its scope).
-- **What is left is loop-heavy code** (1.0x-1.5x: `quicksort`, `fannkuch`, `levenshtein`, `life`, `nqueens`, `spectral_norm`):
-  a loop body that calls out to something that is not compiled, or that creates a closure, goes through the machine and
-  loses the scope reuse; every call still builds a scope and a frame.
+  bytecode with fused arithmetic and remembered outer-variable lookups (1.2x), loops (`for`, `for/list`) run by the bytecode with
+  the scope of an iteration reused, a function calling itself in tail position reusing its scope, and small global functions
+  inlined into their callers (0.67x).
+- **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,
+  `knapsack`, `bpe` and `mandelbrot`; on par for `life`, `quicksort`, `nbody`, `spectral_norm`, `bigram`.
+- **What is left** (`fannkuch` 1.35x, `nqueens` 1.2x, `levenshtein` 1.1x): code that makes many calls to functions that are not
+  inlined (a call still builds a scope and a frame, about 25 ns) and tight loops of a few instructions each (about 2 ns an
+  instruction).
 - **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
   the place of a variable in the tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
-  without leaving `vm.exec` (no gain), a bytecode step for statement sequences.
+  without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.

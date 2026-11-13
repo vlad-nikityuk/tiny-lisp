@@ -24,9 +24,14 @@ or grows it with `cons` is quadratic. A `range` written as `(cons i acc)` over 5
 each and stops at the shortest. `(for/list ((a b) (zip xs ys)) body)` expands to exactly that. Destructuring a list of
 pairs (`(for/list ((a b) pairs) …)`) works but costs two `define`s and two `at`s per item; use it off the hot path.
 
-**Loops are calls.** `for` and `for/list` are `map` with a lambda, so each iteration is a call with its own scope; there is
-  no `while`. CPython runs tight index loops 3x-7x faster (bench/README.md); keep inner loops flat, avoid creating a
-  quoted list or a closure per iteration, and prefer `reduce`/`sum` over a loop that updates a variable.
+**Loops.** `for` and `for/list` over one list are loops that the second tier (`src/vm.zig`) runs inside a function's bytecode, reusing the
+  scope of an iteration unless the body creates a closure: about 10 ns an iteration, about as fast as CPython's `for`. A loop in a
+  body that is not in a function (top level of a file) is run by the tree evaluator and costs about 25 ns an iteration, so put hot
+  loops in a `defn`. Keep inner bodies flat: a closure created in an iteration, or a body that calls a function that is not
+  inlined (about 25 ns a call), costs more than the loop does. There is no `while`: write a tail-recursive function, which
+  runs as a loop when it calls itself in tail position. Small global functions without closures (`swap!`) are inlined into the
+  functions that call them; recursive ones are called. A `define` that sits in a branch is fine if it is used only inside it;
+  a `define` of a name used before it, or after the branch, keeps the whole function in the slow tier (still correct).
 
 **Function calls are the main cost** (in the autograd engine, a small function call plus its allocation was about 0.2 µs). In a hot path:
 - do not wrap field access in a function; write the accessors as `defmacro`s (`(defmacro data (v) `(at ~v 0))`). `(data v)` as a function made autograd's `v*` about 5× slower; as a macro that
