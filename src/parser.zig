@@ -1,6 +1,6 @@
 const std = @import("std");
-const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
+const gc = @import("runtime/gc.zig");
+const rt = @import("runtime/runtime.zig");
 const V = rt.V;
 
 // Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.

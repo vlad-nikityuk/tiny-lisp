@@ -2,11 +2,11 @@
 // instructions until it needs the machine and returns the next rt.Go (a call, or a return); a call that is not a tail call
 // leaves a `vm` frame on rt.ks that resumes the code at the instruction after it.
 const std = @import("std");
-const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
-const scope = @import("scope.zig");
+const gc = @import("runtime/gc.zig");
+const rt = @import("runtime/runtime.zig");
+const scope = @import("runtime/scope.zig");
 const bc = @import("bytecode.zig");
-const prims = @import("primitives.zig");
+const prims = @import("runtime/primitives.zig");
 const lang = @import("lang.zig");
 const V = rt.V;
 const E = rt.E;

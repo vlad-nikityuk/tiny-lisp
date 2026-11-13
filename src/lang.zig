@@ -1,10 +1,10 @@
 // The tree tier: the compiler from the AST (parser.zig) to nodes, and the explicit-stack evaluator that runs them. It is the
 // reference semantics; bytecode.zig and vm.zig are a faster path for function bodies.
 const std = @import("std");
-const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
-const scope = @import("scope.zig");
-const prims = @import("primitives.zig");
+const gc = @import("runtime/gc.zig");
+const rt = @import("runtime/runtime.zig");
+const scope = @import("runtime/scope.zig");
+const prims = @import("runtime/primitives.zig");
 const vm = @import("vm.zig");
 const bytecode = @import("bytecode.zig");
 const V = rt.V;

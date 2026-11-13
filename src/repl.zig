@@ -3,8 +3,8 @@ const std = @import("std");
 const source = @import("source.zig");
 const parser = @import("parser.zig");
 const lang = @import("lang.zig");
-const rt = @import("runtime.zig");
-const scope = @import("scope.zig");
+const rt = @import("runtime/runtime.zig");
+const scope = @import("runtime/scope.zig");
 const native = @import("stdlib_native.zig");
 
 const gpa = std.heap.c_allocator;

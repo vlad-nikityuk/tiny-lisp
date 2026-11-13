@@ -1,7 +1,7 @@
 BINARY ?= ./tinylisp
 BUILD = zig build-exe -OReleaseSafe -lc
 
-tinylisp: $(wildcard src/*.zig)
+tinylisp: $(wildcard src/*.zig src/*/*.zig)
 	$(BUILD) src/repl.zig -femit-bin=$@
 
 fast: # no bounds or overflow checks, about 4% faster
@@ -26,7 +26,7 @@ test-tree: # the bytecode tier off: the tree evaluator runs everything, and must
 	$(call test-variant,tree,bytecode.zig,const enabled = true;,const enabled = false;)
 
 test-gc: # a collection after every 2 KB allocated: whatever the collector cannot reach from a root is freed at once
-	$(call test-variant,gc,gc.zig,2 << 20,2048)
+	$(call test-variant,gc,runtime/gc.zig,2 << 20,2048)
 
 bench: $(BINARY) # tinylisp against CPython on bench/*, e.g. make bench ARGS="-n 1 nbody life"
 	python3 bench/run.py --binary "$(BINARY)" $(ARGS)

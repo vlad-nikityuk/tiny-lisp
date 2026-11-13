@@ -1,7 +1,7 @@
 // Whole-file programs are a begin form; the newline keeps trailing comments from hiding its closing parenthesis.
 const std = @import("std");
-const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
+const gc = @import("runtime/gc.zig");
+const rt = @import("runtime/runtime.zig");
 const parser = @import("parser.zig");
 
 pub fn readProgram(io: std.Io, path: []const u8) rt.E!rt.V {
