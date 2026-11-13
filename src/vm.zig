@@ -186,7 +186,7 @@ fn compile(p: *rt.Proto) void {
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];
-    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current() };
+    code.* = .{ .ins = @constCast(dup(rt.Ins, c.ins.items)), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current(), .room = c.ins.items.len + 2 }; // every instruction pushes at most one value
     for (code.consts) |v| _ = rt.pin(v);
     p.code = code;
 }
@@ -209,13 +209,13 @@ pub fn ready(p: *rt.Proto) ?*rt.Bytecode {
     return p.code;
 }
 
-inline fn arith(comptime op: Op, vs: *std.ArrayList(V)) bool {
-    const n = vs.items.len;
-    const x = vs.items[n - 2];
-    const y = vs.items[n - 1];
+inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
+    const n = sp.*;
+    const x = st[n - 2];
+    const y = st[n - 1];
     if (op == .eq) {
-        vs.items.len = n - 1;
-        vs.items[n - 2] = V.boolean(rt.eq(x, y));
+        sp.* = n - 1;
+        st[n - 2] = V.boolean(rt.eq(x, y));
         return true;
     }
     if (op == .at) {
@@ -223,15 +223,15 @@ inline fn arith(comptime op: Op, vs: *std.ArrayList(V)) bool {
         const l = x.asList().items();
         const i = y.asNum();
         if (!(i >= 0 and i < @as(f64, @floatFromInt(l.len)))) return false;
-        vs.items.len = n - 1;
-        vs.items[n - 2] = l[@intFromFloat(i)];
+        sp.* = n - 1;
+        st[n - 2] = l[@intFromFloat(i)];
         return true;
     }
     if (!x.isNum() or !y.isNum()) return false;
     const p = x.asNum();
     const q = y.asNum();
-    vs.items.len = n - 1;
-    vs.items[n - 2] = switch (op) {
+    sp.* = n - 1;
+    st[n - 2] = switch (op) {
         .add => V.num(p + q),
         .sub => V.num(p - q),
         .mul => V.num(p * q),
@@ -286,49 +286,57 @@ fn slow(m: *rt.M, code: *rt.Bytecode, ip: [*]const rt.Ins, arity: usize) E!rt.Go
     return call(m, n - arity, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(rt.Ins) + 1);
 }
 
-/// Run code from pc until it calls or returns; the next step is the result.
+/// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
+/// function reserved up front, so its top is kept in a local (sp) and rt.vs.items.len is brought up to date only when leaving.
 pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
     const vs = &rt.vs;
     const e = m.e;
     var ip = code.ins.ptr + pc0;
+    vs.ensureTotalCapacity(rt.gpa, vs.items.len + code.room) catch gc.oom();
+    const st = vs.items.ptr;
+    var sp = vs.items.len;
     sw: switch (ip[0].op) {
         .konst => {
-            gc.push(V, vs, code.consts[ip[0].a]);
+            st[sp] = code.consts[ip[0].a];
+            sp += 1;
             ip += 1;
             continue :sw ip[0].op;
         },
         .local => {
-            gc.push(V, vs, e.vars[ip[0].a].v);
+            st[sp] = e.vars[ip[0].a].v;
+            sp += 1;
             ip += 1;
             continue :sw ip[0].op;
         },
         .outer => {
             const r = code.refs[ip[0].a];
-            gc.push(V, vs, if (outerSlot(e, &ip[0], r.sym, &r.g)) |p| p.* else V.nil);
+            st[sp] = if (outerSlot(e, &ip[0], r.sym, &r.g)) |p| p.* else V.nil;
+            sp += 1;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .lambda => {
+            st[sp] = rt.lambda(code.protos[ip[0].a], e);
+            sp += 1;
             ip += 1;
             continue :sw ip[0].op;
         },
         .setlocal => {
-            e.vars[ip[0].a].v = vs.items[vs.items.len - 1];
+            e.vars[ip[0].a].v = st[sp - 1];
             ip += 1;
             continue :sw ip[0].op;
         },
         .setouter => {
             const d = code.defs[ip[0].a];
-            if (d.define) try rt.assign(d, e, vs.items[vs.items.len - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| {
+            if (d.define) try rt.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| {
                 if (p.*.is(.f)) rt.epoch +%= 1; // as rt.assign does
-                p.* = vs.items[vs.items.len - 1];
+                p.* = st[sp - 1];
             }
             ip += 1;
             continue :sw ip[0].op;
         },
-        .lambda => {
-            gc.push(V, vs, rt.lambda(code.protos[ip[0].a], e));
-            ip += 1;
-            continue :sw ip[0].op;
-        },
         .pop => {
-            vs.items.len -= 1;
+            sp -= 1;
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -337,49 +345,53 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         .jmpf => {
-            const v = vs.items[vs.items.len - 1];
-            vs.items.len -= 1;
-            ip = if (rt.truthy(v)) ip + 1 else code.ins.ptr + ip[0].b;
+            sp -= 1;
+            ip = if (rt.truthy(st[sp])) ip + 1 else code.ins.ptr + ip[0].b;
             continue :sw ip[0].op;
         },
         .andj, .orj => { // decided (false for &&, true for ||): keep the value and jump; else drop it and go on
-            const v = vs.items[vs.items.len - 1];
-            if (rt.truthy(v) == (ip[0].op == .orj)) ip = code.ins.ptr + ip[0].b else {
-                vs.items.len -= 1;
+            if (rt.truthy(st[sp - 1]) == (ip[0].op == .orj)) ip = code.ins.ptr + ip[0].b else {
+                sp -= 1;
                 ip += 1;
             }
             continue :sw ip[0].op;
         },
         inline .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at => |op| {
-            if (!arith(op, vs)) return slow(m, code, ip, 2);
+            if (!arith(op, st, &sp)) {
+                vs.items.len = sp;
+                return slow(m, code, ip, 2);
+            }
             ip += 1;
             continue :sw ip[0].op;
         },
         .prim1, .prim2 => {
             const p = code.prims[ip[0].a];
-            const n = vs.items.len;
             const unary = ip[0].op == .prim1;
-            const r = if (unary) rt.fast1(p.op, vs.items[n - 1]) else rt.fast(p.op, vs.items[n - 2], vs.items[n - 1]);
-            const v = r orelse return slow(m, code, ip, if (unary) 1 else 2);
-            vs.items.len = if (unary) n else n - 1;
-            vs.items[vs.items.len - 1] = v;
+            const r = if (unary) rt.fast1(p.op, st[sp - 1]) else rt.fast(p.op, st[sp - 2], st[sp - 1]);
+            const v = r orelse {
+                vs.items.len = sp;
+                return slow(m, code, ip, if (unary) 1 else 2);
+            };
+            if (!unary) sp -= 1;
+            st[sp - 1] = v;
             ip += 1;
             continue :sw ip[0].op;
         },
         .call => {
-            const b = vs.items.len - ip[0].a - 1;
-            if (vs.items[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
+            vs.items.len = sp;
+            const b = sp - ip[0].a - 1;
+            if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
             return call(m, b, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(rt.Ins) + 1);
         },
         .tailcall => {
-            const b = vs.items.len - ip[0].a - 1;
-            if (vs.items[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
+            vs.items.len = sp;
+            const b = sp - ip[0].a - 1;
+            if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
             return .{ .apply = b };
         },
         .ret => {
-            const v = vs.items[vs.items.len - 1];
-            vs.items.len -= 1;
-            return .{ .ret = v };
+            vs.items.len = sp - 1;
+            return .{ .ret = st[sp - 1] };
         },
     }
 }

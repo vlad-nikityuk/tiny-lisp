@@ -136,7 +136,7 @@ pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begi
 /// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
 pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, add, sub, mul, lt, gt, le, ge, eq, at, prim1, prim2, call, tailcall, ret };
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
-pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, keys: []const Key, stamp: u32 };
+pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
