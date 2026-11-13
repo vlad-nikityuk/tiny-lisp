@@ -845,4 +845,12 @@
   (assert (equal? (calls-out (list 1)) (list 3)))
   (assert (equal? (squares 100000) (squares 100000))))
 
+(defn arith-ops (a b) (list (mod a b) (/ a b) (not a) (not (< a b)) (- a b) (* a b)))
+(deftest "tier 2: mod, / and not in a compiled function"
+  (assert (equal? (arith-ops 7 2) (list 1 3.5 #f #t 5 14)))
+  (assert (equal? (arith-ops -1 5) (list 4 -0.2 #f #f -6 -5)))
+  (assert (equal? (arith-ops 0 3) (list 0 0 #t #f -3 0)))
+  (assert (eq? (/ 1 0) (/ 1 0)))
+  (assert (equal? (try (lambda () (arith-ops "x" 2)) (lambda (e) "err")) "err")))
+
 (run-tests)

@@ -199,6 +199,9 @@ const Comp = struct {
                     .@">=" => .ge,
                     .@"eq?" => .eq,
                     .at => .at,
+                    .mod => .mod,
+                    .@"/" => .div,
+                    .not => .not,
                     else => if (p.c.len == 2) .prim1 else .prim2,
                 };
                 const pi = c.add(*rt.Prim, &c.prims, p);
@@ -337,6 +340,8 @@ fn arith2(comptime op: Op, x: V, y: V) ?V {
         .add => V.num(p + q),
         .sub => V.num(p - q),
         .mul => V.num(p * q),
+        .mod => V.num(p - q * @floor(p / q)),
+        .div => V.num(p / q),
         .lt => V.boolean(p < q),
         .gt => V.boolean(p > q),
         .le => V.boolean(p <= q),
@@ -370,6 +375,8 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
         .add => V.num(p + q),
         .sub => V.num(p - q),
         .mul => V.num(p * q),
+        .mod => V.num(p - q * @floor(p / q)),
+        .div => V.num(p / q),
         .lt => V.boolean(p < q),
         .gt => V.boolean(p > q),
         .le => V.boolean(p <= q),
@@ -494,7 +501,12 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             }
             continue :sw ip[0].op;
         },
-        inline .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at => |op| {
+        .not => {
+            st[sp - 1] = V.boolean(!rt.truthy(st[sp - 1]));
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        inline .add, .sub, .mul, .mod, .div, .lt, .gt, .le, .ge, .eq, .at => |op| {
             if (!arith(op, st, &sp)) {
                 vs.items.len = sp;
                 return slow(m, code, ip, 2);
