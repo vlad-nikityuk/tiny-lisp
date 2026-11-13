@@ -66,12 +66,20 @@ CASES = [
     ("partial: a partly applied map", "((partial map '((1 2))) (lambda (x) (+ x 1)))", "(2 3)"),
 ]
 
-out = subprocess.run(sys.argv[1:], input="\n".join(src for _, src, _ in CASES) + "\n", capture_output=True, text=True).stdout
-results = re.findall(r"\x1b\[(32|31)m(.*?)\x1b\[39m", out, re.S)
+process = subprocess.run(sys.argv[1:], input="\n".join(src for _, src, _ in CASES) + "\n", capture_output=True, text=True)
+results = re.findall(r"\x1b\[(32|31)m(.*?)\x1b\[39m", process.stdout, re.S)
 failed = 0
+if process.returncode:
+    print(f"REPL exited with status {process.returncode}: {process.stderr.strip()}")
+    failed += 1
+if len(results) != len(CASES):
+    print(f"Expected {len(CASES)} results, got {len(results)}")
+    failed += 1
+passed = 0
 for (name, src, want), (color, got) in zip(CASES, results + [("", "<missing>")] * len(CASES)):
     ok = color == "31" if want is ERROR else (color == "32" and got == want)
     failed += not ok
+    passed += ok
     print(("\x1b[32m✔\x1b[39m" if ok else "\x1b[31m𝕏\x1b[39m"), name, "" if ok else f"-> got {got!r}, want {'error' if want is ERROR else want!r}")
-print(f"{len(CASES) - failed}/{len(CASES)} passed")
+print(f"{passed}/{len(CASES)} passed")
 sys.exit(1 if failed else 0)
