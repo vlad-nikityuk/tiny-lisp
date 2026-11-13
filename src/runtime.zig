@@ -352,9 +352,24 @@ pub fn lambda(p: *Proto, e: *Env) V {
 }
 
 // Most scopes die when their call ends: a call's scope is recycled then, unless a closure captured it. Recycled scopes wait on
-// a free list (linked through `p`); the collector forgets the list, so whatever it holds is simply collected.
-const env_cap = 4;
-pub var env_pool: ?*Env = null;
+// free lists by capacity (linked through `p`); the collector forgets the lists, so whatever they hold is simply collected.
+const pool_caps = [_]usize{ 4, 8, 16 };
+pub var env_pools: [pool_caps.len]?*Env = @splat(null);
+
+fn poolOf(cap: usize) ?usize {
+    return switch (cap) {
+        4 => 0,
+        8 => 1,
+        16 => 2,
+        else => null,
+    };
+}
+
+/// The capacity a scope for n variables gets: one of the pooled sizes if it fits.
+fn capFor(n: usize) usize {
+    for (pool_caps) |c| if (n <= c) return c;
+    return n;
+}
 
 pub fn bind(f: *Lam, a: []const V) *Env {
     return bindWith(f, a, f.proto.code);
@@ -364,13 +379,14 @@ pub fn bind(f: *Lam, a: []const V) *Env {
 pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
     const ps = f.proto.params;
     const n = if (code) |c| c.keys.len else ps.len;
-    const cap = @max(f.proto.cap, n, env_cap);
-    const e = if (cap == env_cap and env_pool != null) blk: {
-        const e = env_pool.?;
-        env_pool = e.p;
+    const cap = capFor(@max(f.proto.cap, n));
+    const pool = poolOf(cap);
+    const e = if (pool != null and env_pools[pool.?] != null) blk: {
+        const e = env_pools[pool.?].?;
+        env_pools[pool.?] = e.p;
         break :blk e;
     } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
-    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .esc = cap != env_cap };
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .esc = pool == null };
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
@@ -382,10 +398,11 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
 
 /// The call that ran in e is over (nothing but a closure could still use it).
 pub fn release(e: *Env) void {
-    if (e.esc or e.p == null or e.cap != env_cap or e.vars.ptr != gc.after(Var, e)) return;
+    if (e.esc or e.p == null or e.vars.ptr != gc.after(Var, e)) return;
+    const pool = poolOf(e.cap) orelse return;
     e.esc = true; // never twice
-    e.p = env_pool;
-    env_pool = e;
+    e.p = env_pools[pool];
+    env_pools[pool] = e;
 }
 
 // primitives

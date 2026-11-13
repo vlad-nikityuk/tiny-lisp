@@ -154,7 +154,7 @@ fn bytesOf(h: *H) usize {
 
 /// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
 fn markRoots() void {
-    lisp.env_pool = null; // recycled scopes are garbage as far as the collector is concerned
+    lisp.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
     for (lisp.ks.items) |k| {
         markPtr(k.e);
         if (k.kind == .loop) markPtr(k.env2);
