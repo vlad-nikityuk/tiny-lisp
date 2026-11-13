@@ -41,6 +41,8 @@ The compiler turns the AST into typed nodes (`runtime.Node`/`Code`: constant, va
 - **Macros**: any root-scope function named `macro/*` is applied to every AST node before it is compiled (raw node in, node out), once per node (see the compiler in lang.zig); defining or changing a `macro/*` bumps `runtime.epoch` so nodes compile again. Numbers, booleans and nil skip macros. `in_macro` prevents re-entrant expansion.
 - Symbols and strings are the same type; string literals stay distinct in the AST (`.lit`) and evaluate to strings.
 - `0` and `""` are falsy, `'()` is truthy; `eq?` treats an empty list as `nil`.
+- Stdlib macros: `defn` (several body expressions become a `begin`), `fn` (a lambda with several body expressions), `->` (thread-first), `chain` (composes blocks; each block expression is evaluated once, as an argument of a wrapper lambda), `for` and `for/list` (expand to `map`; a pattern variable over `(zip xs ys)` becomes a multi-list `map`), `defrec`, `deftest`. `examples/autograd.lisp` adds `val` (infix arithmetic on values, Python's precedence) and `slots` (`(data v)` is `(at v 0)`).
+- `map` takes several lists, `(map l1 ... ln f)`, and stops at the shortest; `range` and `zip` are natives (a Lisp `zip`/`range` built with `cons`/`rest` is quadratic, since both copy).
 - `defrec` rewrites self-calls into thunks and wraps the function with the native `trampoline`.
 
 ## Tests

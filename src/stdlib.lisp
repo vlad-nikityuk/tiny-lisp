@@ -3,21 +3,88 @@
 (define first car)
 (define rest cdr)
 
-;; shorthand for defining functions
-;; (defn name args expr) -> (define name (lambda args expr))
+;; several expressions in a row become one (begin ...)
+(define seq
+  (lambda (exprs)
+    (if (eq? (len exprs) 1) (first exprs) (cons "begin" exprs))))
+
+;; shorthand for defining functions; the body may be several expressions
+;; (defn name args expr...) -> (define name (lambda args (begin expr...)))
 ;; (defn _add (a b) (+ a b))
 (define macro/defn
   (lambda (ast)
     (if (eq? (first ast) "defn")
       (begin
         (define body (rest ast))
-        (define name (first body))
-        (define args (first (rest body)))
-        (define expr (first (rest (rest body))))
-        (list "define" name (list "lambda" args expr)))
+        (list "define" (first body) (list "lambda" (first (rest body)) (seq (rest (rest body))))))
+      ast)))
+
+;; (fn (args) expr...) is a lambda whose body may be several expressions
+(define macro/fn
+  (lambda (ast)
+    (if (eq? (first ast) "fn")
+      (list "lambda" (second ast) (seq (rest (rest ast))))
       ast)))
 
 (defn not (x) (if x #f #t))
+(defn second (l) (first (rest l)))
+(defn third (l) (first (rest (rest l))))
+
+;; (for/bindings (a b) 0) -> ((define a (at for/item 0)) (define b (at for/item 1)))
+(defn for/bindings (names i)
+  (if (eq? (len names) 0) '()
+    (cons (list "define" (first names) (list "at" "for/item" i)) (for/bindings (rest names) (+ i 1)))))
+
+;; the lambda of a loop; a variable written as a pattern (a b) takes each item (a list) apart
+(defn for/lambda (var body)
+  (if (list? var)
+    (list "lambda" (list "for/item") (seq (concat (for/bindings var 0) body)))
+    (list "lambda" (list var) (seq body))))
+
+;; the loop as a map call; over (zip xs ys) it walks the lists side by side, without building the pairs
+(defn for/map (var source body)
+  (if (&& (list? var) (eq? (first source) "zip"))
+    (concat (list "map") (rest source) (list (list "lambda" var (seq body))))
+    (list "map" source (for/lambda var body))))
+
+;; loops over a list, like Python's for and list comprehensions
+;; (for (x lst) body...)      -> (begin (map lst (lambda (x) body...)) nil)
+;; (for/list (x lst) body...) -> (map lst (lambda (x) body...))
+;; (for/list ((a b) (zip xs ys)) (* a b)) -> (map xs ys (lambda (a b) (* a b)))
+(define macro/for
+  (lambda (ast)
+    (if (eq? (first ast) "for")
+      (list "begin" (for/map (first (first (rest ast))) (second (first (rest ast))) (rest (rest ast))) "nil")
+      ast)))
+
+(define macro/for/list
+  (lambda (ast)
+    (if (eq? (first ast) "for/list")
+      (for/map (first (first (rest ast))) (second (first (rest ast))) (rest (rest ast)))
+      ast)))
+;; (-> x step...) threads a value through the steps, like a stream pipeline: a name f is (f x), a form (f a) is (f x a)
+;; (-> probs (at 3) vlog vneg) -> (vneg (vlog (at probs 3)))
+(defn thread-step (x step)
+  (if (list? step) (cons (first step) (cons x (rest step))) (list step x)))
+
+(define macro/->
+  (lambda (ast)
+    (if (eq? (first ast) "->")
+      (reduce (rest (rest ast)) thread-step (second ast))
+      ast)))
+
+;; (chain block...) is the block that feeds its input through the blocks in turn, like Keras's Sequential. A block is any
+;; expression whose value is a function of one argument; each is evaluated once, when the chain is built.
+;; (chain rmsnorm (Linear w) relu) -> ((lambda (b0 b1 b2) (lambda (x) (b2 (b1 (b0 x))))) rmsnorm (Linear w) relu)
+(define macro/chain
+  (lambda (ast)
+    (if (eq? (first ast) "chain")
+      (begin
+        (define names (map (range (len (rest ast))) (lambda (i) (+ "chain/b" i))))
+        (cons (list "lambda" names (list "lambda" (list "chain/x") (reduce names (lambda (acc name) (list name acc)) "chain/x")))
+              (rest ast)))
+      ast)))
+
 
 (defn patch-rec-trampoline (ast name)
   (if (list? ast)
@@ -42,11 +109,7 @@
 ;; ;; ------------ LISTS ----------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
 
-(defn iterate (lst f)
-  (if (not (empty? lst))
-    (begin
-      (f (first lst))
-      (iterate (rest lst) f))))
+(defn iterate (lst f) (begin (map lst f) nil))
 
 (defn l/reduce (lst f memo)
   (if (empty? lst) memo
@@ -56,13 +119,7 @@
   (if (empty? lst) memo
     (f (first lst) (r/reduce (rest lst) f memo))))
 
-;; (and doesn't work here for some reason, using (&&
 ;; (iterate (zip '(1 2 3) '(4 5 6)) print)
-(defn zip (ll1 ll2)
-  (if (&& (empty? ll1) (empty? ll2)) nil
-    (cons
-      (list (first ll1) (first ll2))
-	    (zip (rest ll1) (rest ll2)))))
 
 
 ;; -----------------------------------------------------------
