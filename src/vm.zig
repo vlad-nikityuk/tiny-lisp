@@ -436,63 +436,29 @@ pub fn ready(p: *rt.Proto) ?*rt.Bytecode {
     return p.code;
 }
 
-fn arith2(comptime op: Op, x: V, y: V) ?V {
-    if (op == .eq) return V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y));
-    if (op == .at) {
-        if (!x.is(.l) or !y.isNum()) return null;
-        const l = x.asList().items();
-        const i = y.asNum();
-        return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else null;
-    }
-    if (!x.isNum() or !y.isNum()) return null;
-    const p = x.asNum();
-    const q = y.asNum();
+/// The primitive that an arithmetic instruction computes.
+fn primOf(comptime op: Op) rt.Op {
     return switch (op) {
-        .add => V.num(p + q),
-        .sub => V.num(p - q),
-        .mul => V.num(p * q),
-        .mod => V.num(p - q * @floor(p / q)),
-        .div => V.num(p / q),
-        .lt => V.boolean(p < q),
-        .gt => V.boolean(p > q),
-        .le => V.boolean(p <= q),
-        else => V.boolean(p >= q),
+        .add => .@"+",
+        .sub => .@"-",
+        .mul => .@"*",
+        .div => .@"/",
+        .mod => .mod,
+        .lt => .@"<",
+        .gt => .@">",
+        .le => .@"<=",
+        .ge => .@">=",
+        .eq => .@"eq?",
+        .at => .at,
+        else => unreachable,
     };
 }
 
+/// (op x y) with both operands on the stack: replace them by the value, or leave them and say false.
 inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
     const n = sp.*;
-    const x = st[n - 2];
-    const y = st[n - 1];
-    if (op == .eq) {
-        sp.* = n - 1;
-        st[n - 2] = V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y));
-        return true;
-    }
-    if (op == .at) {
-        if (!x.is(.l) or !y.isNum()) return false;
-        const l = x.asList().items();
-        const i = y.asNum();
-        if (!(i >= 0 and i < @as(f64, @floatFromInt(l.len)))) return false;
-        sp.* = n - 1;
-        st[n - 2] = l[@intFromFloat(i)];
-        return true;
-    }
-    if (!x.isNum() or !y.isNum()) return false;
-    const p = x.asNum();
-    const q = y.asNum();
+    st[n - 2] = prims.fast(comptime primOf(op), st[n - 2], st[n - 1]) orelse return false;
     sp.* = n - 1;
-    st[n - 2] = switch (op) {
-        .add => V.num(p + q),
-        .sub => V.num(p - q),
-        .mul => V.num(p * q),
-        .mod => V.num(p - q * @floor(p / q)),
-        .div => V.num(p / q),
-        .lt => V.boolean(p < q),
-        .gt => V.boolean(p > q),
-        .le => V.boolean(p <= q),
-        else => V.boolean(p >= q),
-    };
     return true;
 }
 
@@ -654,7 +620,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             const name = comptime @tagName(op);
             const x = e.vars[ip[0].b >> 16].v;
             const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
-            if (arith2(@field(Op, name[0 .. name.len - 3]), x, y)) |v| {
+            if (prims.fast(comptime primOf(@field(Op, name[0 .. name.len - 3])), x, y)) |v| {
                 st[sp] = v;
                 sp += 1;
                 ip += 1;
@@ -668,7 +634,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
         inline .add_sk, .sub_sk, .mul_sk, .lt_sk, .gt_sk, .le_sk, .ge_sk, .eq_sk, .at_sk, .add_sl, .sub_sl, .mul_sl, .lt_sl, .gt_sl, .le_sl, .ge_sl, .eq_sl, .at_sl => |op| { // the first operand is on the stack, the second a constant or a local
             const name = comptime @tagName(op);
             const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b] else e.vars[ip[0].b].v;
-            if (arith2(@field(Op, name[0 .. name.len - 3]), st[sp - 1], y)) |v| {
+            if (prims.fast(comptime primOf(@field(Op, name[0 .. name.len - 3])), st[sp - 1], y)) |v| {
                 st[sp - 1] = v;
                 ip += 1;
                 continue :sw ip[0].op;

@@ -16,21 +16,42 @@ const list = rt.list;
 
 pub const Op = enum { @"+", @"-", @"*", @"/", mod, @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", at, @"vset!", not, min, max, exp, log, sqrt, cos, floor, abs };
 
-fn binop(op: Op, x: V, y: V) V {
-    const a = num(x);
-    const b = num(y);
+/// (op p q) on two numbers: the one place where arithmetic and comparison are written down.
+inline fn numeric(op: Op, p: f64, q: f64) V {
     return switch (op) {
-        .@"+" => if (x.is(.s) or x.is(.lit) or y.is(.s) or y.is(.lit)) str("{f}{f}", .{ x, y }) else V.num(a + b),
-        .@"-" => V.num(a - b),
-        .@"*" => V.num(a * b),
-        .@"/" => V.num(a / b),
-        .mod => V.num(a - b * @floor(a / b)),
-        .@">" => V.boolean(a > b),
-        .@"<" => V.boolean(a < b),
-        .@">=" => V.boolean(a >= b),
-        .@"<=" => V.boolean(a <= b),
+        .@"+" => V.num(p + q),
+        .@"-" => V.num(p - q),
+        .@"*" => V.num(p * q),
+        .@"/" => V.num(p / q),
+        .mod => V.num(p - q * @floor(p / q)),
+        .@">" => V.boolean(p > q),
+        .@"<" => V.boolean(p < q),
+        .@">=" => V.boolean(p >= q),
+        .@"<=" => V.boolean(p <= q),
+        else => unreachable,
+    };
+}
+
+/// (op n) for the math functions.
+inline fn math(op: Op, n: f64) f64 {
+    return switch (op) {
+        .exp => @exp(n),
+        .log => @log(n),
+        .sqrt => @sqrt(n),
+        .cos => @cos(n),
+        .floor => @floor(n),
+        .abs => @abs(n),
+        else => unreachable,
+    };
+}
+
+/// One step of a folding primitive on any two values: + joins strings, everything else becomes a number first.
+fn binop(comptime op: Op, x: V, y: V) V {
+    return switch (op) {
         .@"&&" => if (truthy(x)) y else x,
-        else => if (truthy(x)) x else y,
+        .@"||" => if (truthy(x)) x else y,
+        .@"+" => if (x.is(.s) or x.is(.lit) or y.is(.s) or y.is(.lit)) str("{f}{f}", .{ x, y }) else numeric(op, num(x), num(y)),
+        else => numeric(op, num(x), num(y)),
     };
 }
 
@@ -49,22 +70,7 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
         .@"+", .@"-", .@"*", .@"/", .mod, .@">", .@"<", .@">=", .@"<=", .@"&&", .@"||" => true,
         else => false,
     }) { // arithmetic, comparison, && and ||: fold left
-        if (a.len == 2 and a[0].isNum() and a[1].isNum()) {
-            const p = a[0].asNum();
-            const q = a[1].asNum();
-            switch (op) {
-                .@"+" => return V.num(p + q),
-                .@"-" => return V.num(p - q),
-                .@"*" => return V.num(p * q),
-                .@"/" => return V.num(p / q),
-                .mod => return V.num(p - q * @floor(p / q)),
-                .@">" => return V.boolean(p > q),
-                .@"<" => return V.boolean(p < q),
-                .@">=" => return V.boolean(p >= q),
-                .@"<=" => return V.boolean(p <= q),
-                else => {},
-            }
-        }
+        if (op != .@"&&" and op != .@"||" and a.len == 2 and a[0].isNum() and a[1].isNum()) return numeric(op, a[0].asNum(), a[1].asNum());
         var r = x;
         for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
@@ -73,15 +79,7 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
         .exp, .log, .sqrt, .cos, .floor, .abs => true,
         else => false,
     }) { // math: one number in, one number out
-        const n = num(x);
-        return V.num(switch (op) {
-            .exp => @exp(n),
-            .log => @log(n),
-            .sqrt => @sqrt(n),
-            .cos => @cos(n),
-            .abs => @abs(n),
-            else => @floor(n),
-        });
+        return V.num(math(op, num(x)));
     }
     if (op == .not) return V.boolean(!truthy(x));
     if (op == .min or op == .max) { // several numbers or one list, like Python's
@@ -120,6 +118,11 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
     }
 }
 
+/// Define every primitive in the root scope, under its own name.
+pub fn install(e: *rt.Env) void {
+    inline for (comptime std.enums.values(Op)) |op| rt.set(e, @tagName(op), V.fnOf(rt.nf(.{ .plain = primFor(op) }, .nil, .nil)));
+}
+
 /// Is v the native vset!? (tier 2 has an instruction for it)
 pub fn isVset(v: V) bool {
     return v.is(.f) and v.asFn().f == .plain and v.asFn().f.plain == primFor(.@"vset!");
@@ -146,45 +149,21 @@ pub fn unary(op: Op) bool {
 /// The value of (op x) for a one-operand primitive, null if x is not a number (not: always).
 pub fn fast1(op: Op, x: V) ?V {
     if (op == .not) return V.boolean(!truthy(x));
-    if (!x.isNum()) return null;
-    const p = x.asNum();
-    return V.num(switch (op) {
-        .abs => @abs(p),
-        .floor => @floor(p),
-        .sqrt => @sqrt(p),
-        .exp => @exp(p),
-        .log => @log(p),
-        else => @cos(p),
-    });
+    return if (x.isNum()) V.num(math(op, x.asNum())) else null;
 }
 
-/// The value of (op x y) when it needs no allocation and no error, else null.
-pub fn fast(op: Op, x: V, y: V) ?V {
-    if (op == .@"eq?") return V.boolean(rt.eq(x, y));
-    if (!y.isNum()) return null;
-    const q = y.asNum();
-    if (op == .at) {
-        if (!x.is(.l)) return null;
-        const l = x.asList().items();
-        return if (q >= 0 and q < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(q)] else null;
+/// The value of (op x y) when it needs no allocation and no error, else null. Inline, so that where op is known at compile
+/// time (a bytecode instruction) only that operation is left.
+pub inline fn fast(op: Op, x: V, y: V) ?V {
+    switch (op) {
+        .@"eq?" => return V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y)),
+        .at => {
+            if (!x.is(.l) or !y.isNum()) return null;
+            const l = x.asList().items();
+            const i = y.asNum();
+            return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else null;
+        },
+        .@"+", .@"-", .@"*", .@"/", .mod, .@">", .@"<", .@">=", .@"<=" => return if (x.isNum() and y.isNum()) numeric(op, x.asNum(), y.asNum()) else null,
+        else => return null,
     }
-    if (!x.isNum()) return null;
-    const p = x.asNum();
-    return switch (op) {
-        .@"+" => V.num(p + q),
-        .@"-" => V.num(p - q),
-        .@"*" => V.num(p * q),
-        .@"/" => V.num(p / q),
-        .mod => V.num(p - q * @floor(p / q)),
-        .@">" => V.boolean(p > q),
-        .@"<" => V.boolean(p < q),
-        .@">=" => V.boolean(p >= q),
-        .@"<=" => V.boolean(p <= q),
-        else => null,
-    };
-}
-
-/// Define every primitive in the root scope, under its own name.
-pub fn install(e: *rt.Env) void {
-    inline for (comptime std.enums.values(Op)) |op| rt.set(e, @tagName(op), V.fnOf(rt.nf(.{ .plain = primFor(op) }, .nil, .nil)));
 }
