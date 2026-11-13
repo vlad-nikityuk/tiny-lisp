@@ -103,20 +103,22 @@ pub const Bytecode = struct {
     room: usize, // the most values it can have on the stack
 };
 
+// Limits of what is compiled: past them a function stays with the tree evaluator, or a call is not inlined.
 const max_depth = 120; // source nesting the compiler follows (it recurses)
-const max_short_circuit_operands = 64;
-const max_plain_depth = 8;
-const max_inline_depth = 24;
-const max_inline_nodes = 48;
-const max_inline_sites = 8;
-const max_inline_slots = 8;
+const max_short_circuit_operands = 64; // of one && or ||
+const max_plain_depth = 8; // nesting of the value in a vset_ll
+const max_inline_depth = 24; // an inlined body: its nesting,
+const max_inline_nodes = 48; // its size,
+const max_inline_slots = 8; // and its parameters and defines
+const max_inline_sites = 8; // calls inlined into one function
 
 fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
-    list.append(std.heap.c_allocator, x) catch gc.oom();
+    list.append(rt.gpa, x) catch gc.oom();
     return list.items.len - 1;
 }
 
-const Comp = struct {
+/// The state of compiling one function: the tables of its Bytecode, then what the scan knows about its names.
+const Compiler = struct {
     ins: std.ArrayList(Ins) = .empty,
     consts: std.ArrayList(V) = .empty,
     refs: std.ArrayList(*rt.Ref) = .empty,
@@ -134,16 +136,16 @@ const Comp = struct {
     inline_sites: usize = 0, // functions inlined so far
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
-    fn emit(c: *Comp, op: Op, a: usize, b: usize) usize {
-        c.ins.append(std.heap.c_allocator, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
+    fn emit(c: *Compiler, op: Op, a: usize, b: usize) usize {
+        c.ins.append(rt.gpa, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
         return c.ins.items.len - 1;
     }
 
-    fn deinit(c: *Comp) void {
-        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(std.heap.c_allocator);
+    fn deinit(c: *Compiler) void {
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(rt.gpa);
     }
 
-    fn slotOf(c: *Comp, sym: *rt.Sym) ?usize {
+    fn slotOf(c: *Compiler, sym: *rt.Sym) ?usize {
         const keys = if (c.inline_scope) |i| i.keys else c.keys.items;
         const base = if (c.inline_scope) |i| i.base else 0;
         var i = keys.len; // the last of equal names wins, as in a scope search
@@ -157,7 +159,7 @@ const Comp = struct {
 
     /// A use of a name (a read or a set!). After a region that defined the name it cannot be compiled; otherwise it is
     /// remembered, so that a later define of the name is rejected.
-    fn use(c: *Comp, sym: *rt.Sym) !void {
+    fn use(c: *Compiler, sym: *rt.Sym) !void {
         if (has(c.closed.items, sym)) return error.Bail;
         if (c.slotOf(sym) == null and !has(c.seen.items, sym)) _ = add(rt.Key, &c.seen, sym.key);
     }
@@ -169,7 +171,7 @@ const Comp = struct {
 
     /// The names a nested lambda reads or sets count as used where the lambda is made (it may run before a later define of
     /// the same name). Its own defines are not this function's: they get no slot here.
-    fn scanUses(c: *Comp, n: *Node, depth: usize) !void {
+    fn scanUses(c: *Compiler, n: *Node, depth: usize) !void {
         if (depth > max_depth) return error.Bail;
         try forced(n);
         switch (n.code) {
@@ -187,13 +189,13 @@ const Comp = struct {
     }
 
     /// Start of a region that may not run (a branch of an if, a later operand of && or ||).
-    fn enter(c: *Comp) void {
+    fn enter(c: *Compiler) void {
         c.conditional_depth += 1;
     }
 
     /// End of such a region: the names it defined can no longer be used (they are bound from the start of the call,
     /// but only defined if the region ran).
-    fn leave(c: *Comp) void {
+    fn leave(c: *Compiler) void {
         c.conditional_depth -= 1;
         while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.conditional_depth) {
             _ = add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
@@ -204,7 +206,7 @@ const Comp = struct {
     /// Find the defines of the body (they get slots) and reject what this tier does not do. A name a define adds is bound from the
     /// start of the call, so a define that may not run, or comes after a use of the same name (which would then mean an outer
     /// binding), is left to the tree evaluator, where the name is only bound once the define has run.
-    fn scan(c: *Comp, n: *Node, depth: usize) !void {
+    fn scan(c: *Compiler, n: *Node, depth: usize) !void {
         if (depth > max_depth) return error.Bail;
         try forced(n);
         switch (n.code) {
@@ -240,13 +242,13 @@ const Comp = struct {
         }
     }
 
-    fn patch(c: *Comp, at: usize) void {
+    fn patch(c: *Compiler, at: usize) void {
         c.barrier = c.ins.items.len;
         c.ins.items[at].b = @intCast(c.ins.items.len);
     }
 
     /// Code that leaves the value of n on the stack; in tail position it returns it (or tail-calls) instead.
-    fn gen(c: *Comp, n: *Node, tail: bool) error{Bail}!void {
+    fn gen(c: *Compiler, n: *Node, tail: bool) error{Bail}!void {
         switch (n.code) {
             // if, begin and calls pass the tail position on
             .@"if" => |k| {
@@ -312,7 +314,7 @@ const Comp = struct {
 
     /// The operands just pushed: (op local local) and (op local constant) become one instruction (b: first slot << 16 | second);
     /// when the first operand is something else, a local or constant second operand still goes into the instruction (b: it).
-    fn fuse(c: *Comp, op: Op, pi: usize) bool {
+    fn fuse(c: *Compiler, op: Op, pi: usize) bool {
         const n = c.ins.items.len;
         if (n == 0 or n - 1 < c.barrier) return false;
         const y = c.ins.items[n - 1];
@@ -372,13 +374,13 @@ const Comp = struct {
 
     /// (f args...) where f is a small global function without closures: its body is generated here, with slots of its own for its
     /// parameters and defines and its free names read as globals. Redefining f compiles this code again (epoch).
-    fn genInline(c: *Comp, k: []const *Node, tail: bool) error{Bail}!bool {
+    fn genInline(c: *Compiler, k: []const *Node, tail: bool) error{Bail}!bool {
         if (c.inline_scope != null or c.inline_sites >= max_inline_sites or k[0].code != .ref) return false;
         const g = scope.globalOf(k[0].code.ref.sym) orelse return false;
         if (!g.*.is(.lam)) return false;
         const l = g.*.asLam();
         if (l.env != scope.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
-        var sub: Comp = .{};
+        var sub: Compiler = .{};
         defer sub.deinit();
         for (l.proto.params) |pk| _ = add(rt.Key, &sub.keys, pk);
         sub.scan(l.proto.body, 0) catch return false;
@@ -399,7 +401,7 @@ const Comp = struct {
 
     /// (each list (lambda (x) ...)) or (map list (lambda (x) ...)), while the name is the native: a loop of the bytecode, with
     /// the lambda's body compiled on its own. Over (range n) it counts to n and builds no list.
-    fn genLoop(c: *Comp, k: []const *Node) error{Bail}!bool {
+    fn genLoop(c: *Compiler, k: []const *Node) error{Bail}!bool {
         if (k.len != 3 or k[0].code != .ref or k[2].code != .lambda or k[2].guard == null) return false;
         const sym = k[0].code.ref.sym;
         const lp = k[2].code.lambda;
@@ -427,7 +429,7 @@ const Comp = struct {
     }
 
     /// (vset! list index value), while vset! is the native: an instruction.
-    fn genVset(c: *Comp, k: []const *Node) error{Bail}!bool {
+    fn genVset(c: *Compiler, k: []const *Node) error{Bail}!bool {
         if (k.len != 4 or k[0].code != .ref) return false;
         const sym = k[0].code.ref.sym;
         const g = scope.globalOf(sym) orelse return false;
@@ -446,7 +448,7 @@ const Comp = struct {
         return true;
     }
 
-    fn genCall(c: *Comp, k: []const *Node, tail: bool) error{Bail}!void {
+    fn genCall(c: *Compiler, k: []const *Node, tail: bool) error{Bail}!void {
         if (try c.genInline(k, tail)) return;
         if (try c.genLoop(k) or try c.genVset(k)) {
             if (tail) _ = c.emit(.ret, 0, 0);
@@ -459,7 +461,7 @@ const Comp = struct {
 
 fn compile(p: *rt.Proto) void {
     p.tried = true;
-    var c: Comp = .{ .self = p };
+    var c: Compiler = .{ .self = p };
     defer c.deinit();
     for (p.params) |k| _ = add(rt.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
@@ -481,7 +483,8 @@ fn compile(p: *rt.Proto) void {
     p.code = code;
 }
 
-/// Every instruction pushes at most one value, the start of a loop 2 or 3.
+/// The stack an instruction sequence needs at most: every instruction pushes one value or none, the start of a loop 3 or 4
+/// (its state), and an instruction that falls back to the ordinary call pushes its two operands first.
 fn room(ins: []const Ins) usize {
     var n: usize = 2;
     for (ins) |i| n += switch (i.op) {
