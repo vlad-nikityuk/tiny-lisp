@@ -3,6 +3,7 @@ const gc = @import("gc.zig");
 const lang = @import("lang.zig");
 const prims = @import("primitives.zig");
 pub const Op = prims.Op;
+pub const Bytecode = @import("bytecode.zig").Bytecode;
 
 pub const E = error{Lisp}; // the error value itself is in `errv`
 /// A value in 8 bytes (NaN boxing): a number is its own double bits, everything else lives in the quiet-NaN space with a
@@ -155,15 +156,11 @@ pub const Proto = struct {
     cap: usize = 0, // room for the scope of a call, grown by defines
     rest: bool = false, // the last parameter takes the extra arguments as a list
     guard: ?*Guard = null,
-    code: ?*Bytecode = null, // the tier-2 form of the body (vm.zig)
+    code: ?*Bytecode = null, // the tier-2 form of the body (bytecode.zig)
     tried: bool = false, // tier 2 compiled the body or rejected it (a rejected body is not tried again)
     inlined: bool = false, // other functions' bytecode contains this body: replacing the function bumps epoch
 };
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
-/// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, vset, each, eachnext, map, mapnext, global, setglobal, storelocal, not, mod, div, add, sub, mul, lt, gt, le, ge, eq, at, add_lk, add_ll, sub_lk, sub_ll, mul_lk, mul_ll, lt_lk, lt_ll, gt_lk, gt_ll, le_lk, le_ll, ge_lk, ge_ll, eq_lk, eq_ll, at_lk, at_ll, add_sk, add_sl, sub_sk, sub_sl, mul_sk, mul_sl, lt_sk, lt_sl, gt_sk, gt_sl, le_sk, le_sl, ge_sk, ge_sl, eq_sk, eq_sl, at_sk, at_sl, vset_ll, prim1, call, tailcall, ret };
-pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 }; // an outer lookup notes where it found the name in b, and the `shape` it was valid for in c
-pub const Bytecode = struct { ins: []Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, bodies: []const ?*Bytecode, keys: []const Key, stamp: u32, room: usize };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };

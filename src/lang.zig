@@ -4,6 +4,7 @@ const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
 const prims = @import("primitives.zig");
 const vm = @import("vm.zig");
+const bytecode = @import("bytecode.zig");
 const V = rt.V;
 const Node = rt.Node;
 
@@ -312,7 +313,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
                     const l = f.asLam();
-                    const code = vm.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
+                    const code = bytecode.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) rt.release(m.e); // no frame needs the old one
                     m.e = rt.bind(l, vs.items[b + 1 ..]);
                     vs.items.len = b;
