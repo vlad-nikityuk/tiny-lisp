@@ -15,7 +15,7 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 - It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
 - It is small: the parser, compiler and evaluator are about 400 lines (`src/lang/`) and the whole interpreter, with its bytecode tier and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
 - It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
-- It has macros: any function named `macro/…` rewrites every expression before it runs.
+- It has macros: `defmacro` defines one, and every form is expanded before it runs.
 - It has tail-call optimization and is stack safe: recursion is limited only by memory.
 - It has a small mark-sweep GC that runs at a few safe points of the evaluator. Reference cycles are collected.
 
@@ -45,7 +45,7 @@ Apple Silicon, best of 3 runs.
 
 ## Macros
 
-A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it (raw form in, new form out). `defmacro` writes one without the boilerplate: it names the macro, binds parameters to the parts of the form, and `&` collects the rest, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.
+A macro is a function that makes code. Each top-level form is read, expanded and then run, one after the other: before the form runs, every call of a macro in it (in the bodies of its lambdas too) is replaced by what the macro returns for the parts of the call. `(defmacro name (params) body...)` defines one: it is made as soon as its form is expanded, so the forms after it see it (and a macro body may use the macros and functions defined before it), and `&` collects the rest of the parts, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.
 
 ```lisp
 (defmacro unless (test & body)
@@ -54,17 +54,9 @@ A macro is a function named `macro/…`. Before any expression runs, every macro
 (unless #f (print "runs"))
 ```
 
-The same macro without `defmacro` and backquote:
+Redefining a macro changes the forms that come after it; code that was expanded already keeps its expansion. `defmacro` is only allowed at top level (directly in a file, or inside a top-level `begin`); anywhere else is an error. A template cannot contain another template (an error), though one may sit inside a `~` of another.
 
-```lisp
-(define macro/unless
-  (lambda (ast)
-    (if (eq? (first ast) "unless")
-      (list "if" (list "not" (first (rest ast))) (first (rest (rest ast))))
-      ast)))
-```
-
-`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/lib/stdlib.lisp`. Macro bodies are not macro-expanded themselves (expansion does not nest), so inside one use only functions, special forms and the backquote syntax; `defmacro` rewrites the backquotes of its body when it is defined. Templates cannot be nested.
+`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/lib/stdlib.lisp`.
 
 ## Get started
 

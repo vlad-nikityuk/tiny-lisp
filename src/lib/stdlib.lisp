@@ -159,7 +159,7 @@
     (eq? a b)))
 
 ;; (patch-asserts '(assert (eq? 1 x)) 'my-test) -> (assert (eq? 1 x) (quote my-test) (quote (eq? 1 x)))
-;; Quoted data is left alone. Runs inside the deftest macro, so it uses only functions and special forms.
+;; Quoted data is left alone. Called by the deftest macro.
 (defn patch-asserts (x test-name)
   (if (list? x)
     (if (eq? (first x) "quote") x

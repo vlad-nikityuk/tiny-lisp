@@ -35,7 +35,7 @@ pairs (`(for/list ((a b) pairs) …)`) works but costs two `define`s and two `at
 
 **Function calls are the main cost** (in the autograd engine, a small function call plus its allocation was about 0.2 µs). In a hot path:
 - do not wrap field access in a function; write the accessors as `defmacro`s (`(defmacro data (v) `(at ~v 0))`). `(data v)` as a function made autograd's `v*` about 5× slower; as a macro that
-  expands to `(at v 0)` it costs nothing. Macros run once per node at compile time, so sugar made of macros is free;
+  expands to `(at v 0)` it costs nothing. Macros run when the form is expanded, before it runs, so sugar made of macros is free;
 - do not call a helper per element when a primitive does it (`+` is variadic, `concat` is variadic);
 - hoist work out of loops: build `chain` blocks and other closures once, not per item;
 - avoid building strings in a loop (`(+ "layer" i ".attn_wq")` allocates, and `dict-get` is a linear search): look a
@@ -64,7 +64,7 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
   inside `for` bodies, which are lambdas).
 - Lenient primitives: `(first atom)` is `nil`, `(len atom)` is `0`, `(at l i)` out of range is `nil`. Do not rely on an error.
 - No `let`, `when`, `cond`: use `define` in a `defn`/`fn` body, `if`, `begin`.
-- Name clash: a `defmacro` named like an existing function rewrites every call of that name, in every file loaded later.
+- Name clash: a `defmacro` named like an existing function rewrites every call of that name in the forms expanded after it (every file loaded later).
 
 ## Macros (`defmacro`, backquote)
 
@@ -72,14 +72,15 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 (defmacro unless (test & body)
   `(if ~test nil (begin ~@body)))
 ```
-`~x` inserts the value of `x`, `~@xs` splices the items of the list `xs`, `'x` quotes. Templates cannot nest.
-- **Macro bodies are not macro-expanded.** While a macro runs, no macro applies to the code it runs (expansion does not
-  nest). So a macro body and the helper functions it calls may use only functions, special forms and backquote
-  (`defmacro` rewrites that for you): no `defn`, `for`, `->`, `val` inside them. Helpers are written with `define` or
-  `defn`, and are fine to define with a macro because the *definition* expands normally; it is their *body* that is not.
+`~x` inserts the value of `x`, `~@xs` splices the items of the list `xs`, `'x` quotes. A template inside a template is an error.
+- **Macro bodies are macro-expanded**, with the macros defined before the `defmacro`, so a macro body and the helper
+  functions it calls may use `defn`, `for`, `->`, backquote. The helpers a macro calls must be defined by an earlier
+  top-level form (they run when the macro is expanded, and a top-level `begin` is expanded whole before it runs).
+- **`defmacro` is a top-level form**: directly in the file or in a top-level `begin`; inside a function, an `if` or a
+  call it is an error. Redefining a macro affects only the code expanded after it.
 - Use `begin-of` to wrap a body (`(begin-of body)` is the body itself if there is one expression).
-- A macro that must match more than a head symbol (like autograd's `slots`) is a plain `(define macro/name (lambda (ast) …))`
-  that returns `ast` unchanged when it does not apply.
+- A macro is called for forms `(name ...)` only, with the parts as arguments; to rewrite other shapes, expand to a call
+  of a macro that takes the whole form apart (see `val` in autograd).
 - Macros cost nothing at runtime, so prefer one to a function in hot code when all it does is rearrange syntax.
 
 ## Idioms that read well
