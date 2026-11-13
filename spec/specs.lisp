@@ -508,6 +508,16 @@
 (deftest "macros: 100000-deep recursion through eval"
   (assert (eq? (descend 100000) 42)))
 
+;; the operator is compared with what it was before its macro ran, even if that macro overwrites it in the list
+(define mutable-hits 0)
+(define mutable-ast '((mutable-q) (mutable-m)))
+(defmacro mutable-m () (begin (set! mutable-hits (+ mutable-hits 1)) 7))
+(defmacro mutable-q () (vset! mutable-ast 0 'quote))
+(define mutable-result (eval mutable-ast))
+(deftest "macros: an operator macro that overwrites the operator in the list"
+  (assert (equal? mutable-result '(mutable-m)))
+  (assert (eq? mutable-hits 0)))
+
 ;; a macro may change the form around it, and the collector may run meanwhile: what the expander walks must stay alive
 (define zapped-ast '(list (list (zap) (+ 2 3))))
 (defmacro zap () (begin (vset! zapped-ast 1 nil) (range 1000000) ((lambda (x) x) 1)))
