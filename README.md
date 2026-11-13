@@ -13,11 +13,11 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 ```
 
 - It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
-- It is small: the compiler, evaluator and parser are one file of 200 lines (`src/lang.zig`) and the whole interpreter is about 1,100 lines of Zig, with no dependencies beyond libc.
+- It is small: the parser, compiler and evaluator are about 400 lines (`src/parser.zig`, `src/lang.zig`) and the whole interpreter, with its bytecode tier and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
 - It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
 - It has macros: any function named `macro/…` rewrites every expression before it runs.
 - It has tail-call optimization and is stack safe: recursion is limited only by memory.
-- It has a small mark-sweep GC that runs at one safe point of the evaluator loop. Reference cycles are collected.
+- It has a small mark-sweep GC that runs at a few safe points of the evaluator. Reference cycles are collected.
 
 ## Stack safety
 
@@ -30,7 +30,7 @@ Pending work lives in heap frames, not on the native stack, so recursion is limi
 
 ## Performance
 
-Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 4 MB) has been allocated, so a program that churns through garbage stays small.
+Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 2 MB) has been allocated, so a program that churns through garbage stays small.
 
 `examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
 
@@ -41,7 +41,7 @@ Memory is managed by a stop-the-world mark-sweep collector that runs once about 
 
 Apple Silicon, best of 3 runs.
 
-[`bench/`](bench/README.md) has 18 more programs like this one, each in Python and in tinylisp, with the same output and a runner that compares them: tinylisp takes 1.1x-7.5x as long as CPython 3.14 (2.4x on average), closest on the autograd and float programs.
+[`bench/`](bench/README.md) has 18 more programs like this one, each in Python and in tinylisp, with the same output and a runner that compares them: in the recorded run tinylisp takes 0.26x-1.14x as long as CPython 3.14 (0.59x as a geometric mean).
 
 ## Macros
 
@@ -157,7 +157,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/primitives.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
 ### Files and strings
 
@@ -173,14 +173,18 @@ Run from the repository root.
 
 | File | |
 |---|---|
-| `src/lang.zig` | parser, compiler, evaluator |
-| `src/runtime.zig` | values, scopes, primitives, trampoline |
+| `src/parser.zig` | parser |
+| `src/lang.zig` | compiler and evaluator (the tree tier: the reference semantics) |
+| `src/runtime.zig` | values, compiled code, the machine's state, natives that call back into Lisp |
+| `src/scope.zig` | scopes, globals, scope recycling |
+| `src/primitives.zig` | the primitives (`+ - car cons ...`) |
+| `src/bytecode.zig`, `src/vm.zig` | the second tier: a bytecode compiler and its executor (the fast path) |
 | `src/gc.zig` | memory management (mark-sweep) |
-| `src/repl.zig` | REPL |
+| `src/repl.zig`, `src/source.zig` | REPL, reading program files |
 | `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed).
+The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
 
 ## History
 
