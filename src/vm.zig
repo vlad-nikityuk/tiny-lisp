@@ -496,8 +496,24 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             return call(m, b, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(rt.Ins) + 1);
         },
         .tailcall => {
-            vs.items.len = sp;
             const b = sp - ip[0].a - 1;
+            const f = st[b];
+            if (f.is(.lam)) { // a function calling itself in tail position, in a scope nothing else holds: it runs again in that scope
+                const l = f.asLam();
+                if (e.proto == l.proto and e.p == l.env and !e.captured and !l.proto.rest) {
+                    const np = l.proto.params.len;
+                    for (e.vars[0..np], 0..) |*x, i| x.v = if (i < ip[0].a) st[b + 1 + i] else V.nil;
+                    for (e.vars[np..code.keys.len]) |*x| x.v = V.nil; // its defines start unbound
+                    sp = b;
+                    ip = code.ins.ptr;
+                    if (gc.due()) {
+                        vs.items.len = sp;
+                        gc.collect();
+                    }
+                    continue :sw ip[0].op;
+                }
+            }
+            vs.items.len = sp;
             if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
             return .{ .apply = b };
         },

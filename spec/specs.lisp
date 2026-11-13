@@ -780,4 +780,20 @@
   (assert (equal? (try (lambda () (store nil 0 0)) (lambda (e) "list")) "list"))
   (assert (equal? l (list 9 9 3))))
 
+(defn count-up (n acc) (if (eq? n 0) acc (count-up (- n 1) (+ acc 1))))
+(defn collect-closures (n acc)
+  (begin
+    (define tmp (+ n 100))
+    (if (eq? n 0) acc (collect-closures (- n 1) (concat acc (list (lambda () tmp)))))))
+(defn defines-reset (n seen)
+  (begin
+    (define fresh (if (eq? n 3) 1 2))
+    (if (eq? n 0) seen (defines-reset (- n 1) (concat seen (list fresh))))))
+(defn fewer-args (a b) (if (eq? a 0) b (fewer-args (- a 1))))
+(deftest "tier 2: a function calling itself in tail position"
+  (assert (eq? (count-up 1000000 0) 1000000))
+  (assert (equal? (for/list (f (collect-closures 3 (list))) (f)) (list 103 102 101)))
+  (assert (equal? (defines-reset 3 (list)) (list 1 2 2)))
+  (assert (eq? (fewer-args 3 5) nil)))
+
 (run-tests)

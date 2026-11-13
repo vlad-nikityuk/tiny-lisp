@@ -120,7 +120,7 @@ pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 };
 /// invoked with null first, then with each callback's value, and says what the machine does next.
 pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *K, ?V) E!Go };
 pub const Lam = struct { proto: *Proto, env: *Env };
-pub const Env = struct { p: ?*Env, vars: []Var, cap: usize, proto: ?*Proto = null, esc: bool = false }; // vars are stored inline until they outgrow cap; the root scope uses the global table
+pub const Env = struct { p: ?*Env, vars: []Var, cap: usize, proto: ?*Proto = null, esc: bool = false, captured: bool = false }; // esc: not to be recycled; captured: a closure holds it // vars are stored inline until they outgrow cap; the root scope uses the global table
 pub const Var = struct { k: Key, v: V };
 
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
@@ -331,7 +331,10 @@ pub fn set(e: *Env, key: Key, v: V) void {
 pub fn lambda(p: *Proto, e: *Env) V {
     if (p.guard) |d| if (!d.sym.local and d.g.* == d.f) return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e })); // a loop body: dead once the loop is over
     var s: ?*Env = e; // a closure holds the scope and, through it, the enclosing ones: none can be recycled when its call ends
-    while (s) |x| : (s = x.p) x.esc = true;
+    while (s) |x| : (s = x.p) {
+        x.esc = true;
+        x.captured = true;
+    }
     return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
 }
 
