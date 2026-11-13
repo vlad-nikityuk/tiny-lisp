@@ -41,6 +41,8 @@ Memory is managed by a stop-the-world mark-sweep collector that runs once about 
 
 Apple Silicon, best of 3 runs.
 
+[`bench/`](bench/README.md) has 18 more programs like this one, each in Python and in tinylisp, with the same output and a runner that compares them: tinylisp takes 1.1x-7.5x as long as CPython 3.14 (2.4x on average), closest on the autograd and float programs.
+
 ## Macros
 
 A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it (raw form in, new form out). `defmacro` writes one without the boilerplate: it names the macro, binds parameters to the parts of the form, and `&` collects the rest, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.

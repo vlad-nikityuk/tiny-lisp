@@ -24,6 +24,10 @@ or grows it with `cons` is quadratic. A `range` written as `(cons i acc)` over 5
 each and stops at the shortest. `(for/list ((a b) (zip xs ys)) body)` expands to exactly that. Destructuring a list of
 pairs (`(for/list ((a b) pairs) …)`) works but costs two `define`s and two `at`s per item; use it off the hot path.
 
+**Loops are calls.** `for` and `for/list` are `map` with a lambda, so each iteration is a call with its own scope; there is
+  no `while`. CPython runs tight index loops 3x-7x faster (bench/README.md); keep inner loops flat, avoid creating a
+  quoted list or a closure per iteration, and prefer `reduce`/`sum` over a loop that updates a variable.
+
 **Function calls are the main cost** (in the autograd engine, a small function call plus its allocation was about 0.2 µs). In a hot path:
 - do not wrap field access in a function; write the accessors as `defmacro`s (`(defmacro data (v) `(at ~v 0))`). `(data v)` as a function made autograd's `v*` about 5× slower; as a macro that
   expands to `(at v 0)` it costs nothing. Macros run once per node at compile time, so sugar made of macros is free;
@@ -42,6 +46,9 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 ## Language features and traps
 
 - `0`, `""`, `nil` and `#f` are false; `'()` is true. `eq?` treats `'()` as `nil`.
+- **`&&` and `||` do not short-circuit**: every operand is evaluated (they return one of their operands). A guard like
+  `(&& (< i n) (at v i))` still evaluates `(at v i)`, and in a hot loop the extra operands cost real time (a three-way
+  `&&` in n-queens doubled the run time). Use nested `if` for guards and in hot paths.
 - `eq?` on lists is identity; `equal?` compares element-wise at any depth (and lengths). Elements are compared with `eq?`, so see the literal trap below.
 - Symbols and strings are the same type, **but a string literal inside quoted data does not `eq?` a string made at run
   time**: `'("a")` holds a literal, `'(a)` a symbol. In a spec, expect `(list 'a "")` rather than `'(a "")`. Compare AST names against symbols (`'(data grad)`) or `(list "data" …)`.

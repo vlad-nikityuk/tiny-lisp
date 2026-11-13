@@ -1,0 +1,21 @@
+; 150 x 150 matrix product with three nested loops, then a checksum.
+(load "bench/prelude.lisp")
+
+(define n 150)
+(define A (for/list (_ (range n)) (for/list (_ (range n)) (rand))))
+(define B (for/list (_ (range n)) (for/list (_ (range n)) (rand))))
+(define C (for/list (_ (range n)) (zeros n)))
+(for (i (range n))
+  (for (j (range n))
+    (define s 0.0)
+    (for (k (range n))
+      (+= s (* (at (at A i) k) (at (at B k) j))))
+    (vset! (at C i) j s)))
+
+(define trace 0.0)
+(define total 0.0)
+(for (i (range n))
+  (+= trace (at (at C i) i))
+  (for (j (range n))
+    (+= total (at (at C i) j))))
+(print (floor (* trace 1000000)) (floor (* total 1000000)))

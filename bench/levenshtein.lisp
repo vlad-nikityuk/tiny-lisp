@@ -1,0 +1,26 @@
+; Edit distance between each name and the 40 that follow it of examples/names.txt, with the two-row dynamic programme.
+(load "bench/prelude.lisp")
+
+(define docs (filter (split (read-file "examples/names.txt") newline) (lambda (line) line)))
+
+(defn levenshtein (a b)
+  (define prev (range (+ (len b) 1)))
+  (for (i (range-between 1 (+ (len a) 1)))
+    (define cur (zeros (+ (len b) 1)))
+    (vset! cur 0 i)
+    (for (j (range-between 1 (+ (len b) 1)))
+      (define cost (if (eq? (at a (- i 1)) (at b (- j 1))) 0 1))
+      (vset! cur j (min (+ (at prev j) 1) (+ (at cur (- j 1)) 1) (+ (at prev (- j 1)) cost))))
+    (set! prev cur))
+  (at prev (len b)))
+
+; a name is its list of characters, so a[i] is (at a i)
+(define names (for/list (doc docs) (split doc "")))
+(define total 0)
+(define longest 0)
+(for (i (range (- (len names) 40)))
+  (for (k (range-between 1 41))
+    (define d (levenshtein (at names i) (at names (+ i k))))
+    (+= total d)
+    (set! longest (max longest d))))
+(print total longest)

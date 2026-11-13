@@ -7,3 +7,4 @@ tinylisp-fast
 target/
 .claude/*
 !.claude/skills/
+__pycache__/

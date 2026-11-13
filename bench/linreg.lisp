@@ -1,0 +1,22 @@
+; Fit y = 3x + 1 with two scalar parameters, one Value graph per step (examples/autograd.lisp).
+(load "bench/prelude.lisp")
+(load "examples/autograd.lisp")
+
+(define xs (for/list (i (range 40)) (/ i 10)))
+(define ys (for/list (x xs) (+ (* 3 x) 1 (* (- (rand) 0.5) 0.2))))
+(define w (const 0.0))
+(define b (const 0.0))
+
+(define loss nil)
+(for (step (range 1500))
+  (set! loss (const 0))
+  (for ((x y) (zip xs ys))
+    (define err (val w * x + b - y))
+    (set! loss (val loss + err * err)))
+  (set! loss (val loss * (/ 1 (len xs))))
+  (set-grad! w 0)
+  (set-grad! b 0)
+  (backward loss)
+  (set-data! w (- (data w) (* 0.05 (grad w))))
+  (set-data! b (- (data b) (* 0.05 (grad b)))))
+(print (floor (* (data w) 1000000)) (floor (* (data b) 1000000)) (floor (* (data loss) 1000000)))

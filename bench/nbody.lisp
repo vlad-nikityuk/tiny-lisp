@@ -1,0 +1,75 @@
+; The n-body problem from the Computer Language Benchmarks Game: five bodies, symplectic integrator.
+(load "bench/prelude.lisp")
+
+(define PI 3.14159265358979323)
+(define SOLAR_MASS (* 4 PI PI))
+(define DAYS_PER_YEAR 365.24)
+
+; x y z vx vy vz mass
+(define bodies
+  (list
+    (list 0.0 0.0 0.0 0.0 0.0 0.0 SOLAR_MASS)
+    (list 4.84143144246472090e+00 -1.16032004402742839e+00 -1.03622044471123109e-01
+          (* 1.66007664274403694e-03 DAYS_PER_YEAR) (* 7.69901118419740425e-03 DAYS_PER_YEAR)
+          (* -6.90460016972063023e-05 DAYS_PER_YEAR) (* 9.54791938424326609e-04 SOLAR_MASS))
+    (list 8.34336671824457987e+00 4.12479856412430479e+00 -4.03523417114321381e-01
+          (* -2.76742510726862411e-03 DAYS_PER_YEAR) (* 4.99852801234917238e-03 DAYS_PER_YEAR)
+          (* 2.30417297573763929e-05 DAYS_PER_YEAR) (* 2.85885980666130812e-04 SOLAR_MASS))
+    (list 1.28943695621391310e+01 -1.51111514016986312e+01 -2.23307578892655734e-01
+          (* 2.96460137564761618e-03 DAYS_PER_YEAR) (* 2.37847173959480950e-03 DAYS_PER_YEAR)
+          (* -2.96589568540237556e-05 DAYS_PER_YEAR) (* 4.36624404335156298e-05 SOLAR_MASS))
+    (list 1.53796971148509165e+01 -2.59193146099879641e+01 1.79258772950371181e-01
+          (* 2.68067772490389322e-03 DAYS_PER_YEAR) (* 1.62824170038242295e-03 DAYS_PER_YEAR)
+          (* -9.51592254519715870e-05 DAYS_PER_YEAR) (* 5.15138902046611451e-05 SOLAR_MASS))))
+
+(defn offset-momentum ()
+  (define px 0.0)
+  (define py 0.0)
+  (define pz 0.0)
+  (for (b bodies)
+    (-= px (* (at b 3) (at b 6)))
+    (-= py (* (at b 4) (at b 6)))
+    (-= pz (* (at b 5) (at b 6))))
+  (vset! (at bodies 0) 3 (/ px SOLAR_MASS))
+  (vset! (at bodies 0) 4 (/ py SOLAR_MASS))
+  (vset! (at bodies 0) 5 (/ pz SOLAR_MASS)))
+
+(defn advance (dt)
+  (for (i (range 5))
+    (define bi (at bodies i))
+    (for (j (range-between (+ i 1) 5))
+      (define bj (at bodies j))
+      (define dx (- (at bi 0) (at bj 0)))
+      (define dy (- (at bi 1) (at bj 1)))
+      (define dz (- (at bi 2) (at bj 2)))
+      (define d2 (+ (* dx dx) (* dy dy) (* dz dz)))
+      (define mag (/ dt (* d2 (sqrt d2))))
+      (vset! bi 3 (- (at bi 3) (* dx (at bj 6) mag)))
+      (vset! bi 4 (- (at bi 4) (* dy (at bj 6) mag)))
+      (vset! bi 5 (- (at bi 5) (* dz (at bj 6) mag)))
+      (vset! bj 3 (+ (at bj 3) (* dx (at bi 6) mag)))
+      (vset! bj 4 (+ (at bj 4) (* dy (at bi 6) mag)))
+      (vset! bj 5 (+ (at bj 5) (* dz (at bi 6) mag)))))
+  (for (b bodies)
+    (at+= b 0 (* dt (at b 3)))
+    (at+= b 1 (* dt (at b 4)))
+    (at+= b 2 (* dt (at b 5)))))
+
+(defn energy ()
+  (define e 0.0)
+  (for (i (range 5))
+    (define bi (at bodies i))
+    (+= e (* 0.5 (at bi 6) (+ (* (at bi 3) (at bi 3)) (* (at bi 4) (at bi 4)) (* (at bi 5) (at bi 5)))))
+    (for (j (range-between (+ i 1) 5))
+      (define bj (at bodies j))
+      (define dx (- (at bi 0) (at bj 0)))
+      (define dy (- (at bi 1) (at bj 1)))
+      (define dz (- (at bi 2) (at bj 2)))
+      (-= e (/ (* (at bi 6) (at bj 6)) (sqrt (+ (* dx dx) (* dy dy) (* dz dz)))))))
+  e)
+
+(offset-momentum)
+(print (floor (* (energy) 1000000000)))
+(for (step (range 80000))
+  (advance 0.01))
+(print (floor (* (energy) 1000000000)))
