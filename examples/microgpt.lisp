@@ -8,8 +8,7 @@
 ;; and (val a * b + c) for arithmetic on values (examples/autograd.lisp).
 (define num-steps 10)
 (define num-samples 5)
-(load "examples/autograd.lisp")
-(load "examples/nn.lisp")
+(load "examples/nn.lisp") ; which loads the autograd engine, examples/autograd.lisp
 
 ;; dataset and tokenizer
 ;; ----------------------------------------------------------------
@@ -23,24 +22,24 @@
 
 ;; parameters
 ;; ----------------------------------------------------------------
+(define n-layer 1)
 (define n-embd 16)
 (define block-size 16)
 (define n-head 4)
 (define head-dim 4)
 
-(define wte (matrix vocab-size n-embd))
-(define wpe (matrix block-size n-embd))
-(define lm-head (matrix vocab-size n-embd))
-(define attn-wq (matrix n-embd n-embd))
-(define attn-wk (matrix n-embd n-embd))
-(define attn-wv (matrix n-embd n-embd))
-(define attn-wo (matrix n-embd n-embd))
-(define mlp-fc1 (matrix (* 4 n-embd) n-embd))
-(define mlp-fc2 (matrix n-embd (* 4 n-embd)))
-(defn flatten (m) (r/reduce m concat '()))
-(define params
-  (r/reduce (list wte wpe lm-head attn-wq attn-wk attn-wv attn-wo mlp-fc1 mlp-fc2)
-            (lambda (m acc) (concat (flatten m) acc)) '()))
+(define state-dict (new-dict))
+(dict-set! state-dict "wte" (matrix vocab-size n-embd))
+(dict-set! state-dict "wpe" (matrix block-size n-embd))
+(dict-set! state-dict "lm_head" (matrix vocab-size n-embd))
+(for (i (range n-layer))
+  (dict-set! state-dict (+ "layer" i ".attn_wq") (matrix n-embd n-embd))
+  (dict-set! state-dict (+ "layer" i ".attn_wk") (matrix n-embd n-embd))
+  (dict-set! state-dict (+ "layer" i ".attn_wv") (matrix n-embd n-embd))
+  (dict-set! state-dict (+ "layer" i ".attn_wo") (matrix n-embd n-embd))
+  (dict-set! state-dict (+ "layer" i ".mlp_fc1") (matrix (* 4 n-embd) n-embd))
+  (dict-set! state-dict (+ "layer" i ".mlp_fc2") (matrix n-embd (* 4 n-embd))))
+(define params (flatten (for/list (mat (dict-values state-dict)) (flatten mat))))
 (define n-params (len params))
 (print "num docs:" (len docs))
 (print "vocab size:" vocab-size)
@@ -59,26 +58,53 @@
   (for/list (j (range head-dim))
     (vsum (for/list ((w vt) (zip attn-weights v-h)) (val w * (at vt j))))))
 
-;; multi-head attention: caches this position's key and value, then every head looks at all the cached positions
-(defn Attention (keys values)
+;; weights of layer li, like state_dict[f'layer{li}.{name}']
+(defn layer-weights (li name) (dict-get state-dict (+ "layer" li "." name)))
+
+;; multi-head attention of layer li: caches this position's key and value, then every head looks at all the cached positions
+(defn Attention (li keys values)
   (fn (x)
-    (define q (linear x attn-wq))
-    (define k (linear x attn-wk))
-    (define v (linear x attn-wv))
+    (define q (linear x (layer-weights li "attn_wq")))
+    (define k (linear x (layer-weights li "attn_wk")))
+    (define v (linear x (layer-weights li "attn_wv")))
     (append! keys k)
     (append! values v)
     (define x-attn '())
     (for (h (range n-head))
-      (set! x-attn (concat x-attn (attention-head q (items keys) (items values) (* h head-dim)))))
+      (set! x-attn
+        (concat x-attn
+          (attention-head q (items keys) (items values) (* h head-dim)))))
     x-attn))
 
-(define mlp-block (Residual (chain rmsnorm (Linear mlp-fc1) ReLU (Linear mlp-fc2))))
+;; one transformer layer: attention block, then MLP block, each with a residual connection
+(defn Layer (li keys values)
+  (Sequential
+    (list
+      (Residual
+        (chain
+          rmsnorm
+          (Attention li keys values)
+          (Linear (layer-weights li "attn_wo"))))
+      (Residual
+        (chain
+          rmsnorm
+          (Linear (layer-weights li "mlp_fc1"))
+          ReLU
+          (Linear (layer-weights li "mlp_fc2")))))))
 
-;; (gpt token-id pos-id keys values) -> logits; the key/value caches grow by one position
+;; (gpt token-id pos-id keys values) -> logits; keys and values hold one cache per layer, which grows by one position
 (defn gpt (token-id pos-id keys values)
-  (define attn-block (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))))
-  (define transformer (chain rmsnorm attn-block mlp-block (Linear lm-head)))
-  (-> (for/list ((t p) (zip (at wte token-id) (at wpe pos-id))) (val t + p))
+  (define tok-emb (at (dict-get state-dict "wte") token-id))
+  (define pos-emb (at (dict-get state-dict "wpe") pos-id))
+  (define layers
+    (for/list (li (range n-layer))
+      (Layer li (at keys li) (at values li))))
+  (define transformer
+    (chain
+      rmsnorm
+      (Sequential layers)
+      (Linear (dict-get state-dict "lm_head"))))
+  (-> (for/list ((t p) (zip tok-emb pos-emb)) (val t + p))
       transformer))
 
 ;; Adam
@@ -112,8 +138,8 @@
   (define tokens (tokenize doc))
   (define n (min block-size (- (len tokens) 1)))
   ;; forward the token sequence, building the graph up to the loss
-  (define keys (new-list))
-  (define values (new-list))
+  (define keys (for/list (_ (range n-layer)) (new-list)))
+  (define values (for/list (_ (range n-layer)) (new-list)))
   (define losses (new-list))
   (for (pos-id (range n))
     (define token-id (at tokens pos-id))
@@ -147,4 +173,4 @@
 
 (print "--- inference (new, hallucinated names) ---")
 (for (sample-idx (range num-samples))
-  (print "sample" (+ sample-idx 1) ":" (sample-loop 0 BOS (new-list) (new-list) "")))
+  (print "sample" (+ sample-idx 1) ":" (sample-loop 0 BOS (for/list (_ (range n-layer)) (new-list)) (for/list (_ (range n-layer)) (new-list)) "")))

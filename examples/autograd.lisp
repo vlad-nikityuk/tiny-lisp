@@ -53,7 +53,7 @@
 ;; ----------------------------------------------------------------
 ;; Field access reads like attributes and costs nothing: (data v) is (at v 0), (grad v) is (at v 1), and so on;
 ;; (Value data children local-grads) is the list with the other fields at their start values.
-(define slot-names (list "data" "grad" "children" "local-grads"))
+(define slot-names '(data grad children local-grads))
 (defn slot-index (name i)
   (if (eq? i (len slot-names)) nil
     (if (eq? name (at slot-names i)) i (slot-index name (+ i 1)))))
