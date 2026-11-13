@@ -498,9 +498,12 @@ fn dup(comptime T: type, xs: []const T) []const T {
     return m;
 }
 
+/// `make test-tree` builds with false: every function stays with the tree evaluator, and the tests must still pass.
+const enabled = true;
+
 /// The bytecode of p, compiled on first use and again after a macro changed; null if p stays with the tree evaluator.
 pub fn ready(p: *rt.Proto) ?*Bytecode {
-    if (lang.in_macro) return null;
+    if (!enabled or lang.in_macro) return null;
     if (p.code) |c| {
         if (c.stamp == lang.current()) return c;
         p.code = null;
