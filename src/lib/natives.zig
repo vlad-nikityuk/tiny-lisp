@@ -164,12 +164,14 @@ fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
     return .{ .eval = compile.stub(try expand.form(x, true)) }; // (expanding runs Lisp: a and k are not used after it)
 }
 
-/// (eval form) runs a form at top level: expanded as a top-level form of its own (so it may be a defmacro) and run in the global
-/// scope, never in the caller's. It runs on a nested machine, which `expand.run` starts (the stack the frame is on may move).
-fn evalForm(_: *Fn, k: *Frame, _: ?V) E!Go {
-    const form = machine.frameArgs(k, 1)[0];
-    const r = try expand.run(form, scope.root);
-    return machine.finish(&machine.ks.items[machine.ks.items.len - 1], r);
+/// (eval form) runs a form at top level: expanded as a top-level form of its own (so it may be a defmacro; the macros run on a
+/// nested machine) and run in the global scope, never in the caller's. The run is on the running machine: its scope becomes the
+/// root (the frame keeps the caller's, and goes back to it), so recursion through eval grows the frame stack, not the native one.
+fn evalForm(_: *Fn, k: *Frame, v: ?V) E!Go {
+    if (v) |r| return machine.finish(k, r);
+    const x = try expand.form(machine.frameArgs(k, 1)[0], true);
+    machine.machines.getLast().e = scope.root;
+    return .{ .eval = compile.stub(x) };
 }
 
 fn def(e: *scope.Env, k: [*:0]const u8, f: value.Native) V {

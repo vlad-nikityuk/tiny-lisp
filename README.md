@@ -149,7 +149,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/runtime/primitives.zig` defines the primitives `+ - * / mod < > <= >= eq? car cdr len cons list at not min max abs error exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors); `try` and `trampoline` are natives of `src/runtime/machine.zig`. `src/lib/natives.zig` provides `print list? map each reduce partial concat range zip apply read-file write-file split load`. Everything else (`pi rand color red green first rest second third defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/lib/stdlib.lisp`.
+`src/runtime/primitives.zig` defines the primitives `+ - * / mod < > <= >= eq? car cdr len cons list at not min max abs error exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors); `try` and `trampoline` are natives of `src/runtime/machine.zig`. `src/lib/natives.zig` provides `print list? map each reduce partial concat range zip apply read-file write-file split load eval`. Everything else (`pi rand color red green first rest second third quasiquote defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/lib/stdlib.lisp`.
 
 ### Files and strings
 
@@ -167,13 +167,13 @@ Run from the repository root.
 |---|---|
 | `src/repl.zig` | the entry point: command line, REPL, setting up the root scope |
 | `src/lang/parser.zig` | parser: text to AST |
-| `src/lang/compile.zig`, `src/lang/eval.zig` | the tree tier, the reference semantics: AST to nodes (and macro expansion), and the evaluator that runs them |
+| `src/lang/expand.zig`, `src/lang/compile.zig`, `src/lang/eval.zig` | the tree tier, the reference semantics: macro expansion of a top-level form (and `defmacro`), the expanded AST to nodes, and the evaluator that runs them |
 | `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (compiled code as data), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
 | `src/vm/` | the second tier, the fast path: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body to bytecode), `exec.zig` (the executor) |
 | `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
+The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Each node of the expanded code is compiled once, the first time it is evaluated: names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
 
 ## History
 

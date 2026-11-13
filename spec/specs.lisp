@@ -493,6 +493,21 @@
 (deftest "macros: an operator that expands to a macro name"
   (assert (eq? ((name-of-target)) 7)))
 
+;; an operator that is a form is expanded first, alone; if it changes, the form is dispatched again before any operand is seen
+(defmacro quote-name () 'quote)
+(defmacro begin-name () 'begin)
+(defmacro m-seven () 7)
+(deftest "macros: an operator that becomes quote protects its operands"
+  (assert (equal? ((quote-name) (m-seven)) '(m-seven))))
+((begin-name) (defmacro generated-seven () 7) (define generated-seven-value (generated-seven)))
+(deftest "macros: an operator that becomes begin keeps the top-level status of its parts"
+  (assert (eq? generated-seven-value 7)))
+
+;; eval's run is on the explicit machine: deep recursion through it is fine
+(define descend (lambda (n) (if (eq? n 0) 42 (eval (list 'descend (- n 1))))))
+(deftest "macros: 100000-deep recursion through eval"
+  (assert (eq? (descend 100000) 42)))
+
 ;; a macro may change the form around it, and the collector may run meanwhile: what the expander walks must stay alive
 (define zapped-ast '(list (list (zap) (+ 2 3))))
 (defmacro zap () (begin (vset! zapped-ast 1 nil) (range 1000000) ((lambda (x) x) 1)))
