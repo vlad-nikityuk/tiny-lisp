@@ -46,7 +46,7 @@ fn mapper(comptime keep: bool) *const fn (*Fn, *K, ?V) E!Go {
             var xs: [8]V = undefined;
             std.debug.assert(n - 1 <= xs.len);
             for (vs.items[k.base + 1 ..][0 .. n - 1], xs[0 .. n - 1]) |l, *x| x.* = runtime.items(l)[k.i];
-            return runtime.callback(k, vs.items[k.base + n], xs[0 .. n - 1]);
+            return runtime.callback(vs.items[k.base + n], xs[0 .. n - 1]);
         }
     }.f;
 }
@@ -58,7 +58,7 @@ fn reduce(_: *Fn, k: *K, v: ?V) E!Go {
     } else _ = runtime.frameArgs(k, 3);
     const s = runtime.vs.items[k.base + 1 ..];
     const l = runtime.items(s[0]);
-    return if (k.i < l.len) runtime.callback(k, s[1], &.{ s[2], l[k.i] }) else runtime.finish(k, s[2]);
+    return if (k.i < l.len) runtime.callback(s[1], &.{ s[2], l[k.i] }) else runtime.finish(k, s[2]);
 }
 
 /// (concat l1 l2 ...) is one list with all their items: a single copy, however many lists.

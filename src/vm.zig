@@ -208,7 +208,8 @@ const Comp = struct {
                     .mod => .mod,
                     .@"/" => .div,
                     .not => .not,
-                    else => if (p.c.len == 2) .prim1 else .prim2,
+                    .abs, .floor, .sqrt, .exp, .log, .cos => .prim1,
+                    else => unreachable,
                 };
                 const pi = c.add(*rt.Prim, &c.prims, p);
                 if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
@@ -692,15 +693,13 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
             ip += 1;
             continue :sw ip[0].op;
         },
-        .prim1, .prim2 => {
+        .prim1 => {
             const p = code.prims[ip[0].a];
-            const unary = ip[0].op == .prim1;
-            const r = if (unary) rt.fast1(p.op, st[sp - 1]) else rt.fast(p.op, st[sp - 2], st[sp - 1]);
+            const r = rt.fast1(p.op, st[sp - 1]);
             const v = r orelse {
                 vs.items.len = sp;
-                return slow(m, code, ip, if (unary) 1 else 2);
+                return slow(m, code, ip, 1);
             };
-            if (!unary) sp -= 1;
             st[sp - 1] = v;
             ip += 1;
             continue :sw ip[0].op;

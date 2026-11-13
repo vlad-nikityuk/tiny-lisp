@@ -944,4 +944,15 @@
 (deftest "review: a helper that calls a function it is given is not inlined"
   (assert (eq? ((lambda (x) (begin (cx-call-arg load) x)) 1) 1)))
 
+(defn primitive-math (x y)
+  (list (abs x) (floor x) (sqrt x) (exp x) (log y) (cos x)))
+(defn primitive-binary (x y xs)
+  (list (+ x y) (- x y) (* x y) (/ x y) (mod x y)
+        (> x y) (< x y) (>= x y) (<= x y) (eq? x y) (at xs y) (not x)))
+(deftest "tier 2: every primitive opcode and unary coercion fallback"
+  (assert (equal? (primitive-math 0 1) '(0 0 0 1 0 1)))
+  (assert (equal? (primitive-math #f #t) '(0 0 0 1 0 1)))
+  (assert (equal? (primitive-binary 6 2 '(10 20 30))
+                  (list 8 4 12 3 0 #t #f #t #f #f 30 #f))))
+
 (run-tests)
