@@ -518,6 +518,14 @@
   (assert (equal? mutable-result '(mutable-m)))
   (assert (eq? mutable-hits 0)))
 
+;; a defmacro form whose name a macro in its body detaches from the form (and a collection follows): the name is kept
+(defmacro zap-name () (begin (vset! zapdef-ast 1 nil) (range 1000000) ((lambda () 7))))
+(define zapdef-ast (list 'defmacro (+ "zapped" "-defmacro") '() '(zap-name)))
+(define zapdef-result (eval zapdef-ast))
+(deftest "macros: defmacro keeps its name when a macro in its body overwrites it"
+  (assert (eq? zapdef-result 'zapped-defmacro))
+  (assert (eq? (eval '(zapped-defmacro)) 7)))
+
 ;; a macro may change the form around it, and the collector may run meanwhile: what the expander walks must stay alive
 (define zapped-ast '(list (list (zap) (+ 2 3))))
 (defmacro zap () (begin (vset! zapped-ast 1 nil) (range 1000000) ((lambda (x) x) 1)))

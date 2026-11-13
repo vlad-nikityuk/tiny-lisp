@@ -3,6 +3,11 @@
 // effect for the next, and redefining it changes only the forms that follow.
 // It needs eval.zig: a macro is a Lisp function, called on a nested machine (macro bodies run during expansion only; running a form
 // never nests a machine).
+//
+// Rooting rule: a macro runs Lisp, and the collector may run meanwhile, so nothing managed is held in a Zig local across a macro
+// run (or across running the defmacro lambda) unless it is on machine.vs or pinned. What is needed afterwards is read, or copied
+// to memory the expander owns (perm strings, pinned values), before the run: a macro may also overwrite the input lists in place
+// (vset!), so the list cannot be re-read after the run either.
 const std = @import("std");
 const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
@@ -37,7 +42,7 @@ fn call(f: V, parts: []const V) value.E!V {
 /// (defmacro name (params) body...): the macro is `(lambda (params) (begin body...))`, expanded and made right now, and kept
 /// under its name. The form itself becomes `(quote name)`.
 fn defmacro(items: []const V) value.E!V {
-    const name = value.arg(items, 1);
+    const name = gc.pin(value.arg(items, 1)); // the form may be detached, or its name overwritten, while the body is expanded
     if (!name.is(.s)) return value.fail(value.str("TinyLisp: defmacro needs a name", .{}));
     const text = std.mem.span(name.asStr());
     if (compile.isSpecial(text)) return value.fail(value.str("TinyLisp: {s} is a special form, it cannot be a macro", .{text}));
