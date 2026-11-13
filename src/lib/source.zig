@@ -2,7 +2,7 @@
 const std = @import("std");
 const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
-const parser = @import("../parser.zig");
+const parser = @import("../lang/parser.zig");
 
 pub fn readProgram(io: std.Io, path: []const u8) rt.E!rt.V {
     const gpa = std.heap.c_allocator;

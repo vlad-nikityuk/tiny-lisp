@@ -1,6 +1,7 @@
+// The parser: text -> AST (numbers, symbols, string literals and lists of them).
 const std = @import("std");
-const gc = @import("runtime/gc.zig");
-const rt = @import("runtime/runtime.zig");
+const gc = @import("../runtime/gc.zig");
+const rt = @import("../runtime/runtime.zig");
 const V = rt.V;
 
 // Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.

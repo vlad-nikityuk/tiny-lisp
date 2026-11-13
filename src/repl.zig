@@ -1,7 +1,7 @@
 // CLI and REPL: loads the stdlib, then runs a file (-f) or reads expressions from stdin.
 const std = @import("std");
 const source = @import("lib/source.zig");
-const parser = @import("parser.zig");
+const parser = @import("lang/parser.zig");
 const lang = @import("lang.zig");
 const rt = @import("runtime/runtime.zig");
 const scope = @import("runtime/scope.zig");
