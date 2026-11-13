@@ -11,7 +11,8 @@
 (load "examples/autograd.lisp")
 (load "examples/nn.lisp")
 
-;; ---------------------------------------------------------------- dataset and tokenizer
+;; dataset and tokenizer
+;; ----------------------------------------------------------------
 (define docs (reduce (split (read-file "examples/names.txt") "
 ") (lambda (acc s) (if s (concat acc (list s)) acc)) '()))
 (define uchars (split "abcdefghijklmnopqrstuvwxyz" ""))
@@ -20,7 +21,8 @@
 (defn index-of (ch l i) (if (eq? ch (at l i)) i (index-of ch l (+ i 1))))
 (defn tokenize (doc) (concat (list BOS) (for/list (ch (split doc "")) (index-of ch uchars 0)) (list BOS)))
 
-;; ---------------------------------------------------------------- parameters
+;; parameters
+;; ----------------------------------------------------------------
 (define n-embd 16)
 (define block-size 16)
 (define n-head 4)
@@ -44,7 +46,8 @@
 (print "vocab size:" vocab-size)
 (print "num params:" n-params)
 
-;; ---------------------------------------------------------------- model
+;; model
+;; ----------------------------------------------------------------
 ;; one attention head: the slice [hs, hs + head-dim) of q, of every cached key and of every cached value
 (defn attention-head (q keys values hs)
   (define q-h (slice q hs (+ hs head-dim)))
@@ -78,7 +81,8 @@
   (-> (for/list ((t p) (zip (at wte token-id) (at wpe pos-id))) (val t + p))
       transformer))
 
-;; ---------------------------------------------------------------- Adam
+;; Adam
+;; ----------------------------------------------------------------
 (define learning-rate 0.01)
 (define beta1 0.85)
 (define beta2 0.99)
@@ -99,7 +103,8 @@
     (set-data! p (- (data p) (/ (* lr-t m-hat) (+ (sqrt v-hat) eps-adam))))
     (set-grad! p 0)))
 
-;; ---------------------------------------------------------------- training
+;; training
+;; ----------------------------------------------------------------
 (defn round4 (x) (/ (floor (+ (* x 10000) 0.5)) 10000))
 
 (for (step (range num-steps))
@@ -121,7 +126,8 @@
   (adam-update step)
   (print "step" (+ step 1) "/" num-steps "| loss" (round4 (data loss))))
 
-;; ---------------------------------------------------------------- inference
+;; inference
+;; ----------------------------------------------------------------
 (define temperature 0.5)
 
 ;; pick an index with probability proportional to its weight

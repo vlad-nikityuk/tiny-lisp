@@ -96,7 +96,8 @@ pub fn perm(n: usize) *anyopaque {
     return body(h);
 }
 
-// ---------------------------------------------------------------- collection
+// collection
+// ----------------------------------------------------------------
 pub fn due() bool {
     return allocated > limit;
 }
