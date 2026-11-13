@@ -121,7 +121,7 @@ pub fn set(e: *Env, key: Key, v: V) void {
 }
 
 /// Replacing this value must compile the tier-2 code again: it is a native, or a function that other functions' code contains.
-pub fn compiledInto(v: V) bool {
+fn compiledInto(v: V) bool {
     return v.is(.f) or (v.is(.lam) and v.asLam().proto.inlined);
 }
 

@@ -1,4 +1,5 @@
-// The compiler and explicit-stack evaluator. Parsing lives in parser.zig.
+// The tree tier: the compiler from the AST (parser.zig) to nodes, and the explicit-stack evaluator that runs them. It is the
+// reference semantics; bytecode.zig and vm.zig are a faster path for function bodies.
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
@@ -11,7 +12,6 @@ const Node = rt.Node;
 
 pub var out: *std.Io.Writer = undefined;
 pub var errv: V = .nil;
-pub const parse = @import("parser.zig").parse;
 
 // compiler
 // ----------------------------------------------------------------

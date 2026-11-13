@@ -54,8 +54,8 @@ pub const Opcode = enum(u8) {
 // zig fmt: on
 
 /// The instructions for a two-operand primitive, and those of them that have fused forms.
-pub const binary = [_]Opcode{ .add, .sub, .mul, .div, .mod, .lt, .gt, .le, .ge, .eq, .at };
-pub const fusable = [_]Opcode{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at };
+const binary = [_]Opcode{ .add, .sub, .mul, .div, .mod, .lt, .gt, .le, .ge, .eq, .at };
+const fusable = [_]Opcode{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at };
 
 /// The primitive that a two-operand instruction, plain or fused, computes.
 pub fn primOf(comptime op: Opcode) rt.Op {

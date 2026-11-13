@@ -1,6 +1,7 @@
 // CLI and REPL: loads the stdlib, then runs a file (-f) or reads expressions from stdin.
 const std = @import("std");
 const source = @import("source.zig");
+const parser = @import("parser.zig");
 const lang = @import("lang.zig");
 const rt = @import("runtime.zig");
 const scope = @import("scope.zig");
@@ -46,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
         const line = try in.interface.takeDelimiter('\n') orelse return;
         const s = std.mem.trimStart(u8, line, " \t\r\n");
         if (s.len == 0) continue;
-        if (lang.parse(s)) |x| if (lang.eval(x, e)) |v| {
+        if (parser.parse(s)) |x| if (lang.eval(x, e)) |v| {
             try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
             continue;
         } else |_| {} else |_| {}
