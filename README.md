@@ -64,7 +64,7 @@ The same macro without `defmacro` and backquote:
       ast)))
 ```
 
-`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/stdlib.lisp`. Macro bodies are not macro-expanded themselves (expansion does not nest), so inside one use only functions, special forms and the backquote syntax; `defmacro` rewrites the backquotes of its body when it is defined. Templates cannot be nested.
+`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/lib/stdlib.lisp`. Macro bodies are not macro-expanded themselves (expansion does not nest), so inside one use only functions, special forms and the backquote syntax; `defmacro` rewrites the backquotes of its body when it is defined. Templates cannot be nested.
 
 ## Get started
 
@@ -78,7 +78,7 @@ make test                    # run the tests
 make bench                   # compare with CPython on the programs in bench/
 ```
 
-Run it from the repository root: it loads `src/stdlib.lisp` on start.
+Run it from the repository root: it loads `src/lib/stdlib.lisp` on start.
 
 ## Guide
 
@@ -157,7 +157,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/primitives.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/lib/natives.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/primitives.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/lib/stdlib.lisp`.
 
 ### Files and strings
 
@@ -181,7 +181,7 @@ Run from the repository root.
 | `src/bytecode.zig`, `src/vm.zig` | the second tier: a bytecode compiler and its executor (the fast path) |
 | `src/gc.zig` | memory management (mark-sweep) |
 | `src/repl.zig`, `src/source.zig` | REPL, reading program files |
-| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
+| `src/lib/natives.zig`, `src/lib/stdlib.lisp` | standard library (native part and Lisp part) |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
 The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.

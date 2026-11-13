@@ -1,10 +1,10 @@
-// Native part of the stdlib (installed before src/stdlib.lisp is loaded).
+// The native part of the standard library (installed before stdlib.lisp, the Lisp part, is loaded).
 const std = @import("std");
 const source = @import("source.zig");
-const lang = @import("lang.zig");
-const gc = @import("runtime/gc.zig");
-const rt = @import("runtime/runtime.zig");
-const scope = @import("runtime/scope.zig");
+const lang = @import("../lang.zig");
+const gc = @import("../runtime/gc.zig");
+const rt = @import("../runtime/runtime.zig");
+const scope = @import("../runtime/scope.zig");
 const V = rt.V;
 const Fn = rt.Fn;
 const Frame = rt.Frame;

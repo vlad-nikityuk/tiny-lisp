@@ -1,4 +1,4 @@
-;; Lisp part of the stdlib, loaded after the native part (src/stdlib_native.zig).
+;; The Lisp part of the standard library, loaded after the native part (natives.zig).
 (define pi 3.141592653589793)
 (define first car)
 (define rest cdr)

@@ -1,11 +1,11 @@
 // CLI and REPL: loads the stdlib, then runs a file (-f) or reads expressions from stdin.
 const std = @import("std");
-const source = @import("source.zig");
+const source = @import("lib/source.zig");
 const parser = @import("parser.zig");
 const lang = @import("lang.zig");
 const rt = @import("runtime/runtime.zig");
 const scope = @import("runtime/scope.zig");
-const native = @import("stdlib_native.zig");
+const natives = @import("lib/natives.zig");
 
 const gpa = std.heap.c_allocator;
 
@@ -14,7 +14,7 @@ fn load(io: std.Io, e: *rt.Env, path: []const u8) rt.E!void {
 }
 
 fn die() noreturn {
-    native.out.flush() catch {};
+    natives.out.flush() catch {};
     std.debug.print("\x1b[31m{f}\x1b[39m\n", .{rt.errv});
     std.process.exit(1);
 }
@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
     var obuf: [4096]u8 = undefined;
     var ow: std.Io.File.Writer = .init(.stdout(), init.io, &obuf);
     const out = &ow.interface;
-    native.out = out;
+    natives.out = out;
     defer out.flush() catch {};
     const e = rt.topLevel();
     var file: ?[]const u8 = null;
@@ -35,9 +35,9 @@ pub fn main(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];
     }
-    native.io = init.io;
-    native.install(e);
-    load(init.io, e, "src/stdlib.lisp") catch die();
+    natives.io = init.io;
+    natives.install(e);
+    load(init.io, e, "src/lib/stdlib.lisp") catch die();
     if (file) |f| return load(init.io, e, f) catch die();
     const ibuf = try gpa.alloc(u8, 1 << 24);
     var in: std.Io.File.Reader = .init(.stdin(), init.io, ibuf);
