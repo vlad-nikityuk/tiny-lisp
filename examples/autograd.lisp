@@ -38,14 +38,12 @@
     (list acc ts)))
 
 (defn val/term (ts)
-  (begin
-    (define lhs (val/unary ts))
-    (val/fold val/unary (lambda (op a b) (list (if (eq? op "*") "v*" "v/") a b)) "*" "/" (first lhs) (second lhs))))
+  (define lhs (val/unary ts))
+  (val/fold val/unary (lambda (op a b) (list (if (eq? op "*") "v*" "v/") a b)) "*" "/" (first lhs) (second lhs)))
 
 (defn val/sum (ts)
-  (begin
-    (define lhs (val/term ts))
-    (val/fold val/term (lambda (op a b) (list "v+" a (if (eq? op "+") b (list "vneg" b)))) "+" "-" (first lhs) (second lhs))))
+  (define lhs (val/term ts))
+  (val/fold val/term (lambda (op a b) (list "v+" a (if (eq? op "+") b (list "vneg" b)))) "+" "-" (first lhs) (second lhs)))
 
 (define macro/val
   (lambda (ast)
