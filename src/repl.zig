@@ -14,8 +14,8 @@ fn load(io: std.Io, e: *rt.Env, path: []const u8) rt.E!void {
 }
 
 fn die() noreturn {
-    lang.out.flush() catch {};
-    std.debug.print("\x1b[31m{f}\x1b[39m\n", .{lang.errv});
+    native.out.flush() catch {};
+    std.debug.print("\x1b[31m{f}\x1b[39m\n", .{rt.errv});
     std.process.exit(1);
 }
 
@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
     var obuf: [4096]u8 = undefined;
     var ow: std.Io.File.Writer = .init(.stdout(), init.io, &obuf);
     const out = &ow.interface;
-    lang.out = out;
+    native.out = out;
     defer out.flush() catch {};
     const e = rt.topLevel();
     var file: ?[]const u8 = null;
@@ -51,6 +51,6 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
             continue;
         } else |_| {} else |_| {}
-        try out.print("\x1b[31m{f}\x1b[39m\n", .{lang.errv});
+        try out.print("\x1b[31m{f}\x1b[39m\n", .{rt.errv});
     }
 }

@@ -12,9 +12,12 @@ const Go = rt.Go;
 const E = rt.E;
 const arg = rt.arg;
 
+/// Where print writes.
+pub var out: *std.Io.Writer = undefined;
+
 fn print(_: *Fn, a: []const V) E!V {
-    for (a, 0..) |v, i| lang.out.print("{s}{f}", .{ if (i > 0) " " else "", v }) catch {};
-    lang.out.writeByte('\n') catch {};
+    for (a, 0..) |v, i| out.print("{s}{f}", .{ if (i > 0) " " else "", v }) catch {};
+    out.writeByte('\n') catch {};
     return .nil;
 }
 

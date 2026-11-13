@@ -8,7 +8,6 @@
 const std = @import("std");
 const rt = @import("runtime.zig");
 const scope = @import("scope.zig");
-const lang = @import("lang.zig");
 const V = rt.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
@@ -164,7 +163,7 @@ fn markRoots() void {
     for (rt.machines.items) |m| markPtr(m.e);
     for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
     for (rt.pins.items) |v| markV(v);
-    markV(lang.errv);
+    markV(rt.errv);
 }
 
 pub fn collect() void {

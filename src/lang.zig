@@ -10,9 +10,6 @@ const bytecode = @import("bytecode.zig");
 const V = rt.V;
 const Node = rt.Node;
 
-pub var out: *std.Io.Writer = undefined;
-pub var errv: V = .nil;
-
 // compiler
 // ----------------------------------------------------------------
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it

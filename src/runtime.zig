@@ -2,7 +2,6 @@
 // protocol of natives that call back into Lisp. Scopes are in scope.zig, the primitives in primitives.zig.
 const std = @import("std");
 const gc = @import("gc.zig");
-const lang = @import("lang.zig");
 const prims = @import("primitives.zig");
 pub const Op = prims.Op;
 pub const Bytecode = @import("bytecode.zig").Bytecode;
@@ -11,7 +10,9 @@ pub const Env = scope.Env;
 
 // values
 // ----------------------------------------------------------------
-pub const E = error{Lisp}; // the error value itself is in `lang.errv`
+pub const E = error{Lisp}; // the error value itself is in `errv`
+/// The value of the Lisp error being raised.
+pub var errv: V = .nil;
 /// A value in 8 bytes (NaN boxing): a number is its own double bits, everything else lives in the quiet-NaN space with a
 /// 3-bit tag in bits 48-50 and a 48-bit pointer or flag as payload. Numbers that are NaN are stored as one canonical NaN.
 pub const V = enum(u64) {
@@ -171,7 +172,7 @@ pub fn str(comptime f: []const u8, args: anytype) V {
 
 /// Raise the Lisp error e.
 pub fn fail(e: V) E {
-    lang.errv = e;
+    errv = e;
     return error.Lisp;
 }
 
@@ -407,7 +408,7 @@ pub fn recover(base: usize) ?Go {
         ks.items.len = j + 1;
         vs.items.len = k.base + 3; // try, thunk, handler
         k.i = 1;
-        return .{ .ret = lang.errv };
+        return .{ .ret = errv };
     }
     return null;
 }
