@@ -34,12 +34,12 @@ def positive_int(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-n", type=positive_int, default=3, dest="runs")
-    parser.add_argument("--binary", default="./tinylisp")
+    parser.add_argument("--binary", help="the tinylisp to time (default: ./tinylisp in the repository root)")
     parser.add_argument("names", nargs="*")
     args = parser.parse_args()
     runs = args.runs
-    binary = os.path.abspath(args.binary)
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    binary = os.path.abspath(args.binary) if args.binary else os.path.join(root, "tinylisp")  # a given path is relative to where we were run from
     os.chdir(root)
     names = args.names or sorted(os.path.basename(p)[:-5] for p in glob.glob("bench/*.lisp") if not p.endswith("prelude.lisp"))
     empty_py, _, cp, ep = best([sys.executable, "-c", "pass"], runs)

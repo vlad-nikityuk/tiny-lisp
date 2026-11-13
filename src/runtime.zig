@@ -126,9 +126,10 @@ pub const Var = struct { k: Key, v: V };
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct { key: Key, local: bool = false, prim: bool = false }; // prim: the head of a Prim node, so tier-2 code inlines it (rebinding it bumps epoch) // local: some scope binds this name (a parameter, or a define inside a function)
-/// A call of a primitive on two operands, compiled as such while its name is global and still bound to that primitive: the evaluator
-/// computes it in place when both operands are constants or variables holding numbers (or a list and an index), else it is the call c.
-pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false }; // unary or binary; slow: operands cannot be evaluated within the bounded in-place descent
+/// A call of a primitive with one or two operands, compiled as such while its name is global and still bound to that primitive.
+/// The evaluator computes it in place when each operand is a constant, a variable or (a few levels deep) another such call, and the
+/// values are numbers (or a list and an index); otherwise it makes the ordinary call c. slow: an operand cannot be computed that way.
+pub const Prim = struct { op: Op, sym: *Sym, g: *V, f: V, c: []const *Node, slow: bool = false };
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false, inlined: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
