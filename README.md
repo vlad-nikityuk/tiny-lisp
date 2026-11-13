@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.png">
+    <img src="docs/logo-light.png" alt="TinyLisp" width="360">
+  </picture>
+</p>
+
 # TinyLisp
 
 A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [lispy](http://norvig.com/lispy.html).
