@@ -1,21 +1,22 @@
 // CLI and REPL: loads the stdlib, then runs a file (-f) or reads expressions from stdin.
 const std = @import("std");
-const source = @import("lib/source.zig");
+const value = @import("runtime/value.zig");
+const scope = @import("runtime/scope.zig");
+const machine = @import("runtime/machine.zig");
+const primitives = @import("runtime/primitives.zig");
 const parser = @import("lang/parser.zig");
 const eval = @import("lang/eval.zig");
-const rt = @import("runtime/runtime.zig");
-const scope = @import("runtime/scope.zig");
+const source = @import("lib/source.zig");
 const natives = @import("lib/natives.zig");
-
 const gpa = std.heap.c_allocator;
 
-fn load(io: std.Io, e: *rt.Env, path: []const u8) rt.E!void {
+fn load(io: std.Io, e: *scope.Env, path: []const u8) value.E!void {
     _ = try eval.eval(try source.readProgram(io, path), e);
 }
 
 fn die() noreturn {
     natives.out.flush() catch {};
-    std.debug.print("\x1b[31m{f}\x1b[39m\n", .{rt.errv});
+    std.debug.print("\x1b[31m{f}\x1b[39m\n", .{value.errv});
     std.process.exit(1);
 }
 
@@ -25,12 +26,14 @@ pub fn main(init: std.process.Init) !void {
     const out = &ow.interface;
     natives.out = out;
     defer out.flush() catch {};
-    const e = rt.topLevel();
+    const e = scope.init();
+    primitives.install(e);
+    machine.install(e);
     var file: ?[]const u8 = null;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, "--debug")) {
-            scope.set(e, "*DEBUG*", rt.V.boolean(true));
+            scope.set(e, "*DEBUG*", value.V.boolean(true));
             try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];
@@ -51,6 +54,6 @@ pub fn main(init: std.process.Init) !void {
             try out.print("\x1b[32m{f}\x1b[39m\n", .{v});
             continue;
         } else |_| {} else |_| {}
-        try out.print("\x1b[31m{f}\x1b[39m\n", .{rt.errv});
+        try out.print("\x1b[31m{f}\x1b[39m\n", .{value.errv});
     }
 }

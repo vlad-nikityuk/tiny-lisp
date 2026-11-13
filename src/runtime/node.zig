@@ -1,11 +1,10 @@
 // Compiled code, as data: what lang/compile.zig builds from the AST, lang/eval.zig runs and vm/compiler.zig compiles further.
 // Nodes, their arrays and symbols live forever (`make`), so frames and closures can keep pointing at them.
-const std = @import("std");
+const value = @import("value.zig");
 const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
 const Op = @import("primitives.zig").Op;
 const Bytecode = @import("../vm/bytecode.zig").Bytecode;
-const V = rt.V;
+const V = value.V;
 
 /// n permanent Ts (compiled code lives forever).
 pub fn make(comptime T: type, n: usize) []T {
@@ -31,7 +30,7 @@ pub const Proto = struct {
     cap: usize = 0, // room for the scope of a call, grown by defines
     rest: bool = false, // the last parameter takes the extra arguments as a list
     guard: ?*Guard = null,
-    code: ?*Bytecode = null, // the tier-2 form of the body (bytecode.zig)
+    code: ?*Bytecode = null, // the tier-2 form of the body (vm/)
     tried: bool = false, // tier 2 compiled the body or rejected it (a rejected body is not tried again)
     inlined: bool = false, // other functions' bytecode contains this body: replacing the function bumps epoch
 };
@@ -56,7 +55,7 @@ pub const Guard = struct { sym: *Sym, g: *V, f: V };
 pub const Node = struct {
     ast: V,
     src: V = .nil, // the (macro-expanded) form that code was built from
-    stamp: u32 = 0, // lang.current() when code was built; 0: never
+    stamp: u32 = 0, // compile.current() when code was built; 0: never
     code: Code = .raw,
     guard: ?*Guard = null, // set on the lambda operand of each/map
 };
@@ -69,5 +68,5 @@ pub var range_v: V = .nil; // the native range: a loop over a call of it counts 
 
 /// How many items (range v) has.
 pub fn rangeLen(v: V) usize {
-    return @intFromFloat(@max(0, rt.num(v)));
+    return @intFromFloat(@max(0, value.num(v)));
 }

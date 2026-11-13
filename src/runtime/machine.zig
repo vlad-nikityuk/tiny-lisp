@@ -2,21 +2,22 @@
 // stack. lang/eval.zig is the loop that runs it; vm/exec.zig runs bytecode on the same two stacks. Also here: the protocol
 // of natives that call back into Lisp, which run as frames, and the two natives built on it, try and the trampoline.
 const std = @import("std");
+const value = @import("value.zig");
 const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
 const scope = @import("scope.zig");
 const node = @import("node.zig");
-const V = rt.V;
-const E = rt.E;
-const Fn = rt.Fn;
+const bytecode = @import("../vm/bytecode.zig");
+const V = value.V;
+const E = value.E;
+const Fn = value.Fn;
 const Env = scope.Env;
 const Node = node.Node;
 const Def = node.Def;
-const Bytecode = rt.Bytecode;
-const gpa = rt.gpa;
-const arg = rt.arg;
-const list = rt.list;
-const nf = rt.nf;
+const Bytecode = bytecode.Bytecode;
+const gpa = value.gpa;
+const arg = value.arg;
+const list = value.list;
+const nf = value.nf;
 
 pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm, loop };
 /// Pending work: what to do with the next value. One flat struct for every kind (a frame is pushed per call, so it stays small
@@ -48,7 +49,7 @@ pub fn frame(kind: Kind, c: []const *Node, e: *Env) *Frame {
 
 /// Push the value of c[i], an item of a call: the function first, which must exist.
 pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
-    if (i == 0 and v == V.nil) return rt.undefinedFunction(c[0].ast);
+    if (i == 0 and v == V.nil) return value.undefinedFunction(c[0].ast);
     gc.push(V, &vs, v);
 }
 
@@ -120,7 +121,7 @@ pub fn recover(base: usize) ?Go {
         ks.items.len = j + 1;
         vs.items.len = k.base + 3; // try, thunk, handler
         k.i = 1;
-        return .{ .ret = rt.errv };
+        return .{ .ret = value.errv };
     }
     return null;
 }

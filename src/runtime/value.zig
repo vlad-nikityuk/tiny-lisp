@@ -1,19 +1,13 @@
-// What the two tiers and the natives share: values, compiled code, the machine's state (frames and the value stack) and the
-// protocol of natives that call back into Lisp. Scopes are in scope.zig, the primitives in primitives.zig.
+// Values: V, the objects it can point to, how to build and test them, the printer, and the value of the error being raised.
+// The types of the other parts appear here only as what a value points to (a closure's code and scope, a native's frame).
 const std = @import("std");
 const gc = @import("gc.zig");
-const prims = @import("primitives.zig");
-pub const Op = prims.Op;
-pub const Bytecode = @import("../vm/bytecode.zig").Bytecode;
-const scope = @import("scope.zig");
 const machine = @import("machine.zig");
+const Env = @import("scope.zig").Env;
+const Proto = @import("node.zig").Proto;
 const Frame = machine.Frame;
 const Go = machine.Go;
-const Proto = @import("node.zig").Proto;
-pub const Env = scope.Env;
 
-// values
-// ----------------------------------------------------------------
 pub const E = error{Lisp}; // the error value itself is in `errv`
 /// The value of the Lisp error being raised.
 pub var errv: V = .nil;
@@ -230,24 +224,4 @@ pub fn num(v: V) f64 {
         .nil => 0,
         else => std.math.nan(f64),
     };
-}
-
-/// Values that permanent compiled nodes point to (the AST and its expansions) stay alive for good.
-pub var pins: std.ArrayList(V) = .empty;
-
-pub fn pin(v: V) V {
-    gc.push(V, &pins, v);
-    return v;
-}
-
-/// The root scope, with the constants, the primitives and the natives of this file.
-pub fn topLevel() *Env {
-    const e = scope.init();
-    scope.set(e, "nil", .nil);
-    scope.set(e, "#t", V.boolean(true));
-    scope.set(e, "#f", V.boolean(false));
-    scope.set(e, "ESC", str("\x1b", .{}));
-    prims.install(e);
-    machine.install(e);
-    return e;
 }

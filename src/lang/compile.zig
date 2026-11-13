@@ -2,14 +2,14 @@
 // This file and eval.zig need each other: expanding macros runs Lisp functions (`expand` calls eval.exec), and the evaluator
 // compiles a node the first time it meets it (`force`).
 const std = @import("std");
+const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
-const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
-const prims = @import("../runtime/primitives.zig");
-const eval = @import("eval.zig");
-const machine = @import("../runtime/machine.zig");
 const node = @import("../runtime/node.zig");
-const V = rt.V;
+const machine = @import("../runtime/machine.zig");
+const primitives = @import("../runtime/primitives.zig");
+const eval = @import("eval.zig");
+const V = value.V;
 const Node = node.Node;
 
 // The AST becomes nodes (node.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
@@ -24,11 +24,11 @@ var interned: std.StringHashMapUnmanaged(*node.Sym) = .empty;
 
 /// The symbol of a name: equal names are the same symbol, so scopes compare keys by address.
 fn intern(v: V) *node.Sym {
-    const name = std.mem.span(if (v.is(.s)) v.asStr() else rt.str("{f}", .{v}).asStr());
-    const entry = interned.getOrPut(rt.gpa, name) catch gc.oom();
+    const name = std.mem.span(if (v.is(.s)) v.asStr() else value.str("{f}", .{v}).asStr());
+    const entry = interned.getOrPut(value.gpa, name) catch gc.oom();
     if (!entry.found_existing) { // the table's key is the symbol's own name
         entry.value_ptr.* = &make(node.Sym, 1)[0];
-        entry.value_ptr.*.* = .{ .key = rt.mkstr(name, true) };
+        entry.value_ptr.*.* = .{ .key = value.mkstr(name, true) };
         entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
     }
     return entry.value_ptr.*;
@@ -37,14 +37,14 @@ fn intern(v: V) *node.Sym {
 /// A node that is not compiled yet.
 pub fn stub(v: V) *Node {
     const n = &make(Node, 1)[0];
-    n.* = .{ .ast = rt.pin(v) };
+    n.* = .{ .ast = gc.pin(v) };
     return n;
 }
 
 /// n nodes for the items of a, nil for missing ones.
 fn kids(a: []const V, n: usize) []const *Node {
     const c = make(*Node, n);
-    for (c, 0..) |*x, i| x.* = stub(rt.arg(a, i));
+    for (c, 0..) |*x, i| x.* = stub(value.arg(a, i));
     return c;
 }
 
@@ -54,7 +54,7 @@ pub fn current() u32 {
 }
 
 /// Every macro/* over x in turn; one that returns a false value leaves x as it was.
-fn expand(x: V) rt.E!V {
+fn expand(x: V) value.E!V {
     in_macro = true;
     defer in_macro = false;
     var y = x;
@@ -64,7 +64,7 @@ fn expand(x: V) rt.E!V {
         gc.push(V, &machine.vs, macro.*);
         gc.push(V, &machine.vs, y);
         const z = try eval.exec(.{ .apply = b }, scope.root);
-        if (rt.truthy(z)) y = z;
+        if (value.truthy(z)) y = z;
     }
     return y;
 }
@@ -72,16 +72,16 @@ fn expand(x: V) rt.E!V {
 const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
 
 /// The code of a list: a special form by its head, or a call.
-fn form(a: []const V) rt.E!node.Code {
-    if (a.len == 0) return rt.fail(rt.str("TinyLisp: cannot evaluate an empty list", .{}));
+fn form(a: []const V) value.E!node.Code {
+    if (a.len == 0) return value.fail(value.str("TinyLisp: cannot evaluate an empty list", .{}));
     const head = if (a[0].is(.s)) std.meta.stringToEnum(Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
     switch (head) {
-        .quote => return .{ .val = rt.arg(a, 1) },
+        .quote => return .{ .val = value.arg(a, 1) },
         .lambda => {
-            const ps = rt.items(rt.arg(a, 1));
+            const ps = value.items(value.arg(a, 1));
             const params = make(node.Key, ps.len);
             const proto = &make(node.Proto, 1)[0];
-            proto.* = .{ .params = params[0..0], .body = stub(rt.arg(a, 2)) };
+            proto.* = .{ .params = params[0..0], .body = stub(value.arg(a, 2)) };
             var n: usize = 0;
             for (ps) |p| {
                 if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { // (a b & rest): rest takes the extra arguments
@@ -103,7 +103,7 @@ fn form(a: []const V) rt.E!node.Code {
         .@"||" => return .{ .@"||" = kids(a[1..], @max(a.len - 1, 1)) },
         .define, .@"set!" => {
             const d = &make(node.Def, 1)[0];
-            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(rt.arg(a, 2)), .define = head == .define };
+            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(value.arg(a, 2)), .define = head == .define };
             return .{ .def = d };
         },
         .apply => return call(a, kids(a, a.len)),
@@ -117,25 +117,25 @@ fn call(a: []const V, c: []const *Node) node.Code {
     if (!a[0].is(.s)) return .{ .call = c };
     const sym = intern(a[0]);
     const g = scope.globalOf(sym) orelse return .{ .call = c };
-    const last = rt.items(a[a.len - 1]);
+    const last = value.items(a[a.len - 1]);
     if (a.len >= 3 and last.len > 0 and last[0].is(.s) and std.mem.eql(u8, std.mem.span(last[0].asStr()), "lambda")) {
         if (g.* == node.each_v or g.* == node.map_v) {
             c[c.len - 1].guard = &make(node.Guard, 1)[0];
-            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = g, .f = rt.pin(g.*) };
+            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = g, .f = gc.pin(g.*) };
         }
     }
-    if (a.len == 2 or a.len == 3) if (prims.primOp(g.*)) |op| if ((a.len == 2) == prims.unary(op)) {
+    if (a.len == 2 or a.len == 3) if (primitives.primOp(g.*)) |op| if ((a.len == 2) == primitives.unary(op)) {
         const p = &make(node.Prim, 1)[0];
         sym.inlined = true;
-        p.* = .{ .op = op, .sym = sym, .g = g, .f = rt.pin(g.*), .c = c };
+        p.* = .{ .op = op, .sym = sym, .g = g, .f = gc.pin(g.*), .c = c };
         return .{ .prim = p };
     };
     return .{ .call = c };
 }
 
 /// Expand macros over n's AST, then build its code unless they changed nothing.
-pub fn force(n: *Node) rt.E!void {
-    const x = if (in_macro or rt.ptr(n.ast) == null) n.ast else try expand(n.ast);
+pub fn force(n: *Node) value.E!void {
+    const x = if (in_macro or value.ptr(n.ast) == null) n.ast else try expand(n.ast);
     if (n.code == .raw or x != n.src) {
         n.code = switch (x.tag()) {
             .s => .{ .ref = .{ .sym = intern(x) } },
@@ -144,7 +144,7 @@ pub fn force(n: *Node) rt.E!void {
             else => .{ .val = x },
         };
         if (n.code == .lambda) n.code.lambda.guard = n.guard;
-        n.src = rt.pin(x);
+        n.src = gc.pin(x);
     }
     n.stamp = current();
 }

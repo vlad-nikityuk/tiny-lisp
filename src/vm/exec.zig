@@ -1,25 +1,24 @@
-// Tier 2, the executor: runs the bytecode that compiler.zig produces, inside the machine of compile.zig. `exec` runs
+// Tier 2, the executor: runs the bytecode that compiler.zig produces, inside the machine that lang/eval.zig runs. `exec` runs
 // instructions until it needs the machine and returns the next machine.Go (a call, or a return); a call that is not a tail call
 // leaves a `vm` frame on machine.ks that resumes the code at the instruction after it.
-const std = @import("std");
+const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
-const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
+const node = @import("../runtime/node.zig");
+const machine = @import("../runtime/machine.zig");
+const primitives = @import("../runtime/primitives.zig");
+const compile = @import("../lang/compile.zig");
 const bytecode = @import("bytecode.zig");
 const Bytecode = bytecode.Bytecode;
 const Ins = bytecode.Ins;
-const prims = @import("../runtime/primitives.zig");
-const compile = @import("../lang/compile.zig");
-const machine = @import("../runtime/machine.zig");
-const node = @import("../runtime/node.zig");
-const V = rt.V;
-const E = rt.E;
+const V = value.V;
+const E = value.E;
 const Op = bytecode.Opcode;
 
 /// (op x y) with both operands on the stack: replace them by the value, or leave them and say false.
 inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
     const n = sp.*;
-    st[n - 2] = prims.fast(comptime bytecode.primOf(op), st[n - 2], st[n - 1]) orelse return false;
+    st[n - 2] = primitives.fast(comptime bytecode.primOf(op), st[n - 2], st[n - 1]) orelse return false;
     sp.* = n - 1;
     return true;
 }
@@ -27,7 +26,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
 /// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
-inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
+inline fn outerSlot(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     if (ins.b != 0 and ins.c == scope.shape) {
         var s = e;
         var hops = ins.b >> 16;
@@ -38,7 +37,7 @@ inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     return outerLook(e, ins, sym, g);
 }
 
-noinline fn outerLook(e: *rt.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
+noinline fn outerLook(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     var s = e;
     var hops: u32 = 0;
     var fixed = true; // every scope passed so far is a tier-2 scope
@@ -80,8 +79,8 @@ fn slow(m: *machine.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!
     const n = vs.items.len;
     var g: ?*V = null;
     const f = if (scope.find(m.e, p.sym, &g)) |s| s.* else V.nil;
-    if (f == V.nil) return rt.undefinedFunction(p.c[0].ast);
-    vs.insert(rt.gpa, n - arity, f) catch gc.oom();
+    if (f == V.nil) return value.undefinedFunction(p.c[0].ast);
+    vs.insert(value.gpa, n - arity, f) catch gc.oom();
     return call(m, n - arity, code, pcOf(code, ip) + 1);
 }
 
@@ -93,7 +92,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
     var e = m.e;
     var code = code0;
     var ip = code.ins.ptr + pc0;
-    if (vs.capacity - vs.items.len < code.room) vs.ensureTotalCapacity(rt.gpa, vs.items.len + code.room) catch gc.oom();
+    if (vs.capacity - vs.items.len < code.room) vs.ensureTotalCapacity(value.gpa, vs.items.len + code.room) catch gc.oom();
     var st = vs.items.ptr;
     var sp = vs.items.len;
     var depth: usize = 0; // loop bodies being run by this call of exec (each has a loop frame under the frames of its calls)
@@ -145,18 +144,18 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .jmpf => {
             sp -= 1;
-            ip = if (rt.truthy(st[sp])) ip + 1 else code.ins.ptr + ip[0].b;
+            ip = if (value.truthy(st[sp])) ip + 1 else code.ins.ptr + ip[0].b;
             continue :sw ip[0].op;
         },
         .andj, .orj => { // decided (false for &&, true for ||): keep the value and jump; else drop it and go on
-            if (rt.truthy(st[sp - 1]) == (ip[0].op == .orj)) ip = code.ins.ptr + ip[0].b else {
+            if (value.truthy(st[sp - 1]) == (ip[0].op == .orj)) ip = code.ins.ptr + ip[0].b else {
                 sp -= 1;
                 ip += 1;
             }
             continue :sw ip[0].op;
         },
         .not => {
-            st[sp - 1] = V.boolean(!rt.truthy(st[sp - 1]));
+            st[sp - 1] = V.boolean(!value.truthy(st[sp - 1]));
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -182,7 +181,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         inline .add_lk, .sub_lk, .mul_lk, .lt_lk, .gt_lk, .le_lk, .ge_lk, .eq_lk, .at_lk, .add_ll, .sub_ll, .mul_ll, .lt_ll, .gt_ll, .le_ll, .ge_ll, .eq_ll, .at_ll => |op| {
             const x = e.vars[ip[0].b >> 16].v;
             const y = if (comptime bytecode.secondIsConst(op)) code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
-            if (prims.fast(comptime bytecode.primOf(op), x, y)) |v| {
+            if (primitives.fast(comptime bytecode.primOf(op), x, y)) |v| {
                 st[sp] = v;
                 sp += 1;
                 ip += 1;
@@ -195,7 +194,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         inline .add_sk, .sub_sk, .mul_sk, .lt_sk, .gt_sk, .le_sk, .ge_sk, .eq_sk, .at_sk, .add_sl, .sub_sl, .mul_sl, .lt_sl, .gt_sl, .le_sl, .ge_sl, .eq_sl, .at_sl => |op| { // the first operand is on the stack, the second a constant or a local
             const y = if (comptime bytecode.secondIsConst(op)) code.consts[ip[0].b] else e.vars[ip[0].b].v;
-            if (prims.fast(comptime bytecode.primOf(op), st[sp - 1], y)) |v| {
+            if (primitives.fast(comptime bytecode.primOf(op), st[sp - 1], y)) |v| {
                 st[sp - 1] = v;
                 ip += 1;
                 continue :sw ip[0].op;
@@ -221,7 +220,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .prim1 => {
             const p = code.prims[ip[0].a];
-            const r = prims.fast1(p.op, st[sp - 1]);
+            const r = primitives.fast1(p.op, st[sp - 1]);
             const v = r orelse {
                 vs.items.len = sp;
                 return slow(m, code, ip, 1);
@@ -240,7 +239,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 ip += 1;
                 continue :sw ip[0].op;
             };
-            if (st[b] == V.nil) return rt.undefinedFunction(code.consts[ip[0].b]);
+            if (st[b] == V.nil) return value.undefinedFunction(code.consts[ip[0].b]);
             return call(m, b, code, pcOf(code, ip) + 1);
         },
         .tailcall => {
@@ -268,7 +267,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 vs.items.len = b;
                 return .{ .ret = v };
             };
-            if (st[b] == V.nil) return rt.undefinedFunction(code.consts[ip[0].b]);
+            if (st[b] == V.nil) return value.undefinedFunction(code.consts[ip[0].b]);
             return .{ .apply = b };
         },
         .ret => {
@@ -297,7 +296,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .map => { // as each, with the list of results (the body's values) between the index and that place
             st[sp] = V.num(-1);
-            st[sp + 1] = rt.list(&.{}, if (ip[0].b != 0) node.rangeLen(st[sp - 1]) else rt.items(st[sp - 1]).len);
+            st[sp + 1] = value.list(&.{}, if (ip[0].b != 0) node.rangeLen(st[sp - 1]) else value.items(st[sp - 1]).len);
             st[sp + 2] = V.nil;
             sp += 3;
             ip += 1;
@@ -330,7 +329,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             const ib = if (is_map) top - 2 else top - 1; // the index
             const idx = st[ib].asNum() + 1;
             const counted = ip[0].b != 0;
-            const items = rt.items(st[ib - 1]);
+            const items = value.items(st[ib - 1]);
             const len = if (counted) node.rangeLen(st[ib - 1]) else items.len;
             if (is_map and idx > 0) st[ib + 1].asList().items()[@intFromFloat(idx - 1)] = st[top];
             if (idx >= @as(f64, @floatFromInt(len))) { // done: the value of the loop is nil (each) or the results (map)
@@ -359,7 +358,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 e.vars[0].v = item;
                 for (e.vars[1..]) |*v| v.v = V.nil;
             } else {
-                var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
+                var lam: value.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
                 e = scope.bindWith(&lam, &.{item}, body);
             }
             k.iter_env = e;
@@ -370,7 +369,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             sp = top;
             if (vs.capacity < top + code.room) {
                 vs.items.len = sp;
-                vs.ensureTotalCapacity(rt.gpa, top + code.room) catch gc.oom();
+                vs.ensureTotalCapacity(value.gpa, top + code.room) catch gc.oom();
                 st = vs.items.ptr;
             }
             continue :sw ip[0].op;
@@ -385,7 +384,7 @@ fn call(m: *machine.Machine, b: usize, code: *Bytecode, pc: usize) machine.Go {
 }
 
 /// Push a frame that comes back to the bytecode: at instruction pc, with the stack cut to base and then the value.
-fn resumeFrame(kind: machine.Kind, e: *rt.Env, code: *Bytecode, pc: usize, base: usize) void {
+fn resumeFrame(kind: machine.Kind, e: *scope.Env, code: *Bytecode, pc: usize, base: usize) void {
     const k = machine.frame(kind, &.{}, e);
     k.i = pc;
     k.base = base;

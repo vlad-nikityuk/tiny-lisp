@@ -1,20 +1,19 @@
 // The tree tier's evaluator: an explicit-stack machine that runs the nodes compile.zig builds. It is the reference
 // semantics; a function whose body vm/compiler.zig can compile is handed to vm/exec.zig instead (the `.vm` step).
-const std = @import("std");
+const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
-const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
-const prims = @import("../runtime/primitives.zig");
+const node = @import("../runtime/node.zig");
+const machine = @import("../runtime/machine.zig");
+const primitives = @import("../runtime/primitives.zig");
 const compile = @import("compile.zig");
 const compiler = @import("../vm/compiler.zig");
 const vm = @import("../vm/exec.zig");
-const machine = @import("../runtime/machine.zig");
-const node = @import("../runtime/node.zig");
-const V = rt.V;
+const V = value.V;
 const Node = node.Node;
 
 /// The value if n is a constant or a variable, else null; compiles n on demand.
-inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
+inline fn leaf(n: *Node, e: *scope.Env) value.E!?V {
     if (n.stamp != compile.current()) try compile.force(n);
     return switch (n.code) {
         .val => |v| v,
@@ -24,14 +23,14 @@ inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
 }
 
 /// A leaf, or a primitive call on leaves that computes in place (node.Prim).
-inline fn atom(n: *Node, e: *rt.Env) rt.E!?V {
+inline fn atom(n: *Node, e: *scope.Env) value.E!?V {
     if (try leaf(n, e)) |v| return v;
     return if (n.code == .prim and !n.code.prim.slow) try inplace(n.code.prim, e, 3) else null;
 }
 
 /// The value of a primitive call whose operands are leaves or, a few levels deep (so native recursion stays bounded),
 /// primitive calls themselves; null if it has to be an ordinary call. Kept out of line: inlined into `run` it slows everything.
-fn inplace(p: *node.Prim, e: *rt.Env, depth: u8) rt.E!?V {
+fn inplace(p: *node.Prim, e: *scope.Env, depth: u8) value.E!?V {
     if (p.sym.local or p.g.* != p.f) return null; // the name was rebound
     var x = [2]V{ .nil, .nil };
     inline for (0..2) |i| if (i + 1 < p.c.len) {
@@ -44,18 +43,18 @@ fn inplace(p: *node.Prim, e: *rt.Env, depth: u8) rt.E!?V {
                 return null;
             };
     };
-    return if (p.c.len == 2) prims.fast1(p.op, x[0]) else prims.fast(p.op, x[0], x[1]);
+    return if (p.c.len == 2) primitives.fast1(p.op, x[0]) else primitives.fast(p.op, x[0], x[1]);
 }
 
 // No native recursion per call, nesting level or callback: pending work is a frame on machine.ks, a call's values are collected
 // on machine.vs, and each step is a machine.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 
-pub fn eval(ast: V, env: *rt.Env) rt.E!V {
+pub fn eval(ast: V, env: *scope.Env) value.E!V {
     return exec(.{ .eval = compile.stub(ast) }, env);
 }
 
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
-pub fn exec(go: machine.Go, env: *rt.Env) rt.E!V {
+pub fn exec(go: machine.Go, env: *scope.Env) value.E!V {
     var m: machine.Machine = .{ .e = env, .base = machine.ks.items.len }; // ks[base..] are this run's frames
     const vbase = machine.vs.items.len;
     gc.push(*machine.Machine, &machine.machines, &m); // its scope is a collector root
@@ -68,7 +67,7 @@ pub fn exec(go: machine.Go, env: *rt.Env) rt.E!V {
     };
 }
 
-fn run(m: *machine.Machine, go: machine.Go) rt.E!V {
+fn run(m: *machine.Machine, go: machine.Go) value.E!V {
     const ks = &machine.ks;
     const vs = &machine.vs;
     sw: switch (go) {
@@ -78,7 +77,7 @@ fn run(m: *machine.Machine, go: machine.Go) rt.E!V {
             switch (n.code) {
                 .lambda => |p| continue :sw .{ .ret = scope.lambda(p, m.e) },
                 .@"if" => |c| {
-                    if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
+                    if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (value.truthy(v)) 1 else 2] };
                     _ = machine.frame(.@"if", c, m.e);
                     continue :sw .{ .eval = c[0] };
                 },
@@ -116,14 +115,14 @@ fn run(m: *machine.Machine, go: machine.Go) rt.E!V {
             switch (k.kind) {
                 .@"if" => {
                     ks.items.len -= 1;
-                    continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
+                    continue :sw .{ .eval = c[if (value.truthy(v)) 1 else 2] };
                 },
                 .begin => {
                     k.i += 1;
                     if (k.i == c.len - 1) ks.items.len -= 1; // the last one is a tail position
                     continue :sw .{ .eval = c[k.i] };
                 },
-                .@"&&", .@"||" => if (rt.truthy(v) == (k.kind == .@"&&")) {
+                .@"&&", .@"||" => if (value.truthy(v) == (k.kind == .@"&&")) {
                     k.i += 1;
                     if (k.i == c.len - 1) ks.items.len -= 1;
                     continue :sw .{ .eval = c[k.i] };
@@ -192,7 +191,7 @@ fn run(m: *machine.Machine, go: machine.Go) rt.E!V {
                         .step => continue :sw try machine.start(b, m.e), // a native frame: the arguments stay on vs
                     }
                 },
-                else => return rt.fail(rt.str("TinyLisp: {f} is not a function", .{f})),
+                else => return value.fail(value.str("TinyLisp: {f} is not a function", .{f})),
             }
         },
     }

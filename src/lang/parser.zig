@@ -1,8 +1,8 @@
 // The parser: text -> AST (numbers, symbols, string literals and lists of them).
 const std = @import("std");
+const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
-const rt = @import("../runtime/runtime.zig");
-const V = rt.V;
+const V = value.V;
 
 // Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.
 var src: []const u8 = "";
@@ -28,11 +28,11 @@ fn lex() V {
     const t = src[start..pos];
     if (lit and peek() == '"') pos += 1;
     if (!lit and std.mem.indexOfAny(u8, t, "0123456789") != null) if (std.fmt.parseFloat(f64, t)) |d| return V.num(d) else |_| {};
-    const text = rt.mkstr(t, true);
+    const text = value.mkstr(t, true);
     return if (lit) V.literal(text) else V.string(text);
 }
 
-pub fn parse(text: []const u8) rt.E!V {
+pub fn parse(text: []const u8) value.E!V {
     src = text;
     pos = 0;
     var done: std.ArrayList(V) = .empty;
@@ -42,7 +42,7 @@ pub fn parse(text: []const u8) rt.E!V {
     while (open.items.len > 0 or done.items.len == 0) {
         skip();
         var d: V = switch (peek()) {
-            0 => return rt.fail(rt.str("TinyLisp: Syntax error, unbalanced expression", .{})),
+            0 => return value.fail(value.str("TinyLisp: Syntax error, unbalanced expression", .{})),
             '(' => {
                 pos += 1;
                 gc.push(i64, &open, @intCast(done.items.len));
@@ -57,17 +57,17 @@ pub fn parse(text: []const u8) rt.E!V {
             },
             ')' => blk: {
                 pos += 1;
-                if (open.items.len == 0 or open.getLast() < 0) return rt.fail(rt.str(unexpected, .{}));
+                if (open.items.len == 0 or open.getLast() < 0) return value.fail(value.str(unexpected, .{}));
                 const items = done.items[@intCast(open.pop().?)..];
                 done.items.len -= items.len;
-                break :blk rt.list(items, items.len);
+                break :blk value.list(items, items.len);
             },
             else => lex(),
         };
-        while (open.items.len > 0 and open.getLast() < 0) : (_ = open.pop()) d = rt.list(&.{ V.string(rt.mkstr(prefixes[@intCast(-1 - open.getLast())], true)), d }, 2); // 'x is (quote x)
+        while (open.items.len > 0 and open.getLast() < 0) : (_ = open.pop()) d = value.list(&.{ V.string(value.mkstr(prefixes[@intCast(-1 - open.getLast())], true)), d }, 2); // 'x is (quote x)
         gc.push(V, &done, d);
     }
     skip();
-    if (peek() != 0) return rt.fail(rt.str(unexpected, .{}));
+    if (peek() != 0) return value.fail(value.str(unexpected, .{}));
     return done.items[0];
 }

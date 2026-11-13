@@ -1,7 +1,8 @@
 // Tier 2, the format: a function body as a stack bytecode over fixed scope slots. compiler.zig produces it, exec.zig runs it.
-const rt = @import("../runtime/runtime.zig");
-const V = rt.V;
+const value = @import("../runtime/value.zig");
 const node = @import("../runtime/node.zig");
+const primitives = @import("../runtime/primitives.zig");
+const V = value.V;
 
 // zig fmt: off
 /// The instructions. a, b: the operands in the instruction (Ins); "push", "pop" and "top" are about the stack of values.
@@ -9,7 +10,7 @@ pub const Opcode = enum(u8) {
     // values
     konst,      // push consts[a]
     local,      // push slot a of the scope
-    outer,      // push the variable refs[a], which is in an enclosing scope or global (b: where it was found, see vm.outerSlot)
+    outer,      // push the variable refs[a], which is in an enclosing scope or global (b: where it was found, see outerSlot in exec.zig)
     global,     // push the global refs[a] (a free name of an inlined function)
     lambda,     // push a closure of protos[a] over the scope
     // assignments (define and set! have a value, so it stays on the stack)
@@ -25,7 +26,7 @@ pub const Opcode = enum(u8) {
     call,       // call the function that is under its a arguments; the value replaces them (consts[b]: its source, for an error)
     tailcall,   // the same in tail position: the call replaces this function's
     ret,        // return top
-    // primitives, compiled while their names were bound to the natives. prims[a] is the call, made the ordinary way (vm.slow)
+    // primitives, compiled while their names were bound to the natives. prims[a] is the call, made the ordinary way (slow in exec.zig)
     // when the operands are not plain numbers (or a list and an index).
     not,        // top = (not top)
     prim1,      // top = (prims[a].op top): abs floor sqrt exp log cos
@@ -48,7 +49,7 @@ pub const binary = [_]Opcode{ .add, .sub, .mul, .div, .mod, .lt, .gt, .le, .ge, 
 pub const fusable = [_]Opcode{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at };
 
 /// The primitive that a two-operand instruction, plain or fused, computes.
-pub fn primOf(comptime op: Opcode) rt.Op {
+pub fn primOf(comptime op: Opcode) primitives.Op {
     return switch (op) {
         .add, .add_lk, .add_ll, .add_sk, .add_sl => .@"+",
         .sub, .sub_lk, .sub_ll, .sub_sk, .sub_sl => .@"-",

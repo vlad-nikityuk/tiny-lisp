@@ -3,17 +3,17 @@
 // or a list and an index) that needs no allocation and cannot fail: the evaluator and the bytecode use them to compute a
 // primitive call in place.
 const std = @import("std");
-const rt = @import("runtime.zig");
+const value = @import("value.zig");
 const scope = @import("scope.zig");
-const V = rt.V;
-const E = rt.E;
-const arg = rt.arg;
-const items = rt.items;
-const num = rt.num;
-const truthy = rt.truthy;
-const str = rt.str;
-const fail = rt.fail;
-const list = rt.list;
+const V = value.V;
+const E = value.E;
+const arg = value.arg;
+const items = value.items;
+const num = value.num;
+const truthy = value.truthy;
+const str = value.str;
+const fail = value.fail;
+const list = value.list;
 
 pub const Op = enum { @"+", @"-", @"*", @"/", mod, @">", @"<", @">=", @"<=", @"&&", @"||", @"eq?", car, cdr, len, cons, list, @"error", at, @"vset!", not, min, max, exp, log, sqrt, cos, floor, abs };
 
@@ -47,7 +47,7 @@ inline fn math(op: Op, n: f64) f64 {
 }
 
 /// One step of a folding primitive: two numbers are computed as they are; of other values + joins strings, && and ||
-/// choose one, and the rest take them as numbers (rt.num).
+/// choose one, and the rest take them as numbers (value.num).
 fn binop(comptime op: Op, x: V, y: V) V {
     if (op == .@"&&") return if (truthy(x)) y else x;
     if (op == .@"||") return if (truthy(x)) x else y;
@@ -57,9 +57,9 @@ fn binop(comptime op: Op, x: V, y: V) V {
 }
 
 /// One native per op, so each is specialised at compile time.
-fn primFor(comptime op: Op) *const fn (*rt.Fn, []const V) E!V {
+fn primFor(comptime op: Op) *const fn (*value.Fn, []const V) E!V {
     return struct {
-        fn f(_: *rt.Fn, a: []const V) E!V {
+        fn f(_: *value.Fn, a: []const V) E!V {
             return prim(op, a);
         }
     }.f;
@@ -108,7 +108,7 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
             l[@intFromFloat(i)] = arg(a, 2);
             return arg(a, 2);
         },
-        .@"eq?" => return V.boolean(for (a) |y| (if (!rt.eq(y, x)) break false) else true),
+        .@"eq?" => return V.boolean(for (a) |y| (if (!value.eq(y, x)) break false) else true),
         .cons => {
             const r = list(&.{x}, l.len + 1);
             for (l, r.asList().items()[1..]) |y, *z| z.* = y;
@@ -118,9 +118,12 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
     }
 }
 
-/// Define every primitive in the root scope, under its own name.
-pub fn install(e: *rt.Env) void {
-    inline for (comptime std.enums.values(Op)) |op| scope.set(e, @tagName(op), V.fnOf(rt.nf(.{ .plain = primFor(op) }, .nil, .nil)));
+/// Define the constants and every primitive (under its own name) in the root scope.
+pub fn install(e: *scope.Env) void {
+    scope.set(e, "nil", .nil);
+    scope.set(e, "#t", V.boolean(true));
+    scope.set(e, "#f", V.boolean(false));
+    inline for (comptime std.enums.values(Op)) |op| scope.set(e, @tagName(op), V.fnOf(value.nf(.{ .plain = primFor(op) }, .nil, .nil)));
 }
 
 /// Is v the native vset!? (tier 2 has an instruction for it)
@@ -156,7 +159,7 @@ pub fn fast1(op: Op, x: V) ?V {
 /// time (a bytecode instruction) only that operation is left.
 pub inline fn fast(op: Op, x: V, y: V) ?V {
     switch (op) {
-        .@"eq?" => return V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else rt.eq(x, y)),
+        .@"eq?" => return V.boolean(if (x.isNum() and y.isNum()) x.asNum() == y.asNum() else value.eq(x, y)),
         .at => {
             if (!x.is(.l) or !y.isNum()) return null;
             const l = x.asList().items();

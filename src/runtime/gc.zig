@@ -6,10 +6,10 @@
 // worklist, never recursion; sweeping frees what stayed unmarked. Cycles (a closure stored in the scope it captures) are
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
 const std = @import("std");
-const rt = @import("runtime.zig");
+const value = @import("value.zig");
 const scope = @import("scope.zig");
 const machine = @import("machine.zig");
-const V = rt.V;
+const V = value.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
 /// Header in front of every object, one word: the next object's address (16-aligned, so its low bits are free) with the
@@ -97,6 +97,14 @@ pub fn perm(n: usize) *anyopaque {
     return body(h);
 }
 
+/// Values that permanent compiled nodes point to (the AST and its expansions) stay alive for good.
+pub var pins: std.ArrayList(V) = .empty;
+
+pub fn pin(v: V) V {
+    push(V, &pins, v);
+    return v;
+}
+
 // collection
 // ----------------------------------------------------------------
 pub fn due() bool {
@@ -111,24 +119,24 @@ fn markPtr(p: ?*anyopaque) void {
 }
 
 fn markV(v: V) void {
-    markPtr(rt.ptr(v));
+    markPtr(value.ptr(v));
 }
 
 fn drain() void {
     while (gray.pop()) |h| {
         const p = body(h);
         switch (kindOf(h)) {
-            .list => for (@as(*rt.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
+            .list => for (@as(*value.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
             .func => {
-                const f: *rt.Fn = @ptrCast(@alignCast(p));
+                const f: *value.Fn = @ptrCast(@alignCast(p));
                 markV(f.d0);
                 markV(f.d1);
             },
             .lam => {
-                markPtr(@as(*rt.Lam, @ptrCast(@alignCast(p))).env);
+                markPtr(@as(*value.Lam, @ptrCast(@alignCast(p))).env);
             },
             .env => {
-                const e: *rt.Env = @ptrCast(@alignCast(p));
+                const e: *scope.Env = @ptrCast(@alignCast(p));
                 markPtr(e.p);
                 for (e.vars) |x| {
                     markPtr(@constCast(x.k));
@@ -144,10 +152,10 @@ fn bytesOf(h: *H) usize {
     const p = body(h);
     const n: usize = switch (kindOf(h)) {
         .str => std.mem.len(@as([*:0]const u8, @ptrCast(p))) + 1,
-        .list => @sizeOf(rt.Lst) + @as(*rt.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
-        .func => @sizeOf(rt.Fn),
-        .lam => @sizeOf(rt.Lam),
-        .env => @sizeOf(rt.Env) + @as(*rt.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(scope.Var),
+        .list => @sizeOf(value.Lst) + @as(*value.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
+        .func => @sizeOf(value.Fn),
+        .lam => @sizeOf(value.Lam),
+        .env => @sizeOf(scope.Env) + @as(*scope.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(scope.Var),
         .perm => 0,
     };
     return n + @sizeOf(H);
@@ -163,8 +171,8 @@ fn markRoots() void {
     for (machine.vs.items) |v| markV(v);
     for (machine.machines.items) |m| markPtr(m.e);
     for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
-    for (rt.pins.items) |v| markV(v);
-    markV(rt.errv);
+    for (pins.items) |v| markV(v);
+    markV(value.errv);
 }
 
 pub fn collect() void {
@@ -184,7 +192,7 @@ pub fn collect() void {
         }
         if (prev) |q| setNext(q, next) else all = next;
         if (kindOf(h) == .env) {
-            const e: *rt.Env = @ptrCast(@alignCast(body(h)));
+            const e: *scope.Env = @ptrCast(@alignCast(body(h)));
             if (e.vars.ptr != after(scope.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
         }
         std.c.free(h);

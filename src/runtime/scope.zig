@@ -1,14 +1,15 @@
 // Scopes: the variables of each call, the global table, and the recycling of scopes whose call is over.
 const std = @import("std");
+const value = @import("value.zig");
 const gc = @import("gc.zig");
-const rt = @import("runtime.zig");
 const node = @import("node.zig");
-const V = rt.V;
-const E = rt.E;
+const bytecode = @import("../vm/bytecode.zig");
+const V = value.V;
+const E = value.E;
 const Key = node.Key;
 const Sym = node.Sym;
 const Proto = node.Proto;
-const Lam = rt.Lam;
+const Lam = value.Lam;
 
 /// A scope: the variables of one call. The root scope has none: its names are in the global table.
 pub const Env = struct {
@@ -37,7 +38,7 @@ pub fn init() *Env {
 
 // Two counters say when compiled code is out of date.
 /// Bumped when a macro/* is defined, or when a value that tier-2 code was compiled with (a native, an inlined function) is
-/// replaced: all code compiles again (lang.current).
+/// replaced: all code compiles again (compile.current in lang/).
 pub var epoch: u32 = 0;
 /// Bumped when a name is added to a scope whose layout tier-2 code relies on (by load, say): remembered lookups are void.
 pub var shape: u32 = 1;
@@ -52,7 +53,7 @@ pub fn slotOf(e: *Env, k: Key) ?*V {
 fn slot(e: *Env, k: Key, create: bool) ?*V {
     if (e.p == null) {
         var i: usize = std.hash.Fnv1a_32.hash(std.mem.span(k)) & (gk.len - 1);
-        while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (rt.streq(key, k)) return &gv[i];
+        while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (value.streq(key, k)) return &gv[i];
         if (create) gk[i] = k;
         return if (create) &gv[i] else null;
     }
@@ -60,9 +61,9 @@ fn slot(e: *Env, k: Key, create: bool) ?*V {
     while (i > 0) : (i -= 1) if (e.vars[i - 1].k == k) return &e.vars[i - 1].v;
     if (!create) return null;
     if (e.vars.len == e.cap) {
-        const more = rt.gpa.alloc(Var, e.cap * 2) catch gc.oom();
+        const more = value.gpa.alloc(Var, e.cap * 2) catch gc.oom();
         @memcpy(more[0..e.cap], e.vars);
-        if (e.vars.ptr != gc.after(Var, e)) rt.gpa.free(e.vars);
+        if (e.vars.ptr != gc.after(Var, e)) value.gpa.free(e.vars);
         e.vars.ptr, e.cap = .{ more.ptr, more.len };
         if (e.proto) |p| p.cap = e.cap; // the next call of this function gets a scope that is big enough
     }
@@ -95,7 +96,7 @@ pub fn fetch(env: *Env, r: *node.Ref) V {
 
 /// define or set!.
 pub fn assign(d: *node.Def, e: *Env, v: V) E!void {
-    const sym = d.sym orelse return rt.fail(rt.str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
+    const sym = d.sym orelse return value.fail(value.str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
     if (d.define) {
         if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
         sym.local = sym.local or e.p != null;
@@ -112,7 +113,7 @@ pub inline fn replace(p: *V, v: V) void {
 /// Root keys are copied to permanent memory; scope keys are interned already.
 pub fn set(e: *Env, key: Key, v: V) void {
     const s = slot(e, key, false) orelse blk: {
-        const s = slot(e, if (e.p != null) key else rt.mkstr(std.mem.span(key), true), true).?;
+        const s = slot(e, if (e.p != null) key else value.mkstr(std.mem.span(key), true), true).?;
         if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
         break :blk s;
     };
@@ -165,7 +166,7 @@ pub fn bind(f: *Lam, a: []const V) *Env {
 }
 
 /// The scope of a call of f; for tier-2 code (`code`), the defines of the body have their slots from the start.
-pub fn bindWith(f: *Lam, a: []const V, code: ?*rt.Bytecode) *Env {
+pub fn bindWith(f: *Lam, a: []const V, code: ?*bytecode.Bytecode) *Env {
     const ps = f.proto.params;
     const n = if (code) |c| c.keys.len else ps.len;
     const cap = capFor(@max(f.proto.cap, n));
@@ -177,8 +178,8 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*rt.Bytecode) *Env {
     } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
     e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .recyclable = pool != null };
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
-    for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = rt.arg(a, i) };
-    if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = rt.list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
+    for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = value.arg(a, i) };
+    if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = value.list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
     if (code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
         x.* = .{ .k = k, .v = .nil };
     };

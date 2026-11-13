@@ -3,16 +3,16 @@
 // compiler does not know (a body nested too deep, a define that may not run, an error while expanding macros) leaves the
 // function to the tree evaluator, which stays the reference semantics.
 const std = @import("std");
+const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
-const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
-const prims = @import("../runtime/primitives.zig");
-const compile = @import("../lang/compile.zig");
-const V = rt.V;
-const Node = node.Node;
-const E = rt.E;
-const bytecode = @import("bytecode.zig");
 const node = @import("../runtime/node.zig");
+const primitives = @import("../runtime/primitives.zig");
+const compile = @import("../lang/compile.zig");
+const bytecode = @import("bytecode.zig");
+const V = value.V;
+const Node = node.Node;
+const E = value.E;
 const Op = bytecode.Opcode;
 const Ins = bytecode.Ins;
 const Bytecode = bytecode.Bytecode;
@@ -27,7 +27,7 @@ const max_inline_slots = 8; // and its parameters and defines
 const max_inline_sites = 8; // calls inlined into one function
 
 fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
-    list.append(rt.gpa, x) catch gc.oom();
+    list.append(value.gpa, x) catch gc.oom();
     return list.items.len - 1;
 }
 
@@ -51,12 +51,12 @@ const Compiler = struct {
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
     fn emit(c: *Compiler, op: Op, a: usize, b: usize) usize {
-        c.ins.append(rt.gpa, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
+        c.ins.append(value.gpa, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
         return c.ins.items.len - 1;
     }
 
     fn deinit(c: *Compiler) void {
-        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(rt.gpa);
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(value.gpa);
     }
 
     fn slotOf(c: *Compiler, sym: *node.Sym) ?usize {
@@ -302,7 +302,7 @@ const Compiler = struct {
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         for (k[1..]) |x| try c.gen(x, false);
         const base = c.keys.items.len;
-        for (sub.keys.items) |_| _ = add(node.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
+        for (sub.keys.items) |_| _ = add(node.Key, &c.keys, value.mkstr("(inlined)", true)); // slots no name finds
         var i = k.len - 1;
         while (i > 0) : (i -= 1) _ = c.emit(.storelocal, base + i - 1, 0);
         l.proto.inlined = true;
@@ -347,7 +347,7 @@ const Compiler = struct {
         if (k.len != 4 or k[0].code != .ref) return false;
         const sym = k[0].code.ref.sym;
         const g = scope.globalOf(sym) orelse return false;
-        if (!prims.isVset(g.*)) return false;
+        if (!primitives.isVset(g.*)) return false;
         sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
         const native = add(V, &c.consts, g.*);
         const list = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
@@ -393,7 +393,7 @@ fn build(p: *node.Proto) void {
         .stamp = compile.current(),
         .room = room(c.ins.items),
     };
-    for (code.consts) |v| _ = rt.pin(v);
+    for (code.consts) |v| _ = gc.pin(v);
     p.code = code;
 }
 
