@@ -1,6 +1,6 @@
 // Tier 2, the executor: runs the bytecode that compiler.zig produces, inside the machine of compile.zig. `exec` runs
-// instructions until it needs the machine and returns the next rt.Go (a call, or a return); a call that is not a tail call
-// leaves a `vm` frame on rt.ks that resumes the code at the instruction after it.
+// instructions until it needs the machine and returns the next machine.Go (a call, or a return); a call that is not a tail call
+// leaves a `vm` frame on machine.ks that resumes the code at the instruction after it.
 const std = @import("std");
 const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
@@ -10,6 +10,7 @@ const Bytecode = bytecode.Bytecode;
 const Ins = bytecode.Ins;
 const prims = @import("../runtime/primitives.zig");
 const compile = @import("../lang/compile.zig");
+const machine = @import("../runtime/machine.zig");
 const V = rt.V;
 const E = rt.E;
 const Op = bytecode.Opcode;
@@ -72,9 +73,9 @@ inline fn storeAt(l: V, i: V, v: V) bool {
 }
 
 /// An operation on values it does not compute in place: call whatever its name is now (it was a primitive when compiled).
-fn slow(m: *rt.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!rt.Go {
+fn slow(m: *machine.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!machine.Go {
     const p = code.prims[ip[0].a];
-    const vs = &rt.vs;
+    const vs = &machine.vs;
     const n = vs.items.len;
     var g: ?*V = null;
     const f = if (scope.find(m.e, p.sym, &g)) |s| s.* else V.nil;
@@ -83,11 +84,11 @@ fn slow(m: *rt.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!rt.Go
     return call(m, n - arity, code, pcOf(code, ip) + 1);
 }
 
-/// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
-/// function reserved up front, so its top is kept in a local (sp) and rt.vs.items.len is brought up to date only when leaving.
-pub noinline fn exec(m: *rt.Machine, code0: *Bytecode, pc0: usize) E!rt.Go {
-    const vs = &rt.vs;
-    const ks = &rt.ks;
+/// Run code from pc until it calls or returns; the next step is the result. The stack of values is machine.vs, with room for the whole
+/// function reserved up front, so its top is kept in a local (sp) and machine.vs.items.len is brought up to date only when leaving.
+pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machine.Go {
+    const vs = &machine.vs;
+    const ks = &machine.ks;
     var e = m.e;
     var code = code0;
     var ip = code.ins.ptr + pc0;
@@ -377,14 +378,14 @@ pub noinline fn exec(m: *rt.Machine, code0: *Bytecode, pc0: usize) E!rt.Go {
 }
 
 /// A call that is not a tail call: leave a frame that resumes at pc with the value pushed.
-fn call(m: *rt.Machine, b: usize, code: *Bytecode, pc: usize) rt.Go {
+fn call(m: *machine.Machine, b: usize, code: *Bytecode, pc: usize) machine.Go {
     resumeFrame(.vm, m.e, code, pc, b);
     return .{ .apply = b };
 }
 
 /// Push a frame that comes back to the bytecode: at instruction pc, with the stack cut to base and then the value.
-fn resumeFrame(kind: rt.Kind, e: *rt.Env, code: *Bytecode, pc: usize, base: usize) void {
-    const k = rt.frame(kind, &.{}, e);
+fn resumeFrame(kind: machine.Kind, e: *rt.Env, code: *Bytecode, pc: usize, base: usize) void {
+    const k = machine.frame(kind, &.{}, e);
     k.i = pc;
     k.base = base;
     k.code = code;

@@ -5,10 +5,11 @@ const compile = @import("../lang/compile.zig");
 const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
+const machine = @import("../runtime/machine.zig");
 const V = rt.V;
 const Fn = rt.Fn;
-const Frame = rt.Frame;
-const Go = rt.Go;
+const Frame = machine.Frame;
+const Go = machine.Go;
 const E = rt.E;
 const arg = rt.arg;
 
@@ -31,7 +32,7 @@ fn isList(_: *Fn, a: []const V) E!V {
 fn mapper(comptime keep: bool) *const fn (*Fn, *Frame, ?V) E!Go {
     return struct {
         fn f(_: *Fn, k: *Frame, v: ?V) E!Go {
-            const vs = &rt.vs;
+            const vs = &machine.vs;
             if (v == null) {
                 const n = vs.items.len - k.base - 1;
                 var len: usize = if (n < 2) 0 else std.math.maxInt(usize);
@@ -47,23 +48,23 @@ fn mapper(comptime keep: bool) *const fn (*Fn, *Frame, ?V) E!Go {
                 if (keep) state.asList().items()[k.i] = r;
                 k.i += 1;
             }
-            if (k.i == (if (keep) state.asList().items().len else @as(usize, @intFromFloat(state.asNum())))) return rt.finish(k, if (keep) state else .nil);
+            if (k.i == (if (keep) state.asList().items().len else @as(usize, @intFromFloat(state.asNum())))) return machine.finish(k, if (keep) state else .nil);
             var xs: [8]V = undefined;
             std.debug.assert(n - 1 <= xs.len);
             for (vs.items[k.base + 1 ..][0 .. n - 1], xs[0 .. n - 1]) |l, *x| x.* = rt.items(l)[k.i];
-            return rt.callback(vs.items[k.base + n], xs[0 .. n - 1]);
+            return machine.callback(vs.items[k.base + n], xs[0 .. n - 1]);
         }
     }.f;
 }
 
 fn reduce(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| {
-        rt.vs.items[k.base + 3] = r;
+        machine.vs.items[k.base + 3] = r;
         k.i += 1;
-    } else _ = rt.frameArgs(k, 3);
-    const s = rt.vs.items[k.base + 1 ..];
+    } else _ = machine.frameArgs(k, 3);
+    const s = machine.vs.items[k.base + 1 ..];
     const l = rt.items(s[0]);
-    return if (k.i < l.len) rt.callback(s[1], &.{ s[2], l[k.i] }) else rt.finish(k, s[2]);
+    return if (k.i < l.len) machine.callback(s[1], &.{ s[2], l[k.i] }) else machine.finish(k, s[2]);
 }
 
 /// (concat l1 l2 ...) is one list with all their items: a single copy, however many lists.
@@ -97,12 +98,12 @@ fn zip(_: *Fn, a: []const V) E!V {
 
 /// (apply f args) calls f with the items of the list args as its arguments.
 fn apply(_: *Fn, k: *Frame, _: ?V) E!Go {
-    const a = rt.frameArgs(k, 2);
-    return rt.tail(k, a[0], rt.items(a[1]), false);
+    const a = machine.frameArgs(k, 2);
+    return machine.tail(k, a[0], rt.items(a[1]), false);
 }
 
 fn partialRun(s: *Fn, k: *Frame, _: ?V) E!Go {
-    return rt.tail(k, s.d0, rt.items(s.d1), true); // the fixed arguments go before the frame's
+    return machine.tail(k, s.d0, rt.items(s.d1), true); // the fixed arguments go before the frame's
 }
 
 fn partial(_: *Fn, a: []const V) E!V {
@@ -148,8 +149,8 @@ fn split(_: *Fn, a: []const V) E!V {
 
 /// (load "file.lisp") evaluates the file's expressions in the caller's scope; the frame hands on the last value.
 fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
-    if (v) |r| return rt.finish(k, r);
-    const path = text(rt.frameArgs(k, 1)[0]);
+    if (v) |r| return machine.finish(k, r);
+    const path = text(machine.frameArgs(k, 1)[0]);
     return .{ .eval = compile.stub(try source.readProgram(io, path)) };
 }
 

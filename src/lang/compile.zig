@@ -7,6 +7,7 @@ const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
 const prims = @import("../runtime/primitives.zig");
 const eval = @import("eval.zig");
+const machine = @import("../runtime/machine.zig");
 const V = rt.V;
 const Node = rt.Node;
 
@@ -57,10 +58,10 @@ fn expand(x: V) rt.E!V {
     defer in_macro = false;
     var y = x;
     for (scope.macros.items) |macro| {
-        const b = rt.vs.items.len;
-        defer rt.vs.items.len = b;
-        gc.push(V, &rt.vs, macro.*);
-        gc.push(V, &rt.vs, y);
+        const b = machine.vs.items.len;
+        defer machine.vs.items.len = b;
+        gc.push(V, &machine.vs, macro.*);
+        gc.push(V, &machine.vs, y);
         const z = try eval.exec(.{ .apply = b }, scope.root);
         if (rt.truthy(z)) y = z;
     }

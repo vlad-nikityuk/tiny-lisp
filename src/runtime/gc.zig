@@ -8,6 +8,7 @@
 const std = @import("std");
 const rt = @import("runtime.zig");
 const scope = @import("scope.zig");
+const machine = @import("machine.zig");
 const V = rt.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
@@ -155,12 +156,12 @@ fn bytesOf(h: *H) usize {
 /// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
 fn markRoots() void {
     scope.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
-    for (rt.ks.items) |k| {
+    for (machine.ks.items) |k| {
         markPtr(k.e);
         if (k.kind == .loop) markPtr(k.iter_env);
     }
-    for (rt.vs.items) |v| markV(v);
-    for (rt.machines.items) |m| markPtr(m.e);
+    for (machine.vs.items) |v| markV(v);
+    for (machine.machines.items) |m| markPtr(m.e);
     for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
     for (rt.pins.items) |v| markV(v);
     markV(rt.errv);

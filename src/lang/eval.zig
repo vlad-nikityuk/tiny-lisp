@@ -8,6 +8,7 @@ const prims = @import("../runtime/primitives.zig");
 const compile = @import("compile.zig");
 const compiler = @import("../vm/compiler.zig");
 const vm = @import("../vm/exec.zig");
+const machine = @import("../runtime/machine.zig");
 const V = rt.V;
 const Node = rt.Node;
 
@@ -45,30 +46,30 @@ fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V {
     return if (p.c.len == 2) prims.fast1(p.op, x[0]) else prims.fast(p.op, x[0], x[1]);
 }
 
-// No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected
-// on rt.vs, and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
+// No native recursion per call, nesting level or callback: pending work is a frame on machine.ks, a call's values are collected
+// on machine.vs, and each step is a machine.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 
 pub fn eval(ast: V, env: *rt.Env) rt.E!V {
     return exec(.{ .eval = compile.stub(ast) }, env);
 }
 
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
-pub fn exec(go: rt.Go, env: *rt.Env) rt.E!V {
-    var m: rt.Machine = .{ .e = env, .base = rt.ks.items.len }; // ks[base..] are this run's frames
-    const vbase = rt.vs.items.len;
-    gc.push(*rt.Machine, &rt.machines, &m); // its scope is a collector root
-    defer rt.machines.items.len -= 1;
-    errdefer rt.ks.items.len, rt.vs.items.len = .{ m.base, vbase };
+pub fn exec(go: machine.Go, env: *rt.Env) rt.E!V {
+    var m: machine.Machine = .{ .e = env, .base = machine.ks.items.len }; // ks[base..] are this run's frames
+    const vbase = machine.vs.items.len;
+    gc.push(*machine.Machine, &machine.machines, &m); // its scope is a collector root
+    defer machine.machines.items.len -= 1;
+    errdefer machine.ks.items.len, machine.vs.items.len = .{ m.base, vbase };
     var step = go;
     while (true) return run(&m, step) catch |err| {
-        step = rt.recover(m.base) orelse return err;
+        step = machine.recover(m.base) orelse return err;
         continue;
     };
 }
 
-fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
-    const ks = &rt.ks;
-    const vs = &rt.vs;
+fn run(m: *machine.Machine, go: machine.Go) rt.E!V {
+    const ks = &machine.ks;
+    const vs = &machine.vs;
     sw: switch (go) {
         .eval => |n| {
             if (!compile.in_macro and gc.due()) gc.collect(); // all live managed values are rooted
@@ -77,16 +78,16 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                 .lambda => |p| continue :sw .{ .ret = scope.lambda(p, m.e) },
                 .@"if" => |c| {
                     if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
-                    _ = rt.frame(.@"if", c, m.e);
+                    _ = machine.frame(.@"if", c, m.e);
                     continue :sw .{ .eval = c[0] };
                 },
                 .begin => |c| {
-                    if (c.len > 1) _ = rt.frame(.begin, c, m.e);
+                    if (c.len > 1) _ = machine.frame(.begin, c, m.e);
                     continue :sw .{ .eval = c[0] };
                 },
                 .prim => |p| continue :sw .{ .args = .{ .c = p.c, .i = 0, .b = vs.items.len } }, // not computable in place: the plain call
                 .@"&&", .@"||" => |c| {
-                    if (c.len > 1) _ = rt.frame(if (n.code == .@"&&") .@"&&" else .@"||", c, m.e);
+                    if (c.len > 1) _ = machine.frame(if (n.code == .@"&&") .@"&&" else .@"||", c, m.e);
                     continue :sw .{ .eval = c[0] };
                 },
                 .def => |d| {
@@ -94,7 +95,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                         try scope.assign(d, m.e, v);
                         continue :sw .{ .ret = v };
                     }
-                    rt.frame(.def, &.{}, m.e).d = d;
+                    machine.frame(.def, &.{}, m.e).d = d;
                     continue :sw .{ .eval = d.val };
                 },
                 .call => |c| continue :sw .{ .args = .{ .c = c, .i = 0, .b = vs.items.len } },
@@ -134,7 +135,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                     ks.items.len -= 1;
                     continue :sw .{ .ret = v };
                 },
-                .native => continue :sw try rt.step(k, v),
+                .native => continue :sw try machine.step(k, v),
                 .vm => {
                     const code = k.code;
                     const pc = k.i;
@@ -149,7 +150,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                 },
                 .call => {
                     ks.items.len -= 1;
-                    try rt.operand(c, k.i, v);
+                    try machine.operand(c, k.i, v);
                     continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } };
                 },
             }
@@ -158,12 +159,12 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             var i = a.i;
             while (i < a.c.len) : (i += 1) {
                 const v = try atom(a.c[i], m.e) orelse {
-                    const k = rt.frame(.call, a.c, m.e);
+                    const k = machine.frame(.call, a.c, m.e);
                     k.i = i;
                     k.base = a.b;
                     continue :sw .{ .eval = a.c[i] };
                 };
-                try rt.operand(a.c, i, v);
+                try machine.operand(a.c, i, v);
             }
             continue :sw .{ .apply = a.b };
         },
@@ -187,7 +188,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                             vs.items.len = b;
                             continue :sw .{ .ret = v };
                         },
-                        .step => continue :sw try rt.start(b, m.e), // a native frame: the arguments stay on vs
+                        .step => continue :sw try machine.start(b, m.e), // a native frame: the arguments stay on vs
                     }
                 },
                 else => return rt.fail(rt.str("TinyLisp: {f} is not a function", .{f})),
