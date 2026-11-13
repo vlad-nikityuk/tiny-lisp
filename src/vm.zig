@@ -629,6 +629,13 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
         .call => {
             vs.items.len = sp;
             const b = sp - ip[0].a - 1;
+            if (st[b].is(.f)) if (st[b].asFn().f == .plain) { // a native that just computes a value: no need to leave
+                const n = st[b].asFn();
+                st[b] = try n.f.plain(n, st[b + 1 .. sp]);
+                sp = b + 1;
+                ip += 1;
+                continue :sw ip[0].op;
+            };
             if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
             return call(m, b, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(rt.Ins) + 1);
         },
@@ -651,6 +658,12 @@ pub noinline fn exec(m: *rt.M, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
                 }
             }
             vs.items.len = sp;
+            if (f.is(.f)) if (f.asFn().f == .plain) { // as in a call, and then return its value
+                const n = f.asFn();
+                const v = try n.f.plain(n, st[b + 1 .. sp]);
+                vs.items.len = b;
+                return .{ .ret = v };
+            };
             if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
             return .{ .apply = b };
         },
