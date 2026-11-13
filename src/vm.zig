@@ -24,6 +24,7 @@ const Comp = struct {
     keys: std.ArrayList(rt.Key) = .empty,
     seen: std.ArrayList(rt.Key) = .empty, // names read or set! so far, in scan order
     cond: usize = 0, // > 0 while scanning code that may not run
+    barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
     fn emit(c: *Comp, op: Op, a: usize, b: usize) usize {
         c.ins.append(std.heap.c_allocator, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
@@ -90,6 +91,7 @@ const Comp = struct {
     }
 
     fn patch(c: *Comp, at: usize) void {
+        c.barrier = c.ins.items.len;
         c.ins.items[at].b = @intCast(c.ins.items.len);
     }
 
@@ -146,7 +148,8 @@ const Comp = struct {
                     .at => .at,
                     else => if (p.c.len == 2) .prim1 else .prim2,
                 };
-                _ = c.emit(op, c.add(*rt.Prim, &c.prims, p), 0);
+                const pi = c.add(*rt.Prim, &c.prims, p);
+                if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .call => |k| try c.gen_call(k, tail),
@@ -166,6 +169,22 @@ const Comp = struct {
             },
             else => return error.Bail,
         }
+    }
+
+    /// (op local local) and (op local constant), the two operands just pushed, become one instruction (b: first slot << 16 | second).
+    fn fuse(c: *Comp, op: Op, pi: usize) bool {
+        const n = c.ins.items.len;
+        if (n < 2 or n - 2 < c.barrier) return false;
+        const x = c.ins.items[n - 2];
+        const y = c.ins.items[n - 1];
+        if (x.op != .local or (y.op != .local and y.op != .konst)) return false;
+        const local = y.op == .local;
+        const fused: Op = inline for (.{ .add, .sub, .mul, .lt, .gt, .le, .ge, .eq, .at }) |o| {
+            if (op == o) break if (local) @field(Op, @tagName(o) ++ "_ll") else @field(Op, @tagName(o) ++ "_lk");
+        } else return false;
+        c.ins.items.len = n - 2;
+        _ = c.emit(fused, pi, (@as(usize, x.a) << 16) | y.a);
+        return true;
     }
 
     fn gen_call(c: *Comp, k: []const *Node, tail: bool) !void {
@@ -207,6 +226,28 @@ pub fn ready(p: *rt.Proto) ?*rt.Bytecode {
     }
     if (!p.tried) compile(p);
     return p.code;
+}
+
+fn arith2(comptime op: Op, x: V, y: V) ?V {
+    if (op == .eq) return V.boolean(rt.eq(x, y));
+    if (op == .at) {
+        if (!x.is(.l) or !y.isNum()) return null;
+        const l = x.asList().items();
+        const i = y.asNum();
+        return if (i >= 0 and i < @as(f64, @floatFromInt(l.len))) l[@intFromFloat(i)] else null;
+    }
+    if (!x.isNum() or !y.isNum()) return null;
+    const p = x.asNum();
+    const q = y.asNum();
+    return switch (op) {
+        .add => V.num(p + q),
+        .sub => V.num(p - q),
+        .mul => V.num(p * q),
+        .lt => V.boolean(p < q),
+        .gt => V.boolean(p > q),
+        .le => V.boolean(p <= q),
+        else => V.boolean(p >= q),
+    };
 }
 
 inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
@@ -363,6 +404,21 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
             }
             ip += 1;
             continue :sw ip[0].op;
+        },
+        inline .add_lk, .sub_lk, .mul_lk, .lt_lk, .gt_lk, .le_lk, .ge_lk, .eq_lk, .at_lk, .add_ll, .sub_ll, .mul_ll, .lt_ll, .gt_ll, .le_ll, .ge_ll, .eq_ll, .at_ll => |op| {
+            const name = comptime @tagName(op);
+            const x = e.vars[ip[0].b >> 16].v;
+            const y = if (comptime name[name.len - 1] == 'k') code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
+            if (arith2(@field(Op, name[0 .. name.len - 3]), x, y)) |v| {
+                st[sp] = v;
+                sp += 1;
+                ip += 1;
+                continue :sw ip[0].op;
+            }
+            st[sp] = x;
+            st[sp + 1] = y;
+            vs.items.len = sp + 2;
+            return slow(m, code, ip, 2);
         },
         .prim1, .prim2 => {
             const p = code.prims[ip[0].a];
