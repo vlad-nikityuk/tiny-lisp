@@ -200,15 +200,23 @@
 
 (defmacro xdeftest (& body) '(pass))
 
+;; (deftest name expr...) registers a test; the name is a symbol or a string, so it can have spaces:
+;; (deftest "eq? says a number is itself" (assert (eq? 0 0)))
 (defmacro deftest (name & body)
-  `(begin
-     (define ~name (lambda () ~(patch-asserts (begin-of body) name)))
-     (set! *TESTS* (concat *TESTS* (list (list (quote ~name) ~name))))))
+  (define label (first (split name newline))) ; as a plain string, which prints without quotes
+  `(set! *TESTS* (concat *TESTS* (list (list (quote ~label) (lambda () ~(patch-asserts (begin-of body) label)))))))
 
+;; runs every test: ✔ for a pass, 𝕏 and the message for a failure; the run fails (non-zero exit) if any test did
 (defn run-tests ()
+  (define failures 0)
   (iterate *TESTS*
     (fn (test)
-      (define name (first test))
-      (define test-fn (second test))
-      (test-fn)
-      (print (green "PASS") name))))
+      (try
+        (fn ()
+          ((second test))
+          (print (green "✔") (first test)))
+        (fn (message)
+          (set! failures (+ failures 1))
+          (print (red "𝕏") (first test))
+          (print "   " message)))))
+  (if (> failures 0) (error (+ failures " of " (len *TESTS*) " tests failed"))))

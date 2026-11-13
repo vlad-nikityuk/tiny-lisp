@@ -144,11 +144,11 @@ Interpreter errors (undefined functions, syntax errors) are raised as strings an
 ### Tests
 
 ```lisp
-(deftest arithmetic (assert (eq? (+ 2 3) 5)))
-(run-tests)                                    ; PASS arithmetic
+(deftest "arithmetic: addition" (assert (eq? (+ 2 3) 5)))
+(run-tests)                                    ; ✔ arithmetic: addition
 ```
 
-A failing `assert` raises `assertion-failed` and stops the run with a non-zero exit code.
+A failing `assert` stops the run with a non-zero exit code and says which test and which expression failed: `assertion failed in arithmetic: addition: (eq? (+ 2 3) 6)`.
 
 ### Recursion
 
@@ -156,7 +156,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
 ### Files and strings
 

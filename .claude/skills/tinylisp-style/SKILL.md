@@ -88,7 +88,7 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 
 ## Tests
 
-- `deftest name expr…` + `(assert expr message…)` in `spec/specs.lisp`; a failing assert says which test and which expression
+- `(deftest "area: what it checks" expr…)` + `(assert expr message…)` in `spec/specs.lisp`; the name is a string (spaces are fine); a failing assert says which test and which expression
   (`deftest` adds that when it expands, via `patch-asserts`), so write plain `(assert …)`.
 - Beware assertions that cannot fail: before trusting an `equal?` on a result, check that a wrong value would be caught.
 - REPL-visible behaviour goes in `spec/repl.py`. Add a case for every change.

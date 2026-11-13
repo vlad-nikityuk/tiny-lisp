@@ -50,5 +50,5 @@ The compiler turns the AST into typed nodes (`runtime.Node`/`Code`: constant, va
 ## Tests
 
 Add a case whenever behaviour changes.
-- `spec/specs.lisp`: `deftest` + `assert` (`deftest` rewrites each `(assert expr)` to carry the test name and the quoted expression, so a failure prints both; `equal?` is a deep comparison), ends with `(run-tests)`; a failing assert exits non-zero. Includes stack-safety tests (100k-deep recursion, deep data, 100k+ deep recursion through `map`/`reduce`/`partial`/`try` callbacks, errors unwinding them).
+- `spec/specs.lisp`: `deftest` + `assert` (the test name is a string, so it can have spaces, and by convention reads `area: what it checks`; a symbol works too; `deftest` rewrites each `(assert expr)` to carry the test name and the quoted expression, so a failure prints both; `equal?` is a deep comparison), ends with `(run-tests)`; a failing assert exits non-zero. Includes stack-safety tests (100k-deep recursion, deep data, 100k+ deep recursion through `map`/`reduce`/`partial`/`try` callbacks, errors unwinding them).
 - `spec/repl.py <binary>`: drives the REPL and checks printed results (parsing, printing, errors, 100k-deep nesting).
