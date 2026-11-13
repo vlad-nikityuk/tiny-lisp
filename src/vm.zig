@@ -53,6 +53,21 @@ noinline fn outerLook(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
     return g.*;
 }
 
+/// The index of the instruction at ip.
+inline fn pcOf(code: *bc.Bytecode, ip: [*]const bc.Ins) usize {
+    return (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(bc.Ins);
+}
+
+/// Store v at index i of the list l, if they are a list and an index in range.
+inline fn storeAt(l: V, i: V, v: V) bool {
+    if (!l.is(.l) or !i.isNum()) return false;
+    const items = l.asList().items();
+    const x = i.asNum();
+    if (!(x >= 0 and x < @as(f64, @floatFromInt(items.len)))) return false;
+    items[@intFromFloat(x)] = v;
+    return true;
+}
+
 /// An operation on values it does not compute in place: call whatever its name is now (it was a primitive when compiled).
 fn slow(m: *rt.Machine, code: *bc.Bytecode, ip: [*]const bc.Ins, arity: usize) E!rt.Go {
     const p = code.prims[ip[0].a];
@@ -60,9 +75,9 @@ fn slow(m: *rt.Machine, code: *bc.Bytecode, ip: [*]const bc.Ins, arity: usize) E
     const n = vs.items.len;
     var g: ?*V = null;
     const f = if (rt.find(m.e, p.sym, &g)) |s| s.* else V.nil;
-    if (f == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{p.c[0].ast}));
+    if (f == V.nil) return rt.undefinedFunction(p.c[0].ast);
     vs.insert(rt.gpa, n - arity, f) catch gc.oom();
-    return call(m, n - arity, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(bc.Ins) + 1);
+    return call(m, n - arity, code, pcOf(code, ip) + 1);
 }
 
 /// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
@@ -110,10 +125,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         },
         .setouter => {
             const d = code.defs[ip[0].a];
-            if (d.define) try rt.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| {
-                if (rt.compiledInto(p.*)) rt.epoch +%= 1; // as rt.assign does
-                p.* = st[sp - 1];
-            }
+            if (d.define) try rt.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| rt.replace(p, st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -152,24 +164,13 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         .vset => { // (vset! list index value): the native itself does anything that is not an in-range store
-            const l = st[sp - 3];
-            const i = st[sp - 2];
-            if (l.is(.l) and i.isNum()) {
-                const items = l.asList().items();
-                const x = i.asNum();
-                if (x >= 0 and x < @as(f64, @floatFromInt(items.len))) {
-                    items[@intFromFloat(x)] = st[sp - 1];
-                    sp -= 2;
-                    st[sp - 1] = items[@intFromFloat(x)];
-                    ip += 1;
-                    continue :sw ip[0].op;
-                }
+            if (!storeAt(st[sp - 3], st[sp - 2], st[sp - 1])) {
+                const n = code.consts[ip[0].a].asFn();
+                vs.items.len = sp;
+                st[sp - 1] = try n.f.plain(n, st[sp - 3 .. sp]);
             }
-            const n = code.consts[ip[0].a].asFn();
-            vs.items.len = sp;
-            const r = try n.f.plain(n, st[sp - 3 .. sp]);
+            st[sp - 3] = st[sp - 1];
             sp -= 2;
-            st[sp - 1] = r;
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -199,28 +200,17 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             vs.items.len = sp;
             return slow(m, code, ip, 2);
         },
-        .vset_ll => { // (vset! list index value) with the list and the index in locals, the value on the stack
+        .vset_ll => { // the same with the list and the index in locals: the value is on the stack and stays there
             const l = e.vars[ip[0].b >> 16].v;
             const i = e.vars[ip[0].b & 0xffff].v;
-            if (l.is(.l) and i.isNum()) {
-                const items = l.asList().items();
-                const x = i.asNum();
-                if (x >= 0 and x < @as(f64, @floatFromInt(items.len))) {
-                    items[@intFromFloat(x)] = st[sp - 1];
-                    ip += 1;
-                    continue :sw ip[0].op;
-                }
+            if (!storeAt(l, i, st[sp - 1])) { // the native gets all three
+                const n = code.consts[ip[0].a].asFn();
+                st[sp + 1] = st[sp - 1];
+                st[sp - 1] = l;
+                st[sp] = i;
+                vs.items.len = sp + 2;
+                st[sp - 1] = try n.f.plain(n, st[sp - 1 .. sp + 2]);
             }
-            const n = code.consts[ip[0].a].asFn();
-            const value = st[sp - 1]; // the native does anything that is not an in-range store, and gets all three
-            st[sp - 1] = l;
-            st[sp] = i;
-            st[sp + 1] = value;
-            sp += 2;
-            vs.items.len = sp;
-            const r = try n.f.plain(n, st[sp - 3 .. sp]);
-            sp -= 2;
-            st[sp - 1] = r;
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -245,8 +235,8 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
                 ip += 1;
                 continue :sw ip[0].op;
             };
-            if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
-            return call(m, b, code, (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(bc.Ins) + 1);
+            if (st[b] == V.nil) return rt.undefinedFunction(code.consts[ip[0].b]);
+            return call(m, b, code, pcOf(code, ip) + 1);
         },
         .tailcall => {
             const b = sp - ip[0].a - 1;
@@ -273,7 +263,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
                 vs.items.len = b;
                 return .{ .ret = v };
             };
-            if (st[b] == V.nil) return rt.fail(rt.str("TinyLisp: Function {f} is not defined", .{code.consts[ip[0].b]}));
+            if (st[b] == V.nil) return rt.undefinedFunction(code.consts[ip[0].b]);
             return .{ .apply = b };
         },
         .ret => {
@@ -319,10 +309,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         .setglobal => {
             const d = code.defs[ip[0].a];
             if (d.g == null) d.g = rt.slotOf(rt.root, d.sym.?.key);
-            if (d.g) |p| {
-                if (rt.compiledInto(p.*)) rt.epoch +%= 1;
-                p.* = st[sp - 1];
-            }
+            if (d.g) |p| rt.replace(p, st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -352,12 +339,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
                 ip += 1;
                 continue :sw ip[0].op;
             }
-            if (idx == 0) {
-                const k = rt.frame(.loop, &.{}, e);
-                k.i = (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(bc.Ins);
-                k.base = top;
-                k.code = code;
-            }
+            if (idx == 0) resumeFrame(.loop, e, code, pcOf(code, ip), top); // the body comes back to this instruction
             const k = &ks.items[ks.items.len - 1];
             st[ib] = V.num(idx);
             if (!lang.in_macro and gc.due()) {
@@ -366,14 +348,11 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             }
             const body = code.bodies[ip[0].a].?;
             const item = if (counted) V.num(idx) else items[@intFromFloat(idx)];
-            if (k.iter_env) |x| if (!x.captured and x.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
-                x.vars[0].v = item;
-                for (x.vars[1..]) |*v| v.v = V.nil;
-                e = x;
-            } else {
-                k.iter_env = null;
-                var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
-                e = rt.bindWith(&lam, &.{item}, body);
+            const last = k.iter_env;
+            if (last != null and !last.?.captured and last.?.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
+                e = last.?;
+                e.vars[0].v = item;
+                for (e.vars[1..]) |*v| v.v = V.nil;
             } else {
                 var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
                 e = rt.bindWith(&lam, &.{item}, body);
@@ -396,9 +375,14 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
 
 /// A call that is not a tail call: leave a frame that resumes at pc with the value pushed.
 fn call(m: *rt.Machine, b: usize, code: *bc.Bytecode, pc: usize) rt.Go {
-    const k = rt.frame(.vm, &.{}, m.e);
-    k.i = pc;
-    k.base = b;
-    k.code = code;
+    resumeFrame(.vm, m.e, code, pc, b);
     return .{ .apply = b };
+}
+
+/// Push a frame that comes back to the bytecode: at instruction pc, with the stack cut to base and then the value.
+fn resumeFrame(kind: rt.Kind, e: *rt.Env, code: *bc.Bytecode, pc: usize, base: usize) void {
+    const k = rt.frame(kind, &.{}, e);
+    k.i = pc;
+    k.base = base;
+    k.code = code;
 }

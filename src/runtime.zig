@@ -214,7 +214,7 @@ pub fn frame(kind: Kind, c: []const *Node, e: *Env) *Frame {
 
 /// Push the value of c[i], an item of a call: the function first, which must exist.
 pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
-    if (i == 0 and v == V.nil) return fail(str("TinyLisp: Function {f} is not defined", .{c[0].ast}));
+    if (i == 0 and v == V.nil) return undefinedFunction(c[0].ast);
     gc.push(V, &vs, v);
 }
 
@@ -252,6 +252,11 @@ pub fn str(comptime f: []const u8, args: anytype) V {
 pub fn fail(e: V) E {
     lang.errv = e;
     return error.Lisp;
+}
+
+/// The error of calling a name (as written in the source) that has no value.
+pub fn undefinedFunction(name: V) E {
+    return fail(str("TinyLisp: Function {f} is not defined", .{name}));
 }
 
 /// A list of n items: a, then nils.
@@ -369,10 +374,13 @@ pub fn assign(d: *Def, e: *Env, v: V) E!void {
         if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
         sym.local = sym.local or e.p != null;
         set(e, sym.key, v);
-    } else if (find(e, sym, &d.g)) |p| {
-        if (compiledInto(p.*)) epoch +%= 1;
-        p.* = v;
-    }
+    } else if (find(e, sym, &d.g)) |p| replace(p, v);
+}
+
+/// set! of the variable at p. If its old value is compiled into tier-2 code, that code is out of date.
+pub inline fn replace(p: *V, v: V) void {
+    if (compiledInto(p.*)) epoch +%= 1;
+    p.* = v;
 }
 
 /// Root keys are copied to permanent memory; scope keys are interned already.
