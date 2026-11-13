@@ -1,5 +1,5 @@
 // zig fmt: off
-// The compiler, the explicit-stack evaluator and the parser.
+// The compiler and explicit-stack evaluator. Parsing lives in parser.zig.
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
@@ -7,8 +7,8 @@ const vm = @import("vm.zig");
 const V = rt.V; const Node = rt.Node;
 pub var out: *std.Io.Writer = undefined;
 pub var errv: V = .nil;
+pub const parse = @import("parser.zig").parse;
 // compiler
-// ----------------------------------------------------------------
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it runs.
 // Every macro/* runs once per node; a new or redefined one (rt.epoch) recompiles all nodes. Nodes and symbols are permanent; their AST is pinned.
 pub var in_macro = false; // while a macro runs, code is not expanded (so expansion nests one level)
@@ -73,11 +73,16 @@ inline fn atom(n: *Node, e: *rt.Env) rt.E!?V { // a leaf, or a primitive call on
 fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V { // operands may be primitive calls themselves, a few levels deep (so native recursion stays bounded)
     if (p.sym.local or p.g.* != p.f) return null;
     var x = [2]V{ .nil, .nil };
-    inline for (0..2) |i| if (i + 1 < p.c.len) { const n = p.c[i + 1]; x[i] = try leaf(n, e) orelse if (n.code == .prim and depth > 0 and !n.code.prim.slow) (try inplace(n.code.prim, e, depth - 1) orelse return null) else { p.slow = true; return null; }; }; // slow: never in place
+    inline for (0..2) |i| if (i + 1 < p.c.len) {
+        const n = p.c[i + 1];
+        x[i] = try leaf(n, e) orelse
+            if (n.code == .prim and depth > 0 and !n.code.prim.slow)
+                (try inplace(n.code.prim, e, depth - 1) orelse return null)
+            else { p.slow = true; return null; };
+    };
     return if (p.c.len == 2) rt.fast1(p.op, x[0]) else rt.fast(p.op, x[0], x[1]);
 }
 // evaluator
-// ----------------------------------------------------------------
 // No native recursion per call, nesting level or callback: pending work is a frame on rt.ks, a call's values are collected on rt.vs,
 // and each step is a rt.Go: evaluate a node, hand a value to the innermost frame, collect operands, or apply vs[b].
 pub fn eval(ast: V, env: *rt.Env) rt.E!V { return exec(.{ .eval = stub(ast) }, env); }
@@ -114,86 +119,82 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
         .vm => |x| { if (!in_macro and gc.due()) gc.collect(); continue :sw try vm.exec(m, x.code, x.pc); },
         .ret => |v| {
             if (ks.items.len == m.base) return v;
-            const k = &ks.items[ks.items.len - 1]; const c = k.c;
+            const k = &ks.items[ks.items.len - 1];
+            const c = k.c;
             if (m.e != k.e) rt.release(m.e); // the call that returned is over
             m.e = k.e;
             switch (k.kind) {
-                .@"if" => { ks.items.len -= 1; continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] }; },
-                .begin => { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; }, // the last one is a tail position
-                .@"&&", .@"||" => if (rt.truthy(v) == (k.kind == .@"&&")) { k.i += 1; if (k.i == c.len - 1) ks.items.len -= 1; continue :sw .{ .eval = c[k.i] }; } else { ks.items.len -= 1; continue :sw .{ .ret = v }; },
-                .def => { try rt.assign(k.d, m.e, v); ks.items.len -= 1; continue :sw .{ .ret = v }; },
+                .@"if" => {
+                    ks.items.len -= 1;
+                    continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
+                },
+                .begin => {
+                    k.i += 1;
+                    if (k.i == c.len - 1) ks.items.len -= 1; // the last one is a tail position
+                    continue :sw .{ .eval = c[k.i] };
+                },
+                .@"&&", .@"||" => if (rt.truthy(v) == (k.kind == .@"&&")) {
+                    k.i += 1;
+                    if (k.i == c.len - 1) ks.items.len -= 1;
+                    continue :sw .{ .eval = c[k.i] };
+                } else { ks.items.len -= 1; continue :sw .{ .ret = v }; },
+                .def => {
+                    try rt.assign(k.d, m.e, v);
+                    ks.items.len -= 1;
+                    continue :sw .{ .ret = v };
+                },
                 .native => continue :sw try rt.step(k, v),
-                .vm => { const code = k.code; const pc = k.i; ks.items.len -= 1; gc.push(V, vs, v); continue :sw .{ .vm = .{ .code = code, .pc = pc } }; },
-                .loop => { k.env2 = null; gc.push(V, vs, v); continue :sw .{ .vm = .{ .code = k.code, .pc = k.i } }; }, // the iteration's scope was released above
-                .call => { ks.items.len -= 1; try rt.operand(c, k.i, v); continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } }; },
+                .vm => {
+                    const code = k.code; const pc = k.i;
+                    ks.items.len -= 1; gc.push(V, vs, v);
+                    continue :sw .{ .vm = .{ .code = code, .pc = pc } };
+                },
+                .loop => {
+                    k.env2 = null; gc.push(V, vs, v); // the iteration's scope was released above
+                    continue :sw .{ .vm = .{ .code = k.code, .pc = k.i } };
+                },
+                .call => {
+                    ks.items.len -= 1; try rt.operand(c, k.i, v);
+                    continue :sw .{ .args = .{ .c = c, .i = k.i + 1, .b = k.base } };
+                },
             }
         },
         .args => |a| { // push the function and arguments from a.i on; constants and variables need no frame
             var i = a.i;
             while (i < a.c.len) : (i += 1) {
-                const v = try atom(a.c[i], m.e) orelse { const k = rt.frame(.call, a.c, m.e); k.i = i; k.base = a.b; continue :sw .{ .eval = a.c[i] }; };
+                const v = try atom(a.c[i], m.e) orelse {
+                    const k = rt.frame(.call, a.c, m.e);
+                    k.i = i; k.base = a.b;
+                    continue :sw .{ .eval = a.c[i] };
+                };
                 try rt.operand(a.c, i, v);
             }
             continue :sw .{ .apply = a.b };
         },
         .apply => |b| {
-            const f = vs.items[b]; const args = vs.items[b + 1 ..];
+            const f = vs.items[b];
+            const args = vs.items[b + 1 ..];
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
-                    const l = f.asLam(); const code = vm.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
+                    const l = f.asLam();
+                    const code = vm.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) rt.release(m.e); // no frame needs the old one
-                    m.e = rt.bind(l, vs.items[b + 1 ..]); vs.items.len = b;
+                    m.e = rt.bind(l, vs.items[b + 1 ..]);
+                    vs.items.len = b;
                     continue :sw if (code) |c| .{ .vm = .{ .code = c, .pc = 0 } } else .{ .eval = l.proto.body };
                 },
-                .f => { const n = f.asFn(); switch (n.f) {
-                    .plain => |p| { const v = try p(n, args); vs.items.len = b; continue :sw .{ .ret = v }; },
-                    .step => continue :sw try rt.start(b, m.e), // a native frame: the arguments stay on vs
-                } },
+                .f => {
+                    const n = f.asFn();
+                    switch (n.f) {
+                        .plain => |p| {
+                            const v = try p(n, args); vs.items.len = b;
+                            continue :sw .{ .ret = v };
+                        },
+                        .step => continue :sw try rt.start(b, m.e), // a native frame: the arguments stay on vs
+                    }
+                },
                 else => return rt.fail(rt.str("TinyLisp: {f} is not a function", .{f})),
             }
         },
     }
-}
-// parser
-// ----------------------------------------------------------------
-// Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.
-var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r"; const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";
-const prefixes = [_][]const u8{ "quote", "quasiquote", "unquote", "unquote-splicing" }; // ' ` ~ ~@
-
-fn peek() u8 { return if (pos < src.len) src[pos] else 0; } // a 0 byte ends the source
-fn skip() void {
-    while (true) { pos = std.mem.indexOfNonePos(u8, src, pos, space) orelse src.len; if (peek() != ';') return; pos = std.mem.indexOfAnyPos(u8, src, pos, "\n\x00") orelse src.len; }
-}
-fn lex() V {
-    const lit = peek() == '"'; const start = pos + @intFromBool(lit);
-    pos = std.mem.indexOfAnyPos(u8, src, start, if (lit) "\"\x00" else space ++ "\x00()'`~;\"") orelse src.len;
-    const t = src[start..pos]; if (lit and peek() == '"') pos += 1;
-    if (!lit and std.mem.indexOfAny(u8, t, "0123456789") != null) if (std.fmt.parseFloat(f64, t)) |d| return V.num(d) else |_| {};
-    const text = rt.mkstr(t, true);
-    return if (lit) V.literal(text) else V.string(text);
-}
-
-pub fn parse(text: []const u8) rt.E!V {
-    src = text; pos = 0;
-    var done: std.ArrayList(V) = .empty; defer done.deinit(std.heap.c_allocator); // finished items, the open lists' items among them
-    var open: std.ArrayList(i64) = .empty; defer open.deinit(std.heap.c_allocator); // where each open list starts in done; below 0: a prefix, -1 - its index in prefixes
-    while (open.items.len > 0 or done.items.len == 0) {
-        skip();
-        var d: V = switch (peek()) {
-            0 => return rt.fail(rt.str("TinyLisp: Syntax error, unbalanced expression", .{})),
-            '(' => { pos += 1; gc.push(i64, &open, @intCast(done.items.len)); continue; },
-            '\'', '`', '~' => |c| { pos += 1; const k: i64 = if (c == '~' and peek() == '@') 3 else @intCast(std.mem.indexOfScalar(u8, "'`~", c).?); pos += @intFromBool(k == 3); gc.push(i64, &open, -1 - k); continue; },
-            ')' => blk: {
-                pos += 1; if (open.items.len == 0 or open.getLast() < 0) return rt.fail(rt.str(unexpected, .{}));
-                const items = done.items[@intCast(open.pop().?)..]; done.items.len -= items.len;
-                break :blk rt.list(items, items.len);
-            },
-            else => lex(),
-        };
-        while (open.items.len > 0 and open.getLast() < 0) : (_ = open.pop()) d = rt.list(&.{ V.string(rt.mkstr(prefixes[@intCast(-1 - open.getLast())], true)), d }, 2); // 'x is (quote x)
-        gc.push(V, &done, d);
-    }
-    skip();
-    if (peek() != 0) return rt.fail(rt.str(unexpected, .{}));
-    return done.items[0];
 }
