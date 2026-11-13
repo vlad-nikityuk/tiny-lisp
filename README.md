@@ -32,7 +32,7 @@ Memory is managed by a stop-the-world mark-sweep collector that runs once about 
 
 | microgpt, 10 steps + 5 samples | Python 3.14 | tinylisp |
 |---|---|---|
-| time | 0.93–0.97 s | 0.79 s |
+| time | 0.93–0.97 s | 0.69 s |
 | peak memory | 55 MB | 55 MB |
 
 Apple Silicon, best of 3 runs.

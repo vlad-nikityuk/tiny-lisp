@@ -45,7 +45,11 @@ pub inline fn push(comptime T: type, list: *std.ArrayList(T), x: T) void {
     if (list.items.len < list.capacity) {
         list.items.len += 1;
         list.items[list.items.len - 1] = x;
-    } else list.append(std.heap.c_allocator, x) catch oom();
+    } else grow(T, list, x);
+}
+
+noinline fn grow(comptime T: type, list: *std.ArrayList(T), x: T) void {
+    list.append(std.heap.c_allocator, x) catch oom();
 }
 
 fn header(p: *anyopaque) *H {
