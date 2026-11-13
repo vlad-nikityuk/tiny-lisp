@@ -265,7 +265,7 @@ const Comp = struct {
         if (depth > 8) return false;
         return switch (n.code) {
             .val, .ref => true,
-            .prim => |p| for (p.c[1..]) |x| {
+            .prim => |p| if (p.sym.local or p.g.* != p.f) false else for (p.c[1..]) |x| { // (a rebound one is compiled as a call)
                 if (!plain(x, depth + 1)) break false;
             } else true,
             else => false,
@@ -279,9 +279,10 @@ const Comp = struct {
         return switch (n.code) {
             .val, .ref => true,
             .call => |kids| calls: {
-                if (kids[0].code == .ref and !kids[0].code.ref.sym.local) if (rt.slotOf(rt.root, kids[0].code.ref.sym.key)) |g| {
-                    if (g.*.is(.f) and g.*.asFn().f == .step) break :calls false; // a native that runs code in the scope it is called from (load, try, map...)
-                };
+                if (kids[0].code != .ref or kids[0].code.ref.sym.local) break :calls false; // a function it is given may be load, which runs code in the scope it is called from
+                if (rt.slotOf(rt.root, kids[0].code.ref.sym.key)) |g| {
+                    if (g.*.is(.f) and g.*.asFn().f == .step) break :calls false; // so may a native that runs code (try, map...)
+                }
                 for (kids) |x| if (!inlinable(x, depth + 1, count)) break :calls false;
                 break :calls true;
             },

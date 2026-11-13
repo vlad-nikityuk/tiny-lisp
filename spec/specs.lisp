@@ -939,4 +939,9 @@
   (assert (equal? (at (mixed-k "a") 3) #f))
   (assert (equal? (at (mixed-k "a") 4) #f)))
 
+(write-file "/tmp/tinylisp-spec-x9b.lisp" "(define x 9)")
+(define cx-call-arg (lambda (f) (f "/tmp/tinylisp-spec-x9b.lisp")))
+(deftest "review: a helper that calls a function it is given is not inlined"
+  (assert (eq? ((lambda (x) (begin (cx-call-arg load) x)) 1) 1)))
+
 (run-tests)
