@@ -1,5 +1,5 @@
 ;; microgpt: Karpathy's microgpt.py (https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95)
-;; ported to tinylisp: a scalar autograd engine (examples/autograd.lisp), a one-layer GPT, Adam, sampling.
+;; ported to tinylisp: a scalar autograd engine (examples/autograd.lisp), layers and blocks (examples/nn.lisp), a one-layer GPT, Adam, sampling.
 ;; Run from the repo root:  ./tinylisp -f examples/microgpt.lisp
 ;; Differences from the gist: a fixed a-z alphabet, the first 1000 names of names.txt, and the stdlib's Park-Miller generator
 ;; (rand) instead of Python's random, so a Python run with the same generator prints the same losses.
@@ -9,17 +9,7 @@
 (define num-steps 10)
 (define num-samples 5)
 (load "examples/autograd.lisp")
-
-;; ---------------------------------------------------------------- Python builtins and helpers
-(defn gauss (std) (* std (sqrt (* -2 (log (rand)))) (cos (* 2 pi (rand)))))
-(defn min (a b) (if (< a b) a b))
-(defn max (l) (reduce (rest l) (lambda (m x) (if (> x m) x m)) (first l)))
-(defn mod (a b) (- a (* b (floor (/ a b)))))
-(defn slice (l start end) (for/list (i (range (- end start))) (at l (+ start i))))
-;; a list that grows in place, like a Python list with .append(): a one-slot list holding the items
-(defn new-list () (list '()))
-(defn append! (l x) (vset! l 0 (concat (at l 0) (list x))))
-(defn items (l) (at l 0))
+(load "examples/nn.lisp")
 
 ;; ---------------------------------------------------------------- dataset and tokenizer
 (define docs (reduce (split (read-file "examples/names.txt") "
@@ -36,7 +26,6 @@
 (define n-head 4)
 (define head-dim 4)
 
-(defn matrix (nout nin) (for/list (i (range nout)) (for/list (j (range nin)) (param (gauss 0.08)))))
 (define wte (matrix vocab-size n-embd))
 (define wpe (matrix block-size n-embd))
 (define lm-head (matrix vocab-size n-embd))
@@ -56,20 +45,6 @@
 (print "num params:" n-params)
 
 ;; ---------------------------------------------------------------- model
-(defn linear (x w)
-  (for/list (wo w) (vsum (for/list ((wi xi) (zip wo x)) (val wi * xi)))))
-
-(defn softmax (logits)
-  (define max-val (max (for/list (l logits) (data l))))
-  (define exps (for/list (l logits) (vexp (val l - max-val))))
-  (define total (vsum exps))
-  (for/list (e exps) (val e / total)))
-
-(defn rmsnorm (x)
-  (define ms (val (vsum (for/list (xi x) (val xi * xi))) / (len x)))
-  (define scale (val (ms + 0.00001) ** -0.5))
-  (for/list (xi x) (val xi * scale)))
-
 ;; one attention head: the slice [hs, hs + head-dim) of q, of every cached key and of every cached value
 (defn attention-head (q keys values hs)
   (define q-h (slice q hs (+ hs head-dim)))
@@ -80,12 +55,6 @@
   (define attn-weights (softmax attn-logits))
   (for/list (j (range head-dim))
     (vsum (for/list ((w vt) (zip attn-weights v-h)) (val w * (at vt j))))))
-
-;; ---- blocks: a block is a function from a vector to a vector; (chain a b c) feeds a vector through them in turn
-(defn Linear (w) (lambda (x) (linear x w)))
-(define ReLU (lambda (x) (for/list (xi x) (vrelu xi))))
-;; x + block(x), as in `x = [a + b for a, b in zip(x, x_residual)]`
-(defn Residual (block) (lambda (x) (for/list ((a b) (zip (block x) x)) (val a + b))))
 
 ;; multi-head attention: caches this position's key and value, then every head looks at all the cached positions
 (defn Attention (keys values)
