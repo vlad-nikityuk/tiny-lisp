@@ -577,57 +577,12 @@ pub fn topLevel() *Env {
     return e;
 }
 
-// compiler support
-// ----------------------------------------------------------------
-var interned: std.StringHashMapUnmanaged(*Sym) = .empty;
-
+/// n permanent Ts (compiled code lives forever).
 pub fn make(comptime T: type, n: usize) []T {
     return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n];
 }
 
-pub fn stub(v: V) *Node {
-    const n = &make(Node, 1)[0];
-    n.* = .{ .ast = pin(v) };
-    return n;
-}
-
-/// n nodes for the items of a, nil for missing ones.
-pub fn kids(a: []const V, n: usize) []const *Node {
-    const c = make(*Node, n);
-    for (c, 0..) |*x, i| x.* = stub(arg(a, i));
-    return c;
-}
-
-pub fn intern(v: V) *Sym { // equal names are the same symbol, so scopes compare keys by address
-    const name = std.mem.span(if (v.is(.s)) v.asStr() else str("{f}", .{v}).asStr());
-    const entry = interned.getOrPut(std.heap.c_allocator, name) catch gc.oom();
-    if (!entry.found_existing) { // the table's key is the symbol's own name
-        entry.value_ptr.* = &make(Sym, 1)[0];
-        entry.value_ptr.*.* = .{ .key = mkstr(name, true) };
-        entry.key_ptr.* = std.mem.span(entry.value_ptr.*.key);
-    }
-    return entry.value_ptr.*;
-}
-
-/// The call c of a, as a Prim node if its head is a global bound to a primitive that `fast` knows.
-pub fn special(a: []const V, c: []const *Node) Code {
-    if (a.len >= 3 and a[0].is(.s) and items(a[a.len - 1]).len > 0 and items(a[a.len - 1])[0].is(.s) and streq(items(a[a.len - 1])[0].asStr(), "lambda")) {
-        const sym = intern(a[0]);
-        const g = if (sym.local) null else slot(root, sym.key, false);
-        if (g) |slotp| if (slotp.* == each_v or slotp.* == map_v) {
-            c[c.len - 1].guard = &make(Guard, 1)[0];
-            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = slotp, .f = pin(slotp.*) };
-        };
-    }
-    if ((a.len == 2 or a.len == 3) and a[0].is(.s)) {
-        const sym = intern(a[0]);
-        const g = if (sym.local) null else slot(root, sym.key, false);
-        if (g) |slotp| if (prims.primOp(slotp.*)) |op| if (a.len == 2 and prims.unary(op) or a.len == 3 and !prims.unary(op)) {
-            const p = &make(Prim, 1)[0];
-            sym.inlined = true;
-            p.* = .{ .op = op, .sym = sym, .g = slotp, .f = pin(slotp.*), .c = c };
-            return .{ .prim = p };
-        };
-    }
-    return .{ .call = c };
+/// The global slot of a name that no scope binds: only then does the name always mean the global.
+pub fn globalOf(sym: *Sym) ?*V {
+    return if (sym.local) null else slot(root, sym.key, false);
 }

@@ -313,7 +313,7 @@ const Comp = struct {
     fn genInline(c: *Comp, k: []const *Node, tail: bool) !bool {
         if (c.inline_scope != null or c.inline_sites >= max_inline_sites or k[0].code != .ref) return false;
         const sym = k[0].code.ref.sym;
-        const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+        const g = rt.globalOf(sym);
         const f = (g orelse return false).*;
         if (!f.is(.lam)) return false;
         const l = f.asLam();
@@ -342,7 +342,7 @@ const Comp = struct {
         if (k.len == 3 and k[0].code == .ref and k[2].code == .lambda and k[2].guard != null) loop: { // (each list (lambda (x) ...)) as a loop of the bytecode
             const sym = k[0].code.ref.sym;
             const lp = k[2].code.lambda;
-            const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+            const g = rt.globalOf(sym);
             const is_each = g != null and g.?.* == rt.each_v;
             const is_map = g != null and g.?.* == rt.map_v;
             if (!(is_each or is_map) or lp.params.len != 1 or lp.rest) break :loop;
@@ -352,7 +352,7 @@ const Comp = struct {
             var source = k[1];
             if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
                 const rsym = k[1].code.call[0].code.ref.sym;
-                const rg = if (rsym.local) null else rt.slotOf(rt.root, rsym.key);
+                const rg = rt.globalOf(rsym);
                 if (rg != null and rg.?.* == rt.range_v) {
                     counted = 1;
                     source = k[1].code.call[1];
@@ -369,7 +369,7 @@ const Comp = struct {
         }
         if (k.len == 4 and k[0].code == .ref) { // (vset! list index value), while vset! is the native
             const sym = k[0].code.ref.sym;
-            const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
+            const g = rt.globalOf(sym);
             if (g) |slotp| if (prims.isVset(slotp.*)) {
                 sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
                 const lo = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
