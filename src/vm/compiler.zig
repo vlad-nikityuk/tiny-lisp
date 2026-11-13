@@ -3,11 +3,11 @@
 // compiler does not know (a body nested too deep, a define that may not run, an error while expanding macros) leaves the
 // function to the tree evaluator, which stays the reference semantics.
 const std = @import("std");
-const gc = @import("runtime/gc.zig");
-const rt = @import("runtime/runtime.zig");
-const scope = @import("runtime/scope.zig");
-const prims = @import("runtime/primitives.zig");
-const compile = @import("lang/compile.zig");
+const gc = @import("../runtime/gc.zig");
+const rt = @import("../runtime/runtime.zig");
+const scope = @import("../runtime/scope.zig");
+const prims = @import("../runtime/primitives.zig");
+const compile = @import("../lang/compile.zig");
 const V = rt.V;
 const Node = rt.Node;
 const E = rt.E;

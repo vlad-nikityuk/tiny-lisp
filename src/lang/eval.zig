@@ -6,8 +6,8 @@ const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
 const prims = @import("../runtime/primitives.zig");
 const compile = @import("compile.zig");
-const vm = @import("../vm.zig");
-const compiler = @import("../bytecode.zig");
+const compiler = @import("../vm/compiler.zig");
+const vm = @import("../vm/exec.zig");
 const V = rt.V;
 const Node = rt.Node;
 
