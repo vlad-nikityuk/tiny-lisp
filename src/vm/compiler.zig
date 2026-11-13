@@ -1,4 +1,4 @@
-// Tier 2, the compiler: the body of a function becomes, on its first call, a stack bytecode, and the function's parameters
+// Tier 2, the compiler (after scan.zig has found the slots): the body of a function becomes, on its first call, a stack bytecode, and the function's parameters
 // and defines get fixed slots in its scope (scope.bind creates them all up front). exec.zig runs the bytecode. Anything this
 // compiler does not know (a body nested too deep, a define that may not run, an error while expanding macros) leaves the
 // function to the tree evaluator, which stays the reference semantics.
@@ -10,6 +10,7 @@ const node = @import("../runtime/node.zig");
 const primitives = @import("../runtime/primitives.zig");
 const compile = @import("../lang/compile.zig");
 const bytecode = @import("bytecode.zig");
+const Scan = @import("scan.zig").Scan;
 const V = value.V;
 const Node = node.Node;
 const E = value.E;
@@ -18,7 +19,6 @@ const Ins = bytecode.Ins;
 const Bytecode = bytecode.Bytecode;
 
 // Limits of what is compiled: past them a function stays with the tree evaluator, or a call is not inlined.
-const max_depth = 120; // source nesting the compiler follows (it recurses)
 const max_short_circuit_operands = 64; // of one && or ||
 const max_plain_depth = 8; // nesting of the value in a vset_ll
 const max_inline_depth = 24; // an inlined body: its nesting,
@@ -31,7 +31,7 @@ fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
     return list.items.len - 1;
 }
 
-/// The state of compiling one function: the tables of its Bytecode, then what the scan knows about its names.
+/// The state of generating the code of one function: the tables of its Bytecode, and where it is.
 const Compiler = struct {
     ins: std.ArrayList(Ins) = .empty,
     consts: std.ArrayList(V) = .empty,
@@ -40,11 +40,7 @@ const Compiler = struct {
     defs: std.ArrayList(*node.Def) = .empty,
     protos: std.ArrayList(*node.Proto) = .empty,
     bodies: std.ArrayList(?*Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
-    keys: std.ArrayList(node.Key) = .empty,
-    seen: std.ArrayList(node.Key) = .empty, // names read or set! so far, in scan order
-    conditional_depth: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
-    held: std.ArrayList(struct { key: node.Key, level: usize }) = .empty, // names defined in the regions being scanned
-    closed: std.ArrayList(node.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
+    keys: std.ArrayList(node.Key) = .empty, // the names of the slots: what the scan found, then the slots of inlined functions
     self: ?*node.Proto = null,
     inline_scope: ?struct { keys: []const node.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
     inline_sites: usize = 0, // functions inlined so far
@@ -56,7 +52,7 @@ const Compiler = struct {
     }
 
     fn deinit(c: *Compiler) void {
-        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(value.gpa);
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys }) |list| list.deinit(value.gpa);
     }
 
     fn slotOf(c: *Compiler, sym: *node.Sym) ?usize {
@@ -65,95 +61,6 @@ const Compiler = struct {
         var i = keys.len; // the last of equal names wins, as in a scope search
         while (i > 0) : (i -= 1) if (keys[i - 1] == sym.key) return base + i - 1;
         return null;
-    }
-
-    fn forced(n: *Node) E!void {
-        if (n.stamp != compile.current()) try compile.force(n);
-    }
-
-    /// A use of a name (a read or a set!). After a region that defined the name it cannot be compiled; otherwise it is
-    /// remembered, so that a later define of the name is rejected.
-    fn use(c: *Compiler, sym: *node.Sym) !void {
-        if (has(c.closed.items, sym)) return error.Bail;
-        if (c.slotOf(sym) == null and !has(c.seen.items, sym)) _ = add(node.Key, &c.seen, sym.key);
-    }
-
-    fn has(keys: []const node.Key, sym: *node.Sym) bool {
-        for (keys) |k| if (k == sym.key) return true;
-        return false;
-    }
-
-    /// The names a nested lambda reads or sets count as used where the lambda is made (it may run before a later define of
-    /// the same name). Its own defines are not this function's: they get no slot here.
-    fn scanUses(c: *Compiler, n: *Node, depth: usize) !void {
-        if (depth > max_depth) return error.Bail;
-        try forced(n);
-        switch (n.code) {
-            .val => {},
-            .ref => |r| try c.use(r.sym),
-            .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |k| try c.scanUses(k, depth + 1),
-            .prim => |p| for (p.c[1..]) |k| try c.scanUses(k, depth + 1),
-            .def => |d| {
-                try c.scanUses(d.val, depth + 1);
-                if (!d.define) if (d.sym) |sym| try c.use(sym);
-            },
-            .lambda => |lp| try c.scanUses(lp.body, depth + 1),
-            else => return error.Bail,
-        }
-    }
-
-    /// Start of a region that may not run (a branch of an if, a later operand of && or ||).
-    fn enter(c: *Compiler) void {
-        c.conditional_depth += 1;
-    }
-
-    /// End of such a region: the names it defined can no longer be used (they are bound from the start of the call,
-    /// but only defined if the region ran).
-    fn leave(c: *Compiler) void {
-        c.conditional_depth -= 1;
-        while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.conditional_depth) {
-            _ = add(node.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
-            c.held.items.len -= 1;
-        }
-    }
-
-    /// Find the defines of the body (they get slots) and reject what this tier does not do. A name a define adds is bound from the
-    /// start of the call, so a define that may not run, or comes after a use of the same name (which would then mean an outer
-    /// binding), is left to the tree evaluator, where the name is only bound once the define has run.
-    fn scan(c: *Compiler, n: *Node, depth: usize) !void {
-        if (depth > max_depth) return error.Bail;
-        try forced(n);
-        switch (n.code) {
-            .val => {},
-            .lambda => |lp| try c.scanUses(lp.body, depth + 1),
-            .ref => |r| try c.use(r.sym),
-            .@"if" => |k| {
-                try c.scan(k[0], depth + 1);
-                c.enter();
-                try c.scan(k[1], depth + 1);
-                c.leave();
-                c.enter();
-                try c.scan(k[2], depth + 1);
-                c.leave();
-            },
-            .@"&&", .@"||" => |k| for (k, 0..) |x, i| {
-                if (i > 0) c.enter();
-                try c.scan(x, depth + 1);
-                if (i > 0) c.leave();
-            },
-            .begin, .call => |kids| for (kids) |k| try c.scan(k, depth + 1),
-            .prim => |p| for (p.c[1..]) |k| try c.scan(k, depth + 1),
-            .def => |d| {
-                try c.scan(d.val, depth + 1);
-                const sym = d.sym orelse return error.Bail;
-                if (!d.define) return c.use(sym);
-                if (has(c.closed.items, sym) or has(c.seen.items, sym)) return error.Bail;
-                if (c.slotOf(sym) == null) _ = add(node.Key, &c.keys, sym.key);
-                if (c.conditional_depth > 0) _ = add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.conditional_depth });
-                sym.local = true;
-            },
-            else => return error.Bail,
-        }
     }
 
     fn patch(c: *Compiler, at: usize) void {
@@ -294,10 +201,9 @@ const Compiler = struct {
         if (!g.*.is(.lam)) return false;
         const l = g.*.asLam();
         if (l.env != scope.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
-        var sub: Compiler = .{};
+        var sub: Scan = .{};
         defer sub.deinit();
-        for (l.proto.params) |pk| _ = add(node.Key, &sub.keys, pk);
-        sub.scan(l.proto.body, 0) catch return false;
+        sub.function(l.proto) catch return false;
         var count: usize = 0;
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         for (k[1..]) |x| try c.gen(x, false);
@@ -377,8 +283,10 @@ fn build(p: *node.Proto) void {
     p.tried = true;
     var c: Compiler = .{ .self = p };
     defer c.deinit();
-    for (p.params) |k| _ = add(node.Key, &c.keys, k);
-    c.scan(p.body, 0) catch return;
+    var names: Scan = .{};
+    defer names.deinit();
+    names.function(p) catch return;
+    c.keys.appendSlice(value.gpa, names.keys.items) catch gc.oom();
     c.gen(p.body, true) catch return;
     const code = &node.make(Bytecode, 1)[0];
     code.* = .{
