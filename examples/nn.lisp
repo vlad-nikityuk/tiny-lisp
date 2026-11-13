@@ -7,8 +7,14 @@
 ;; Python builtins and helpers
 ;; ----------------------------------------------------------------
 (defn gauss (std) (* std (sqrt (* -2 (log (rand)))) (cos (* 2 pi (rand)))))
-(defn min (a b) (if (< a b) a b))
-(defn max (l) (reduce (rest l) (lambda (m x) (if (> x m) x m)) (first l)))
+;; like Python's, min and max take several arguments or one list: (max 1 2), (max '(1 2))
+(defn items-of (args) (if (&& (eq? (len args) 1) (list? (first args))) (first args) args))
+(defn min (& args)
+  (define l (items-of args))
+  (reduce (rest l) (lambda (m x) (if (< x m) x m)) (first l)))
+(defn max (& args)
+  (define l (items-of args))
+  (reduce (rest l) (lambda (m x) (if (> x m) x m)) (first l)))
 (defn mod (a b) (- a (* b (floor (/ a b)))))
 (defn slice (l start end) (for/list (i (range (- end start))) (at l (+ start i))))
 ;; a list that grows in place, like a Python list with .append(): a one-slot list holding the items
@@ -23,11 +29,12 @@
     (if (eq? (first (at pairs i)) key) (second (at pairs i)) (dict-get-from pairs key (+ i 1)))))
 (defn dict-get (d key) (dict-get-from (items d) key 0))
 (defn dict-values (d) (for/list (kv (items d)) (second kv)))
-(defn flatten (l) (r/reduce l concat '()))
 
 ;; parameters
 ;; ----------------------------------------------------------------
-(defn matrix (nout nin) (for/list (i (range nout)) (for/list (j (range nin)) (param (gauss 0.08)))))
+(defn matrix (nout nin std) ; std defaults to 0.08, like matrix(nout, nin, std=0.08)
+  (define s (|| std 0.08))
+  (for/list (i (range nout)) (for/list (j (range nin)) (param (gauss s)))))
 
 ;; layers
 ;; ----------------------------------------------------------------
@@ -49,6 +56,7 @@
 ;; ----------------------------------------------------------------
 (defn Linear (w) (lambda (x) (linear x w)))
 (define ReLU (lambda (x) (for/list (xi x) (vrelu xi))))
-;; x + block(x), as in `x = [a + b for a, b in zip(x, x_residual)]`
+;; the blocks in turn, for a list of blocks only known at run time (chain is for a fixed list)
 (defn Sequential (blocks) (lambda (x) (reduce blocks (lambda (acc block) (block acc)) x)))
+;; x + block(x), as in `x = [a + b for a, b in zip(x, x_residual)]`
 (defn Residual (block) (lambda (x) (for/list ((a b) (zip (block x) x)) (val a + b))))

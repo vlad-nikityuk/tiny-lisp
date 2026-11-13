@@ -41,12 +41,14 @@ The compiler turns the AST into typed nodes (`runtime.Node`/`Code`: constant, va
 - **Macros**: any root-scope function named `macro/*` is applied to every AST node before it is compiled (raw node in, node out), once per node (see the compiler in lang.zig); defining or changing a `macro/*` bumps `runtime.epoch` so nodes compile again. Numbers, booleans and nil skip macros. `in_macro` prevents re-entrant expansion.
 - Symbols and strings are the same type; string literals stay distinct in the AST (`.lit`) and evaluate to strings.
 - `0` and `""` are falsy, `'()` is truthy; `eq?` treats an empty list as `nil`.
+- `(lambda (a & rest) ...)`: the compiler drops `&` and sets `Proto.rest`; `runtime.bind` gives the last parameter the extra arguments as a list. The parser reads `'` `` ` `` `~` `~@` as `quote`, `quasiquote`, `unquote`, `unquote-splicing` forms (prefix markers on the `open` stack, negative entries); `quasiquote` itself is a Lisp macro in the stdlib (`quasi`).
+- `defmacro` (stdlib, written without backquote): `(defmacro name (a & rest) body...)` defines `macro/name`, which checks the head, binds the parameters to the form's parts and returns the body's value. Code that runs inside a macro is never macro-expanded (`in_macro`), so macro bodies and the helper functions they call can't use macros; `defmacro` pre-rewrites backquote in its body (`quasi-walk`), the one exception. A template can't contain another one.
 - Stdlib macros: `defn` (several body expressions become a `begin`), `fn` (a lambda with several body expressions), `->` (thread-first), `chain` (composes blocks; each block expression is evaluated once, as an argument of a wrapper lambda), `for` and `for/list` (expand to `map`; a pattern variable over `(zip xs ys)` becomes a multi-list `map`), `defrec`, `deftest`. `examples/autograd.lisp` adds `val` (infix arithmetic on values, Python's precedence) and `slots` (`(data v)` is `(at v 0)`).
-- `map` takes several lists, `(map l1 ... ln f)`, and stops at the shortest; `range` and `zip` are natives (a Lisp `zip`/`range` built with `cons`/`rest` is quadratic, since both copy).
+- `map` takes several lists, `(map l1 ... ln f)`, and stops at the shortest; `range`, `zip` and `apply` are natives (a Lisp `zip`/`range` built with `cons`/`rest` is quadratic, since both copy); `flatten` is `(apply concat lst)` and `filter` builds on it.
 - `defrec` rewrites self-calls into thunks and wraps the function with the native `trampoline`.
 
 ## Tests
 
 Add a case whenever behaviour changes.
-- `spec/specs.lisp`: `deftest` + `assert`, ends with `(run-tests)`; a failing assert exits non-zero. Includes stack-safety tests (100k-deep recursion, deep data, 100k+ deep recursion through `map`/`reduce`/`partial`/`try` callbacks, errors unwinding them).
+- `spec/specs.lisp`: `deftest` + `assert` (`deftest` rewrites each `(assert expr)` to carry the test name and the quoted expression, so a failure prints both; `equal?` is a deep comparison), ends with `(run-tests)`; a failing assert exits non-zero. Includes stack-safety tests (100k-deep recursion, deep data, 100k+ deep recursion through `map`/`reduce`/`partial`/`try` callbacks, errors unwinding them).
 - `spec/repl.py <binary>`: drives the REPL and checks printed results (parsing, printing, errors, 100k-deep nesting).

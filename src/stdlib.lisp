@@ -3,29 +3,76 @@
 (define first car)
 (define rest cdr)
 
-;; several expressions in a row become one (begin ...)
-(define seq
+;; (defmacro name (a b & rest) body...) defines macro/name: it applies to forms (name x y z ...), binds a, b and rest to the
+;; parts after the name (rest: all that remain), and its value is the new form; any other form is left as it is.
+;; (defmacro twice (x) `(begin ~x ~x)) -> (define macro/twice (lambda (defmacro/form)
+;;                                          (if (eq? (first defmacro/form) 'twice) (begin (define x (at defmacro/form 1)) ...) defmacro/form)))
+;; The macro bodies are not macro-expanded, apart from backquote: use only functions, special forms and ` ~ ~@ in them.
+(define macro/defmacro
+  (lambda (ast)
+    (if (eq? (first ast) "defmacro")
+      (begin
+        (define name (first (rest ast)))
+        (define params (first (rest (rest ast))))
+        (define body (rest (rest (rest ast))))
+        (list "define" (+ "macro/" name)
+          (list "lambda" (list "defmacro/form")
+            (list "if" (list "eq?" (list "first" "defmacro/form") (list "quote" name))
+              (quasi-walk (begin-of (concat (macro-bindings params 1) body)))
+              "defmacro/form"))))
+      ast)))
+
+;; several expressions in a row become one (begin ...); a single expression stays as it is
+(define begin-of
   (lambda (exprs)
     (if (eq? (len exprs) 1) (first exprs) (cons "begin" exprs))))
+
+;; `x builds the list x with holes: ~e is replaced by the value of e, ~@e by the items of the list e (nesting is not supported)
+;; `(define ~name (lambda ~args ~@body)) -> (concat (list 'define) (list name) (list (concat ...)))
+(define quasi-item
+  (lambda (item)
+    (if (eq? (first item) "unquote-splicing") (first (rest item)) (list "list" (quasi item)))))
+
+(define quasi
+  (lambda (x)
+    (if (list? x)
+      (if (eq? (first x) "unquote") (first (rest x)) (cons "concat" (map x quasi-item)))
+      (list "quote" x))))
+
+(define macro/quasiquote
+  (lambda (ast)
+    (if (eq? (first ast) "quasiquote") (quasi (first (rest ast))) ast)))
+
+;; Code that runs inside a macro is not macro-expanded (expansion does not nest), so defmacro rewrites the backquotes in a
+;; macro's body itself, with this: every (quasiquote x) outside of quoted data becomes the code that builds x.
+(define quasi-walk
+  (lambda (x)
+    (if (list? x)
+      (if (eq? (first x) "quote") x
+        (if (eq? (first x) "quasiquote") (quasi-walk (quasi (first (rest x)))) (map x quasi-walk)))
+      x)))
+
+;; helpers of defmacro: the parameters become defines at the top of the macro's body
+(define macro-rest
+  (lambda (i) (if (eq? i 0) "defmacro/form" (list "rest" (macro-rest (- i 1))))))
+
+(define macro-bindings
+  (lambda (params i)
+    (if (eq? (len params) 0) '()
+      (if (eq? (first params) "&")
+        (list (list "define" (first (rest params)) (macro-rest i)))
+        (cons (list "define" (first params) (list "at" "defmacro/form" i)) (macro-bindings (rest params) (+ i 1)))))))
 
 ;; shorthand for defining functions; the body may be several expressions
 ;; (defn name args expr...) -> (define name (lambda args (begin expr...)))
 ;; (defn _add (a b) (+ a b))
-(define macro/defn
-  (lambda (ast)
-    (if (eq? (first ast) "defn")
-      (begin
-        (define body (rest ast))
-        (list "define" (first body) (list "lambda" (first (rest body)) (seq (rest (rest body))))))
-      ast)))
+(defmacro defn (name args & body)
+  `(define ~name (lambda ~args ~(begin-of body))))
 
 ;; a lambda whose body may be several expressions
 ;; (fn (args) expr...) -> (lambda (args) (begin expr...))
-(define macro/fn
-  (lambda (ast)
-    (if (eq? (first ast) "fn")
-      (list "lambda" (second ast) (seq (rest (rest ast))))
-      ast)))
+(defmacro fn (args & body)
+  `(lambda ~args ~(begin-of body)))
 
 (defn not (x) (if x #f #t))
 (defn second (l) (first (rest l)))
@@ -39,199 +86,129 @@
 ;; the lambda of a loop; a variable written as a pattern (a b) takes each item (a list) apart
 (defn for/lambda (var body)
   (if (list? var)
-    (list "lambda" (list "for/item") (seq (concat (for/bindings var 0) body)))
-    (list "lambda" (list var) (seq body))))
+    (list "lambda" (list "for/item") (begin-of (concat (for/bindings var 0) body)))
+    (list "lambda" (list var) (begin-of body))))
 
 ;; the loop as a map call; over (zip xs ys) it walks the lists side by side, without building the pairs
 (defn for/map (var source body)
   (if (&& (list? var) (eq? (first source) "zip"))
-    (concat (list "map") (rest source) (list (list "lambda" var (seq body))))
+    (concat (list "map") (rest source) (list (list "lambda" var (begin-of body))))
     (list "map" source (for/lambda var body))))
 
 ;; loops over a list, like Python's for and list comprehensions
 ;; (for (x lst) body...)      -> (begin (map lst (lambda (x) body...)) nil)
 ;; (for/list (x lst) body...) -> (map lst (lambda (x) body...))
 ;; (for/list ((a b) (zip xs ys)) (* a b)) -> (map xs ys (lambda (a b) (* a b)))
-(define macro/for
-  (lambda (ast)
-    (if (eq? (first ast) "for")
-      (list "begin" (for/map (first (first (rest ast))) (second (first (rest ast))) (rest (rest ast))) "nil")
-      ast)))
+(defmacro for (spec & body)
+  `(begin ~(for/map (first spec) (second spec) body) nil))
 
-(define macro/for/list
-  (lambda (ast)
-    (if (eq? (first ast) "for/list")
-      (for/map (first (first (rest ast))) (second (first (rest ast))) (rest (rest ast)))
-      ast)))
+(defmacro for/list (spec & body)
+  (for/map (first spec) (second spec) body))
+
 ;; (-> x step...) threads a value through the steps, like a stream pipeline: a name f is (f x), a form (f a) is (f x a)
 ;; (-> probs (at 3) vlog vneg) -> (vneg (vlog (at probs 3)))
 (defn thread-step (x step)
   (if (list? step) (cons (first step) (cons x (rest step))) (list step x)))
 
-(define macro/->
-  (lambda (ast)
-    (if (eq? (first ast) "->")
-      (reduce (rest (rest ast)) thread-step (second ast))
-      ast)))
+(defmacro -> (x & steps)
+  (reduce steps thread-step x))
 
 ;; (chain block...) is the block that feeds its input through the blocks in turn, like Keras's Sequential. A block is any
 ;; expression whose value is a function of one argument; each is evaluated once, when the chain is built.
 ;; (chain rmsnorm (Linear w) relu) -> ((lambda (b0 b1 b2) (lambda (x) (b2 (b1 (b0 x))))) rmsnorm (Linear w) relu)
-(define macro/chain
-  (lambda (ast)
-    (if (eq? (first ast) "chain")
-      (begin
-        (define names (map (range (len (rest ast))) (lambda (i) (+ "chain/b" i))))
-        (cons (list "lambda" names (list "lambda" (list "chain/x") (reduce names (lambda (acc name) (list name acc)) "chain/x")))
-              (rest ast)))
-      ast)))
+(defmacro chain (& blocks)
+  (define names (map (range (len blocks)) (lambda (i) (+ "chain/b" i))))
+  `((lambda ~names (lambda (chain/x) ~(reduce names (lambda (acc name) (list name acc)) "chain/x")))
+    ~@blocks))
 
-
+;; defrec
+;; ----------------------------------------------------------------
+;; (defrec name args body): self calls in the body become thunks, and the trampoline runs them in a loop
 (defn patch-rec-trampoline (ast name)
   (if (list? ast)
     (if (eq? name (first ast))
-      ;; ast: (a 1 2 3)
-      ;; res: (lambda () (a 1 2 3))
-      (list "lambda" '() ast)
+      (list "lambda" '() ast) ; (a 1 2 3) -> (lambda () (a 1 2 3))
       (map ast (lambda (x) (patch-rec-trampoline x name))))
     ast))
-;; ------------- UTILS ----------------------------------------
-(defn trace (x) (begin (print x) x))
+
+(defmacro defrec (name args expr)
+  `(define ~name (trampoline (lambda ~args ~(patch-rec-trampoline expr name)))))
+
+;; utilities
+;; ----------------------------------------------------------------
+(defn trace (x) (print x) x)
 (defn pass () 0)
 (defn color (code x) (+ ESC "[" code "m" x ESC "[39m"))
 (defn red (x) (color 31 x))
 (defn green (x) (color 32 x))
+(define newline "
+") ; strings have no escapes, so a newline is written out
+
 ;; Park-Miller random numbers in [0, 1); (set! rng-state n) reseeds.
 (define rng-state 20240607)
 (defn rand ()
-  (begin
-    (set! rng-state (- (* 16807 rng-state) (* 2147483647 (floor (/ (* 16807 rng-state) 2147483647)))))
-    (/ rng-state 2147483647)))
-;; ;; ------------ LISTS ----------------------------------------
+  (set! rng-state (- (* 16807 rng-state) (* 2147483647 (floor (/ (* 16807 rng-state) 2147483647)))))
+  (/ rng-state 2147483647))
+
+;; lists
+;; ----------------------------------------------------------------
 (defn empty? (lst) (eq? (len lst) 0))
 
-(defn iterate (lst f) (begin (map lst f) nil))
+(defn iterate (lst f) (map lst f) nil)
 
-(defn l/reduce (lst f memo)
-  (if (empty? lst) memo
-    (reduce (rest lst) f (f (first lst) memo))))
-
+;; (r/reduce lst f memo) folds from the right; it recurses on (rest lst), so it is quadratic: prefer reduce
 (defn r/reduce (lst f memo)
   (if (empty? lst) memo
     (f (first lst) (r/reduce (rest lst) f memo))))
 
-;; (iterate (zip '(1 2 3) '(4 5 6)) print)
+;; one level: (flatten '((1 2) (3))) is (1 2 3); a single copy, however many lists
+(defn flatten (lst) (apply concat lst))
 
+;; the items for which (keep? item) is true, in order
+(defn filter (lst keep?)
+  (flatten (for/list (x lst) (if (keep? x) (list x) '()))))
 
-;; -----------------------------------------------------------
-;; (define macro/trace trace)
-;; -----------------------------------------------------------
-
-(define macro/defrec
-  (lambda (ast)
-    (if (eq? (first ast) "defrec")
-      (begin
-        (define body (rest ast))
-        (define name (first body))
-        (define args (first (rest body)))
-        (define expr (patch-rec-trampoline (first (rest (rest body))) name))
-        (list "define" name (list "trampoline" (list "lambda" args expr))))
-      ast)))
-
-;; Linked lists
-(defn c/cons (v lst)
-  (lambda (f) (f v lst)))
-
-(defn c/head (lst)
-  (lst (lambda (h t) h)))
-
-(defn c/tail (lst)
-  (lst (lambda (h t) t)))
-
-;;-------------- UNIT TESTS -----------------------------------
-(defn assert (expr)
+;; unit tests
+;; ----------------------------------------------------------------
+;; (assert expr message...) fails with an error unless expr is true. Inside a deftest the macro rewrites every assert to
+;; (assert expr 'test-name 'expr message...), so the error says which test and which expression failed.
+(defn assert (expr & info)
   (if (eq? #f expr)
-    (begin
-      (error "assertion-failed")
-      #f)
+    (error (if (eq? (len info) 0) "assertion-failed"
+             (+ "assertion failed in " (first info) ": " (second info)
+                (reduce (rest (rest info)) (lambda (text message) (+ text " " message)) ""))))
     #t))
 
 (define *TESTS* '())
 
-(defn equal? (a1 a2)
-  (if (&& (list? a1) (list? a2))
-      (r/reduce (zip a1 a2) (lambda (x m)
-			      (begin
-			       (define v1 (first x))
-			       (define v2 (first (rest x)))
-			       (eq? v1 v2)))
-		#t)
-    (eq? a1 a2)))
+;; element-wise, at any depth; lists of different lengths are never equal
+(defn equal? (a b)
+  (if (&& (list? a) (list? b))
+    (&& (eq? (len a) (len b))
+        (reduce (zip a b) (lambda (ok pair) (&& ok (equal? (first pair) (second pair)))) #t))
+    (eq? a b)))
 
-(define macro/xdeftest
-  (lambda (ast)
-    (if (eq? (first ast) "xdeftest") '(pass) ast)))
+;; (patch-asserts '(assert (eq? 1 x)) 'my-test) -> (assert (eq? 1 x) (quote my-test) (quote (eq? 1 x)))
+;; Quoted data is left alone. Runs inside the deftest macro, so it uses only functions and special forms.
+(defn patch-asserts (x test-name)
+  (if (list? x)
+    (if (eq? (first x) "quote") x
+      (if (eq? (first x) "assert")
+        (concat (list "assert" (second x) (list "quote" test-name) (list "quote" (second x))) (rest (rest x)))
+        (map x (lambda (y) (patch-asserts y test-name)))))
+    x))
 
-(define macro/deftest
-  (lambda (ast)
-    (if (eq? (first ast) "deftest")
-      (begin
-        (define body (rest ast))
-        (define name (first body))
-        (define test (seq (rest body)))
-        ;; test-name ; test-fn pair
-        (define test-definition (list "list" (list "quote" name) name))
-        (define tests-var "*TESTS*")
-        (list (quote begin)
-          (list "define" name (list "lambda" '() test))
-          (list "set!" tests-var
-            (list "concat" tests-var (list "list" test-definition)))))
-      ast)))
+(defmacro xdeftest (& body) '(pass))
 
-;;(patch-asserts (quote
-;; ast  (deftest failing-test (assert (eq? #f #t))))
-;; name (quote failing-test)
-;; expr (quote (+ 1 2)))
-(defn patch-asserts (ast test-name assertion-expr)
-  (begin
-    (defn patch-assert (_ast_)
-      (if (eq? (first _ast_) "assert")
-        (begin
-          (define body (rest _ast_))
-          (define expr (first body))
-          (define messages (rest body))
-          (define q-str "quote")
-          ;(assert test-exp
-          ;	  (quote test:)
-          ;	  (quote test-name)
-          ;	  (quote expression:)
-          ;	  (quote assertion-expr)
-          ;	  messages..)
-
-          (concat
-            (list
-              "assert"
-              assertion-expr
-              (list q-str "test:")
-              (list q-str test-name)
-              (list q-str "expression:")
-              (list q-str assertion-expr))
-            messages)
-          _ast_)))
-
-   (defn patch-rec (_ast_)
-     (begin
-      (define _new_ast_ (patch-assert _ast_))
-      (if (list? _new_ast_)
-	      (map _new_ast_ patch-rec)
-	      _new_ast_)))
-  (patch-rec ast)))
+(defmacro deftest (name & body)
+  `(begin
+     (define ~name (lambda () ~(patch-asserts (begin-of body) name)))
+     (set! *TESTS* (concat *TESTS* (list (list (quote ~name) ~name))))))
 
 (defn run-tests ()
   (iterate *TESTS*
-	   (lambda (test)
-	     (begin
-	      (define name (first test))
-	      (define test-fn (first (rest test)))
-	      (test-fn)
-	      (print (green "PASS") name)))))
+    (fn (test)
+      (define name (first test))
+      (define test-fn (second test))
+      (test-fn)
+      (print (green "PASS") name))))

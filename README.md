@@ -43,7 +43,16 @@ Apple Silicon, best of 3 runs.
 
 ## Macros
 
-A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it. `defn`, `defrec` and `deftest` are macros written in Lisp (`src/stdlib.lisp`).
+A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it (raw form in, new form out). `defmacro` writes one without the boilerplate: it names the macro, binds parameters to the parts of the form, and `&` collects the rest, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.
+
+```lisp
+(defmacro unless (test & body)
+  `(if ~test nil (begin ~@body)))
+
+(unless #f (print "runs"))
+```
+
+The same macro without `defmacro` and backquote:
 
 ```lisp
 (define macro/unless
@@ -51,9 +60,9 @@ A macro is a function named `macro/…`. Before any expression runs, every macro
     (if (eq? (first ast) "unless")
       (list "if" (list "not" (first (rest ast))) (first (rest (rest ast))))
       ast)))
-
-(unless #f (print "runs"))
 ```
+
+`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/stdlib.lisp`. Macro bodies are not macro-expanded themselves (expansion does not nest), so inside one use only functions, special forms and the backquote syntax; `defmacro` rewrites the backquotes of its body when it is defined. Templates cannot be nested.
 
 ## Get started
 
@@ -87,6 +96,7 @@ Numbers (`42`, `1.5`), booleans (`#t`, `#f`), `nil`, lists (`'(1 2 3)`), functio
 | `(define name v)` | create a variable in the current scope |
 | `(set! name v)` | update the nearest existing variable |
 | `(lambda (args) body)` | a closure; missing arguments are `nil`, extra ones are ignored |
+| `(lambda (a & rest) body)` | `rest` is the list of the arguments after `a` |
 | `(begin e1 e2 ...)` | evaluate in order, return the last |
 | `(defn name (args) body...)` | shorthand for `define` + `lambda`; several body expressions run as a `begin` |
 | `(defrec name (args) body)` | like `defn`, with self tail calls run in a loop |
@@ -111,7 +121,8 @@ Lists are immutable arrays: `cons` and `cdr` copy. The list comes first in `map`
 | `(cdr '(1))` / `rest` | `()` | |
 | `(len '(1 2 3))` | `3` | `(at '(a b c) 1)` → `b` |
 | `(map '(1 2 3) (lambda (x) (* x x)))` | `(1 4 9)` | `(map xs ys f)` calls `f` with one item of each |
-| `(range 3)` | `(0 1 2)` | |
+| `(range 3)` | `(0 1 2)` | `(apply + '(1 2 3))` → `6` |
+| `(filter lst keep?)` | the items `keep?` accepts | `(flatten '((1) (2 3)))` → `(1 2 3)` |
 | `(reduce '(1 2 3 4) + 0)` | `10` | |
 | `(zip '(1 2) '(a b))` | `((1 a) (2 b))` | `(concat '(1 2) '(3 4))` → `(1 2 3 4)` |
 | `list?`, `empty?`, `equal?` | | `equal?` compares element-wise |
@@ -143,7 +154,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defn defrec fn -> chain for for/list empty? iterate equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? c/cons ... deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
 
 ### Files and strings
 

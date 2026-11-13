@@ -128,7 +128,7 @@ pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same p
 pub const Sym = struct { key: Key, local: bool = false }; // local: some scope binds this name (a parameter, or a define inside a function)
 pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once found
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
-pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0 }; // cap: room for the scope of a call, grown by defines
+pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false }; // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, call: []const *Node };
 pub const Node = struct { ast: V, src: V = .nil, stamp: u32 = 0, code: Code = .raw }; // src: the (expanded) form that code was built from
 
@@ -330,7 +330,9 @@ pub fn bind(f: *Lam, a: []const V) *Env {
         break :blk e;
     } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
     e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..ps.len], .cap = cap, .proto = f.proto, .esc = cap != env_cap };
-    for (ps, e.vars, 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
+    const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
+    for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
+    if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
     return e;
 }
 

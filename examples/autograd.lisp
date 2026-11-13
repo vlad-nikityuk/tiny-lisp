@@ -45,32 +45,29 @@
   (define lhs (val/term ts))
   (val/fold val/term (lambda (op a b) (list "v+" a (if (eq? op "+") b (list "vneg" b)))) "+" "-" (first lhs) (second lhs)))
 
-(define macro/val
-  (lambda (ast)
-    (if (eq? (first ast) "val") (first (val/sum (rest ast))) ast)))
+(defmacro val (& tokens)
+  (first (val/sum tokens)))
 
 ;; Value
 ;; ----------------------------------------------------------------
-;; Field access reads like attributes and costs nothing: (data v) is (at v 0), (grad v) is (at v 1), and so on;
-;; (Value data children local-grads) is the list with the other fields at their start values.
-(define slot-names '(data grad children local-grads))
-(defn slot-index (name i)
-  (if (eq? i (len slot-names)) nil
-    (if (eq? name (at slot-names i)) i (slot-index name (+ i 1)))))
-
-(define macro/slots
-  (lambda (ast)
-    (if (&& (list? ast) (eq? (len ast) 2) (not (eq? (slot-index (first ast) 0) nil)))
-      (list "at" (second ast) (slot-index (first ast) 0))
-      (if (&& (list? ast) (eq? (len ast) 4) (eq? (first ast) "Value"))
-        (list "list" (second ast) 0 (third ast) (at ast 3) 0 nil)
-        ast))))
+;; Field access reads like attributes and costs nothing, because these are macros: (data v) is (at v 0), (grad v) is
+;; (at v 1), and so on; (set-grad! v x) stores in place; (Value data children local-grads) is a list with the search
+;; fields (visited, next) at their start values.
+(defmacro data (v) `(at ~v 0))
+(defmacro grad (v) `(at ~v 1))
+(defmacro children (v) `(at ~v 2))
+(defmacro local-grads (v) `(at ~v 3))
+(defmacro visited (v) `(at ~v 4))
+(defmacro next (v) `(at ~v 5))
+(defmacro set-data! (v x) `(vset! ~v 0 ~x))
+(defmacro set-grad! (v x) `(vset! ~v 1 ~x))
+(defmacro set-visited! (v x) `(vset! ~v 4 ~x))
+(defmacro set-next! (v x) `(vset! ~v 5 ~x))
+(defmacro Value (d c lg) `(list ~d 0 ~c ~lg 0 nil))
 
 (defn param (x) (Value x '() '()))
 (defn const (x) (Value x '() '()))
 (defn value (x) (if (list? x) x (const x)))
-(defn set-data! (v x) (vset! v 0 x))
-(defn set-grad! (v x) (vset! v 1 x))
 
 (defn v+ (a b)
   (define self (if (list? a) a b))
@@ -92,23 +89,23 @@
 
 ;; depth-first: finish the children first, then v goes to the front of the list
 (defn build-topo (v)
-  (if (eq? (at v 4) topo-stamp) 0
+  (if (eq? (visited v) topo-stamp) 0
     (begin
-      (vset! v 4 topo-stamp)
+      (set-visited! v topo-stamp)
       (for (child (children v)) (build-topo child))
-      (vset! v 5 topo-head)
+      (set-next! v topo-head)
       (set! topo-head v))))
 
 ;; child.grad += local_grad * v.grad for each child
 (defn push-grads (v)
   (for ((child local-grad) (zip (children v) (local-grads v)))
-    (vset! child 1 (+ (grad child) (* local-grad (grad v))))))
+    (set-grad! child (+ (grad child) (* local-grad (grad v))))))
 
-(defn walk (v) (if (eq? v nil) 0 (begin (push-grads v) (walk (at v 5)))))
+(defn walk (v) (if (eq? v nil) 0 (begin (push-grads v) (walk (next v)))))
 
 (defn backward (loss)
   (set! topo-stamp (+ topo-stamp 1))
   (set! topo-head nil)
   (build-topo loss)
-  (vset! loss 1 1)
+  (set-grad! loss 1)
   (walk topo-head))

@@ -5,20 +5,21 @@
 ;; (rand) instead of Python's random, so a Python run with the same generator prints the same losses.
 ;; The code follows the gist line by line, helped by macros: (defn f (args) expr...) with a body of several expressions,
 ;; (for (x lst) ...) and (for/list (x lst) ...) for loops and comprehensions (a pattern (a b) unpacks pairs, as with zip),
-;; and (val a * b + c) for arithmetic on values (examples/autograd.lisp).
+;; (val a * b + c) for arithmetic on values (examples/autograd.lisp), and for the model (examples/nn.lisp) blocks that are
+;; tied together with (chain a b c) and (-> x f g).
 (define num-steps 10)
 (define num-samples 5)
 (load "examples/nn.lisp") ; which loads the autograd engine, examples/autograd.lisp
 
 ;; dataset and tokenizer
 ;; ----------------------------------------------------------------
-(define docs (reduce (split (read-file "examples/names.txt") "
-") (lambda (acc s) (if s (concat acc (list s)) acc)) '()))
+(define docs (filter (split (read-file "examples/names.txt") newline) (lambda (line) line))) ; the non-empty lines
 (define uchars (split "abcdefghijklmnopqrstuvwxyz" ""))
 (define BOS 26)
 (define vocab-size 27)
-(defn index-of (ch l i) (if (eq? ch (at l i)) i (index-of ch l (+ i 1))))
-(defn tokenize (doc) (concat (list BOS) (for/list (ch (split doc "")) (index-of ch uchars 0)) (list BOS)))
+(defn index-from (l x i) (if (eq? x (at l i)) i (index-from l x (+ i 1))))
+(defn index-of (l x) (index-from l x 0)) ; like l.index(x)
+(defn tokenize (doc) (concat (list BOS) (for/list (ch (split doc "")) (index-of uchars ch)) (list BOS)))
 
 ;; parameters
 ;; ----------------------------------------------------------------
@@ -58,6 +59,9 @@
   (for/list (j (range head-dim))
     (vsum (for/list ((w vt) (zip attn-weights v-h)) (val w * (at vt j))))))
 
+;; one key cache and one value cache per layer, which grow by one position per token
+(defn new-caches () (for/list (_ (range n-layer)) (new-list)))
+
 ;; weights of layer li, like state_dict[f'layer{li}.{name}']
 (defn layer-weights (li name) (dict-get state-dict (+ "layer" li "." name)))
 
@@ -69,12 +73,9 @@
     (define v (linear x (layer-weights li "attn_wv")))
     (append! keys k)
     (append! values v)
-    (define x-attn '())
-    (for (h (range n-head))
-      (set! x-attn
-        (concat x-attn
-          (attention-head q (items keys) (items values) (* h head-dim)))))
-    x-attn))
+    (flatten
+      (for/list (h (range n-head))
+        (attention-head q (items keys) (items values) (* h head-dim))))))
 
 ;; one transformer layer: attention block, then MLP block, each with a residual connection
 (defn Layer (li keys values)
@@ -92,6 +93,9 @@
           ReLU
           (Linear (layer-weights li "mlp_fc2")))))))
 
+;; The layers and the chain are rebuilt on every call, and the weights are looked up by name each time, on purpose: this keeps
+;; the shape of gpt(token_id, pos_id, keys, values) in microgpt.py from the gist. Building the model once per sequence
+;; would save about 2 ms of an 820 ms run (measured), not worth leaving the Python's structure.
 ;; (gpt token-id pos-id keys values) -> logits; keys and values hold one cache per layer, which grows by one position
 (defn gpt (token-id pos-id keys values)
   (define tok-emb (at (dict-get state-dict "wte") token-id))
@@ -138,8 +142,8 @@
   (define tokens (tokenize doc))
   (define n (min block-size (- (len tokens) 1)))
   ;; forward the token sequence, building the graph up to the loss
-  (define keys (for/list (_ (range n-layer)) (new-list)))
-  (define values (for/list (_ (range n-layer)) (new-list)))
+  (define keys (new-caches))
+  (define values (new-caches))
   (define losses (new-list))
   (for (pos-id (range n))
     (define token-id (at tokens pos-id))
@@ -173,4 +177,4 @@
 
 (print "--- inference (new, hallucinated names) ---")
 (for (sample-idx (range num-samples))
-  (print "sample" (+ sample-idx 1) ":" (sample-loop 0 BOS (for/list (_ (range n-layer)) (new-list)) (for/list (_ (range n-layer)) (new-list)) "")))
+  (print "sample" (+ sample-idx 1) ":" (sample-loop 0 BOS (new-caches) (new-caches) "")))

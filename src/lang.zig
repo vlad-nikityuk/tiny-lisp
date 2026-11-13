@@ -51,9 +51,9 @@ fn form(a: []const V) rt.E!rt.Code {
     switch (head) {
         .quote => return .{ .val = rt.arg(a, 1) },
         .lambda => {
-            const params = make(rt.Key, rt.items(rt.arg(a, 1)).len);
-            for (params, rt.items(rt.arg(a, 1))) |*key, p| { const sym = intern(p); sym.local = true; key.* = sym.key; }
-            const proto = &make(rt.Proto, 1)[0]; proto.* = .{ .params = params, .body = stub(rt.arg(a, 2)) };
+            const ps = rt.items(rt.arg(a, 1)); const params = make(rt.Key, ps.len); var n: usize = 0; // (a b & rest): rest takes the extra arguments
+            const proto = &make(rt.Proto, 1)[0]; proto.* = .{ .params = params[0..0], .body = stub(rt.arg(a, 2)) };
+            for (ps) |p| { if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { proto.rest = true; continue; } const sym = intern(p); sym.local = true; params[n] = sym.key; n += 1; proto.params = params[0..n]; }
             return .{ .lambda = proto };
         },
         .@"if" => return .{ .@"if" = kids(a[1..], 3) },
@@ -96,7 +96,6 @@ fn exec(go: rt.Go, env: *rt.Env) rt.E!V { // run from go until its first step ha
     var step = go;
     while (true) return run(&m, step) catch |err| { step = rt.recover(m.base) orelse return err; continue; };
 }
-
 fn run(m: *rt.M, go: rt.Go) rt.E!V {
     const ks = &rt.ks;
     const vs = &rt.vs;
@@ -159,8 +158,8 @@ fn run(m: *rt.M, go: rt.Go) rt.E!V {
 // parser
 // ----------------------------------------------------------------
 // Iterative, so nesting depth is limited by memory only. Symbols and literals are permanent.
-var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r";
-const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";
+var src: []const u8 = ""; var pos: usize = 0; const space = " \t\n\r"; const unexpected = "TinyLisp: Syntax error, unexpected closing parenthesis";
+const prefixes = [_][]const u8{ "quote", "quasiquote", "unquote", "unquote-splicing" }; // ' ` ~ ~@
 
 fn peek() u8 { return if (pos < src.len) src[pos] else 0; } // a 0 byte ends the source
 fn skip() void {
@@ -168,7 +167,7 @@ fn skip() void {
 }
 fn lex() V {
     const lit = peek() == '"'; const start = pos + @intFromBool(lit);
-    pos = std.mem.indexOfAnyPos(u8, src, start, if (lit) "\"\x00" else space ++ "\x00()';\"") orelse src.len;
+    pos = std.mem.indexOfAnyPos(u8, src, start, if (lit) "\"\x00" else space ++ "\x00()'`~;\"") orelse src.len;
     const t = src[start..pos]; if (lit and peek() == '"') pos += 1;
     if (!lit and std.mem.indexOfAny(u8, t, "0123456789") != null) if (std.fmt.parseFloat(f64, t)) |d| return V.num(d) else |_| {};
     const text = rt.mkstr(t, true);
@@ -178,20 +177,21 @@ fn lex() V {
 pub fn parse(text: []const u8) rt.E!V {
     src = text; pos = 0;
     var done: std.ArrayList(V) = .empty; defer done.deinit(std.heap.c_allocator); // finished items, the open lists' items among them
-    var open: std.ArrayList(?usize) = .empty; defer open.deinit(std.heap.c_allocator); // where each open list starts in done; null: a quote
+    var open: std.ArrayList(i64) = .empty; defer open.deinit(std.heap.c_allocator); // where each open list starts in done; below 0: a prefix, -1 - its index in prefixes
     while (open.items.len > 0 or done.items.len == 0) {
         skip();
         var d: V = switch (peek()) {
             0 => return rt.fail(rt.str("TinyLisp: Syntax error, unbalanced expression", .{})),
-            '(', '\'' => |c| { pos += 1; gc.push(?usize, &open, if (c == '(') done.items.len else null); continue; },
+            '(' => { pos += 1; gc.push(i64, &open, @intCast(done.items.len)); continue; },
+            '\'', '`', '~' => |c| { pos += 1; const k: i64 = if (c == '~' and peek() == '@') 3 else @intCast(std.mem.indexOfScalar(u8, "'`~", c).?); pos += @intFromBool(k == 3); gc.push(i64, &open, -1 - k); continue; },
             ')' => blk: {
-                pos += 1; if (open.items.len == 0 or open.getLast() == null) return rt.fail(rt.str(unexpected, .{}));
-                const items = done.items[open.pop().?.?..]; done.items.len -= items.len;
+                pos += 1; if (open.items.len == 0 or open.getLast() < 0) return rt.fail(rt.str(unexpected, .{}));
+                const items = done.items[@intCast(open.pop().?)..]; done.items.len -= items.len;
                 break :blk rt.list(items, items.len);
             },
             else => lex(),
         };
-        while (open.items.len > 0 and open.getLast() == null) : (_ = open.pop()) d = rt.list(&.{ V.string(rt.mkstr("quote", true)), d }, 2); // 'x is (quote x)
+        while (open.items.len > 0 and open.getLast() < 0) : (_ = open.pop()) d = rt.list(&.{ V.string(rt.mkstr(prefixes[@intCast(-1 - open.getLast())], true)), d }, 2); // 'x is (quote x)
         gc.push(V, &done, d);
     }
     skip();

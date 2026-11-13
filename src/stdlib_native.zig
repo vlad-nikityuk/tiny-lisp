@@ -92,6 +92,12 @@ fn zip(_: *Fn, a: []const V) E!V {
     return r;
 }
 
+/// (apply f args) calls f with the items of the list args as its arguments.
+fn apply(_: *Fn, k: *K, _: ?V) E!Go {
+    const a = runtime.frameArgs(k, 2);
+    return runtime.tail(k, a[0], runtime.items(a[1]), false);
+}
+
 fn partialRun(s: *Fn, k: *K, _: ?V) E!Go {
     return runtime.tail(k, s.d0, runtime.items(s.d1), true); // the fixed arguments go before the frame's
 }
@@ -159,6 +165,7 @@ pub fn install(e: *runtime.Env) void {
     def(e, "at", .{ .plain = at });
     def(e, "map", .{ .step = map });
     def(e, "reduce", .{ .step = reduce });
+    def(e, "apply", .{ .step = apply });
     def(e, "partial", .{ .plain = partial });
     def(e, "concat", .{ .plain = concat });
     def(e, "range", .{ .plain = range });

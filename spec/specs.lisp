@@ -54,6 +54,34 @@
 (deftest begin-should-return-last-expr
   (assert (eq? 4 (begin 1 2 3 4))))
 
+;; equal? compares element-wise at any depth, and lists of different lengths differ
+(deftest equal?--deep-and-length
+  (assert (equal? '(1 2) '(1 2)))
+  (assert (not (equal? '(1 2) '(1 3))))
+  (assert (not (equal? '(2 1) '(1 1))))
+  (assert (not (equal? '(1 2 3) '(1 2))))
+  (assert (not (equal? '(1 2) '(1 2 3))))
+  (assert (equal? '((1 2) (3 (4))) '((1 2) (3 (4)))))
+  (assert (not (equal? '((1 2) (3 (4))) '((1 2) (3 (5))))))
+  (assert (equal? '() '()))
+  (assert (not (equal? '(1) 1))))
+
+;; deftest rewrites (assert expr) to (assert expr 'test-name 'expr), so a failure names the test and the expression
+(deftest asserts--patched-with-test-name-and-expression
+  (assert (equal? (patch-asserts '(assert (eq? 1 x)) 'my-test)
+                  (list "assert" '(eq? 1 x) (list "quote" 'my-test) (list "quote" '(eq? 1 x)))))
+  (assert (equal? (patch-asserts '(assert 1 msg) 't)
+                  (list "assert" 1 (list "quote" 't) (list "quote" 1) 'msg)))
+  (assert (equal? (patch-asserts '(quote (assert 1)) 't) '(quote (assert 1))))
+  (assert (equal? (patch-asserts '(a (b (assert 2))) 't)
+                  (list 'a (list 'b (list "assert" 2 (list "quote" 't) (list "quote" 2)))))))
+
+(defn bare-assert () (assert #f))
+(deftest asserts--failure-message
+  (define message (try (lambda () (assert (eq? 1 2) "extra")) (lambda (e) e)))
+  (assert (eq? message "assertion failed in asserts--failure-message: (eq? 1 2) extra"))
+  (assert (eq? "assertion-failed" (try bare-assert (lambda (e) e)))))
+
 (deftest assert-fails-on-false-expr
   (if
     (eq?
@@ -265,6 +293,9 @@
   (assert (eq? 49 (sq 7))))
 
 ;; church-encoded lists (closures as data)
+(defn c/cons (v lst) (lambda (f) (f v lst)))
+(defn c/head (lst) (lst (lambda (h t) h)))
+(defn c/tail (lst) (lst (lambda (h t) t)))
 (deftest church--lists
   (define cl (c/cons 1 (c/cons 2 (c/cons 3 nil))))
   (assert (eq? 1 (c/head cl)))
@@ -377,7 +408,7 @@
   (assert (eq? (floor -0.5) -1)))
 
 (deftest split--by-separator-and-characters
-  (assert (equal? (split "a,b,,c" ",") '(a b "" c)))
+  (assert (equal? (split "a,b,,c" ",") (list 'a 'b "" 'c)))
   (assert (equal? (split "abc" "") '(a b c))))
 
 (deftest files--write-read-load
@@ -490,6 +521,17 @@
   (for ((a b) (zip '(1 2) '(3 4))) (set! total (+ total (* a b))))
   (assert (eq? 11 total)))
 
+;; apply spreads a list into arguments; filter keeps the items a predicate accepts; flatten joins one level
+(deftest lists--apply-filter-flatten
+  (assert (eq? 6 (apply + '(1 2 3))))
+  (assert (equal? '(1 2 3) (apply concat '((1) (2 3)))))
+  (assert (equal? (list 1 '(2 3)) (apply (lambda (a & r) (list a r)) '(1 2 3))))
+  (assert (equal? '() (apply list '())))
+  (assert (equal? '(2 4) (filter '(1 2 3 4) (lambda (x) (eq? 0 (- x (* 2 (floor (/ x 2)))))))))
+  (assert (equal? '() (filter '() (lambda (x) #t))))
+  (assert (equal? '(1 2 3) (flatten '((1 2) () (3)))))
+  (assert (eq? 100000 (len (flatten (for/list (i (range 100000)) (list i)))))))
+
 (deftest lists--range-zip-and-multi-list-map
   (assert (equal? '(0 1 2) (range 3)))
   (assert (equal? '() (range 0)))
@@ -511,6 +553,41 @@
   (assert (eq? 6 ((chain inc) 5)))
   (define scale (fn (x) (define k 3) (* x k)))
   (assert (eq? 11 ((chain scale inc inc) 3))))
+
+;; & collects the extra arguments into a list
+(deftest lambda--rest-parameter
+  (define f (lambda (a & more) (list a more)))
+  (assert (eq? 1 (first (f 1))))
+  (assert (equal? '(2 3) (first (rest (f 1 2 3)))))
+  (assert (equal? '() (first (rest (f 1)))))
+  (assert (eq? 4 ((lambda (x y & r) (+ x y (len r))) 1 2 3)))
+  (assert (equal? '(5 7) (map '(1 2) '(3 4) (lambda (a & r) (+ a (first r) 1)))))
+  (assert (eq? 4 ((lambda (& all) (len all)) 1 2 3 4))))
+
+;; ` quotes with holes: ~e inserts the value of e, ~@e the items of the list e
+(deftest macros--quasiquote
+  (define x 5)
+  (define ys '(1 2))
+  (assert (equal? '(5) `(~x)))
+  (assert (eq? 5 (first `(~x b))))
+  (assert (equal? '(a 1 2 b) `(a ~@ys b)))
+  (assert (equal? '() `()))
+  (define nested `(a (b ~x) ~@ys))
+  (assert (eq? 4 (len nested)))
+  (assert (equal? '(b 5) (first (rest nested)))))
+
+;; defmacro: name, parameters bound to the parts of the form, & collects the rest; other forms are left alone
+(defmacro do-twice (x) `(begin ~x ~x))
+(defmacro my-or (a & more) `(if ~a ~a ~(if (eq? (len more) 0) #f (cons 'my-or more))))
+(defmacro nothing () 7)
+(deftest macros--defmacro
+  (define n 0)
+  (do-twice (set! n (+ n 1)))
+  (assert (eq? 2 n))
+  (assert (eq? 3 (my-or 0 "" 3)))
+  (assert (eq? #f (my-or 0 0)))
+  (assert (eq? 7 (nothing)))
+  (assert (eq? 5 (begin 1 5))))
 
 ;; examples/autograd.lisp: (val ...) is Python's arithmetic on values, with the same graph
 (load "examples/autograd.lisp")
