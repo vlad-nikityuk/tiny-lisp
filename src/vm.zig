@@ -13,6 +13,17 @@ const E = rt.E;
 
 const Op = rt.Opcode;
 const max_depth = 120; // source nesting the compiler follows (it recurses)
+const max_short_circuit_operands = 64;
+const max_plain_depth = 8;
+const max_inline_depth = 24;
+const max_inline_nodes = 48;
+const max_inline_sites = 8;
+const max_inline_slots = 8;
+
+fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
+    list.append(std.heap.c_allocator, x) catch gc.oom();
+    return list.items.len - 1;
+}
 
 const Comp = struct {
     ins: std.ArrayList(rt.Ins) = .empty,
@@ -24,12 +35,12 @@ const Comp = struct {
     bodies: std.ArrayList(?*rt.Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
     keys: std.ArrayList(rt.Key) = .empty,
     seen: std.ArrayList(rt.Key) = .empty, // names read or set! so far, in scan order
-    cond: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
+    conditional_depth: usize = 0, // > 0 while scanning code that may not run (the depth of such regions)
     held: std.ArrayList(struct { key: rt.Key, level: usize }) = .empty, // names defined in the regions being scanned
     closed: std.ArrayList(rt.Key) = .empty, // names defined in a region that is over: a later use would not be sure of the define
     self: ?*rt.Proto = null,
-    inl: ?struct { keys: []const rt.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
-    sites: usize = 0, // functions inlined so far
+    inline_scope: ?struct { keys: []const rt.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
+    inline_sites: usize = 0, // functions inlined so far
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
 
     fn emit(c: *Comp, op: Op, a: usize, b: usize) usize {
@@ -37,15 +48,13 @@ const Comp = struct {
         return c.ins.items.len - 1;
     }
 
-    fn add(c: *Comp, comptime T: type, list: *std.ArrayList(T), x: T) usize {
-        _ = c;
-        list.append(std.heap.c_allocator, x) catch gc.oom();
-        return list.items.len - 1;
+    fn deinit(c: *Comp) void {
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |list| list.deinit(std.heap.c_allocator);
     }
 
     fn slotOf(c: *Comp, sym: *rt.Sym) ?usize {
-        const keys = if (c.inl) |i| i.keys else c.keys.items;
-        const base = if (c.inl) |i| i.base else 0;
+        const keys = if (c.inline_scope) |i| i.keys else c.keys.items;
+        const base = if (c.inline_scope) |i| i.base else 0;
         var i = keys.len; // the last of equal names wins, as in a scope search
         while (i > 0) : (i -= 1) if (keys[i - 1] == sym.key) return base + i - 1;
         return null;
@@ -63,7 +72,7 @@ const Comp = struct {
             .val => {},
             .ref => |r| {
                 if (c.isClosed(r.sym)) return error.Bail;
-                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = c.add(rt.Key, &c.seen, r.sym.key);
+                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = add(rt.Key, &c.seen, r.sym.key);
             },
             .@"if", .begin, .@"&&", .@"||", .call => |kids| for (kids) |k| try c.scanUses(k, depth + 1),
             .prim => |p| for (p.c[1..]) |k| try c.scanUses(k, depth + 1),
@@ -71,7 +80,7 @@ const Comp = struct {
                 try c.scanUses(d.val, depth + 1);
                 if (!d.define) if (d.sym) |sym| {
                     if (c.isClosed(sym)) return error.Bail;
-                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = c.add(rt.Key, &c.seen, sym.key);
+                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = add(rt.Key, &c.seen, sym.key);
                 };
             },
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
@@ -80,15 +89,15 @@ const Comp = struct {
     }
 
     fn enter(c: *Comp) void {
-        c.cond += 1;
+        c.conditional_depth += 1;
     }
 
     /// End of a region that may not run: the names it defined can no longer be used (they are bound from the start of the call,
     /// but only defined if the region ran).
     fn leave(c: *Comp) void {
-        c.cond -= 1;
-        while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.cond) {
-            _ = c.add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
+        c.conditional_depth -= 1;
+        while (c.held.items.len > 0 and c.held.items[c.held.items.len - 1].level > c.conditional_depth) {
+            _ = add(rt.Key, &c.closed, c.held.items[c.held.items.len - 1].key);
             c.held.items.len -= 1;
         }
     }
@@ -114,7 +123,7 @@ const Comp = struct {
             .lambda => |lp| try c.scanUses(lp.body, depth + 1),
             .ref => |r| {
                 if (c.isClosed(r.sym)) return error.Bail;
-                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = c.add(rt.Key, &c.seen, r.sym.key);
+                if (c.slotOf(r.sym) == null and !c.seenBefore(r.sym)) _ = add(rt.Key, &c.seen, r.sym.key);
             },
             .@"if" => |k| {
                 try c.scan(k[0], depth + 1);
@@ -137,11 +146,11 @@ const Comp = struct {
                 const sym = d.sym orelse return error.Bail;
                 if (c.isClosed(sym)) return error.Bail;
                 if (!d.define) {
-                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = c.add(rt.Key, &c.seen, sym.key);
+                    if (c.slotOf(sym) == null and !c.seenBefore(sym)) _ = add(rt.Key, &c.seen, sym.key);
                 } else {
                     if (c.seenBefore(sym)) return error.Bail;
-                    if (c.slotOf(sym) == null) _ = c.add(rt.Key, &c.keys, sym.key);
-                    if (c.cond > 0) _ = c.add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.cond });
+                    if (c.slotOf(sym) == null) _ = add(rt.Key, &c.keys, sym.key);
+                    if (c.conditional_depth > 0) _ = add(@TypeOf(c.held.items[0]), &c.held, .{ .key = sym.key, .level = c.conditional_depth });
                     sym.local = true;
                 }
             },
@@ -158,11 +167,11 @@ const Comp = struct {
     fn gen(c: *Comp, n: *Node, tail: bool) !void {
         switch (n.code) {
             .val => |v| {
-                _ = c.emit(.konst, c.add(V, &c.consts, v), 0);
+                _ = c.emit(.konst, add(V, &c.consts, v), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .ref => |*r| {
-                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inl != null) .global else .outer, c.add(*rt.Ref, &c.refs, r), 0);
+                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*rt.Ref, &c.refs, r), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .@"if" => |k| {
@@ -182,7 +191,7 @@ const Comp = struct {
                 try c.genAll(k[k.len - 1], tail);
             },
             .@"&&", .@"||" => |k| {
-                var jumps: [64]usize = undefined;
+                var jumps: [max_short_circuit_operands]usize = undefined;
                 if (k.len > jumps.len) return error.Bail;
                 for (k[0 .. k.len - 1], 0..) |x, i| {
                     try c.genAll(x, false);
@@ -193,7 +202,7 @@ const Comp = struct {
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .prim => |p| {
-                if (p.sym.local or p.g.* != p.f) return c.gen_call(p.c, tail); // rebound since it was compiled: an ordinary call
+                if (p.sym.local or p.g.* != p.f) return c.genCall(p.c, tail); // rebound since it was compiled: an ordinary call
                 for (p.c[1..]) |x| try c.genAll(x, false);
                 const op: Op = switch (p.op) {
                     .@"+" => .add,
@@ -211,14 +220,14 @@ const Comp = struct {
                     .abs, .floor, .sqrt, .exp, .log, .cos => .prim1,
                     else => unreachable,
                 };
-                const pi = c.add(*rt.Prim, &c.prims, p);
+                const pi = add(*rt.Prim, &c.prims, p);
                 if (!c.fuse(op, pi)) _ = c.emit(op, pi, 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
-            .call => |k| try c.gen_call(k, tail),
+            .call => |k| try c.genCall(k, tail),
             .lambda => |lp| {
-                const at = c.add(*rt.Proto, &c.protos, lp);
-                _ = c.add(?*rt.Bytecode, &c.bodies, null);
+                const at = add(*rt.Proto, &c.protos, lp);
+                _ = add(?*rt.Bytecode, &c.bodies, null);
                 _ = c.emit(.lambda, at, 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
@@ -229,7 +238,7 @@ const Comp = struct {
                     if (tail) _ = c.emit(.ret, 0, 0);
                     return;
                 };
-                _ = c.emit(if (c.inl != null) .setglobal else .setouter, c.add(*rt.Def, &c.defs, d), 0);
+                _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*rt.Def, &c.defs, d), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             else => return error.Bail,
@@ -263,7 +272,7 @@ const Comp = struct {
 
     /// Does evaluating this change nothing and call nothing (constants, names, primitives on those)?
     fn plain(n: *Node, depth: usize) bool {
-        if (depth > 8) return false;
+        if (depth > max_plain_depth) return false;
         return switch (n.code) {
             .val, .ref => true,
             .prim => |p| if (p.sym.local or p.g.* != p.f) false else for (p.c[1..]) |x| { // (a rebound one is compiled as a call)
@@ -276,7 +285,7 @@ const Comp = struct {
     /// Is this body something to inline: small, no closures?
     fn inlinable(n: *Node, depth: usize, count: *usize) bool {
         count.* += 1;
-        if (depth > 24 or count.* > 48) return false;
+        if (depth > max_inline_depth or count.* > max_inline_nodes) return false;
         return switch (n.code) {
             .val, .ref => true,
             .call => |kids| calls: {
@@ -301,7 +310,7 @@ const Comp = struct {
     /// (f args...) where f is a small global function without closures: its body is generated here, with slots of its own for its
     /// parameters and defines and its free names read as globals. Redefining f compiles this code again (epoch).
     fn genInline(c: *Comp, k: []const *Node, tail: bool) !bool {
-        if (c.inl != null or c.sites >= 8 or k[0].code != .ref) return false;
+        if (c.inline_scope != null or c.inline_sites >= max_inline_sites or k[0].code != .ref) return false;
         const sym = k[0].code.ref.sym;
         const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
         const f = (g orelse return false).*;
@@ -309,25 +318,25 @@ const Comp = struct {
         const l = f.asLam();
         if (l.env != rt.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
         var sub: Comp = .{};
-        defer inline for (.{ &sub.ins, &sub.consts, &sub.refs, &sub.prims, &sub.defs, &sub.protos, &sub.bodies, &sub.keys, &sub.seen, &sub.held, &sub.closed }) |list| list.deinit(std.heap.c_allocator);
-        for (l.proto.params) |pk| _ = sub.add(rt.Key, &sub.keys, pk);
+        defer sub.deinit();
+        for (l.proto.params) |pk| _ = add(rt.Key, &sub.keys, pk);
         sub.scan(l.proto.body, 0) catch return false;
         var count: usize = 0;
-        if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > 8) return false;
+        if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         for (k[1..]) |x| try c.genAll(x, false);
         const base = c.keys.items.len;
-        for (sub.keys.items) |_| _ = c.add(rt.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
+        for (sub.keys.items) |_| _ = add(rt.Key, &c.keys, rt.mkstr("(inlined)", true)); // slots no name finds
         var i = k.len - 1;
         while (i > 0) : (i -= 1) _ = c.emit(.storelocal, base + i - 1, 0);
         l.proto.inlined = true;
-        c.inl = .{ .keys = sub.keys.items, .base = base };
-        c.sites += 1;
-        defer c.inl = null;
+        c.inline_scope = .{ .keys = sub.keys.items, .base = base };
+        c.inline_sites += 1;
+        defer c.inline_scope = null;
         try c.genAll(l.proto.body, tail); // at a tail call site the body's own tail calls stay tail calls
         return true;
     }
 
-    fn gen_call(c: *Comp, k: []const *Node, tail: bool) !void {
+    fn genCall(c: *Comp, k: []const *Node, tail: bool) !void {
         if (try c.genInline(k, tail)) return;
         if (k.len == 3 and k[0].code == .ref and k[2].code == .lambda and k[2].guard != null) loop: { // (each list (lambda (x) ...)) as a loop of the bytecode
             const sym = k[0].code.ref.sym;
@@ -350,8 +359,8 @@ const Comp = struct {
                 }
             }
             try c.genAll(source, false);
-            const at = c.add(*rt.Proto, &c.protos, lp);
-            _ = c.add(?*rt.Bytecode, &c.bodies, body);
+            const at = add(*rt.Proto, &c.protos, lp);
+            _ = add(?*rt.Bytecode, &c.bodies, body);
             _ = c.emit(if (is_map) .map else .each, at, counted);
             _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
             if (tail) _ = c.emit(.ret, 0, 0);
@@ -366,18 +375,18 @@ const Comp = struct {
                 const io = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
                 if (lo != null and io != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
                     try c.genAll(k[3], false);
-                    _ = c.emit(.vset_ll, c.add(V, &c.consts, slotp.*), (lo.? << 16) | io.?);
+                    _ = c.emit(.vset_ll, add(V, &c.consts, slotp.*), (lo.? << 16) | io.?);
                     if (tail) _ = c.emit(.ret, 0, 0);
                     return;
                 }
                 for (k[1..]) |x| try c.genAll(x, false);
-                _ = c.emit(.vset, c.add(V, &c.consts, slotp.*), 0);
+                _ = c.emit(.vset, add(V, &c.consts, slotp.*), 0);
                 if (tail) _ = c.emit(.ret, 0, 0);
                 return;
             };
         }
         for (k) |x| try c.genAll(x, false);
-        _ = c.emit(if (tail) .tailcall else .call, k.len - 1, c.add(V, &c.consts, k[0].ast));
+        _ = c.emit(if (tail) .tailcall else .call, k.len - 1, add(V, &c.consts, k[0].ast));
     }
 
     fn genAll(c: *Comp, n: *Node, tail: bool) error{Bail}!void {
@@ -388,8 +397,8 @@ const Comp = struct {
 fn compile(p: *rt.Proto) void {
     p.tried = true;
     var c: Comp = .{ .self = p };
-    defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.seen, &c.held, &c.closed }) |l| l.deinit(std.heap.c_allocator);
-    for (p.params) |k| _ = c.add(rt.Key, &c.keys, k);
+    defer c.deinit();
+    for (p.params) |k| _ = add(rt.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];

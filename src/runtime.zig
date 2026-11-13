@@ -444,7 +444,10 @@ fn primFor(comptime op: Op) *const fn (*Fn, []const V) E!V {
 
 inline fn prim(comptime op: Op, a: []const V) E!V {
     const x = arg(a, 0);
-    if (@backingInt(op) <= @backingInt(Op.@"||")) { // arithmetic, comparison, && and ||: fold left
+    if (comptime switch (op) {
+        .@"+", .@"-", .@"*", .@"/", .mod, .@">", .@"<", .@">=", .@"<=", .@"&&", .@"||" => true,
+        else => false,
+    }) { // arithmetic, comparison, && and ||: fold left
         if (a.len == 2 and a[0].isNum() and a[1].isNum()) {
             const p = a[0].asNum();
             const q = a[1].asNum();
@@ -465,7 +468,10 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
         for (a[@min(1, a.len)..]) |y| r = binop(op, r, y);
         return r;
     }
-    if (@backingInt(op) >= @backingInt(Op.exp)) { // math: one number in, one number out
+    if (comptime switch (op) {
+        .exp, .log, .sqrt, .cos, .floor, .abs => true,
+        else => false,
+    }) { // math: one number in, one number out
         const n = num(x);
         return V.num(switch (op) {
             .exp => @exp(n),
