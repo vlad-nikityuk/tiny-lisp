@@ -1,6 +1,6 @@
 // CLI and REPL: loads the stdlib, then runs a file (-f) or reads expressions from stdin.
 const std = @import("std");
-const gc = @import("gc.zig");
+const source = @import("source.zig");
 const lang = @import("lang.zig");
 const runtime = @import("runtime.zig");
 const native = @import("stdlib_native.zig");
@@ -8,14 +8,7 @@ const native = @import("stdlib_native.zig");
 const gpa = std.heap.c_allocator;
 
 fn load(io: std.Io, e: *runtime.Env, path: []const u8) runtime.E!void {
-    const text = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch {
-        lang.errv = runtime.str("cannot open {s}", .{path});
-        return error.Lisp;
-    };
-    defer gpa.free(text);
-    const program = std.fmt.allocPrint(gpa, "(begin {s}\n)", .{text}) catch gc.oom();
-    defer gpa.free(program);
-    _ = try lang.eval(try lang.parse(program), e);
+    _ = try lang.eval(try source.readProgram(io, path), e);
 }
 
 fn die() noreturn {

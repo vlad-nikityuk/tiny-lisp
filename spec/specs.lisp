@@ -955,4 +955,17 @@
   (assert (equal? (primitive-binary 6 2 '(10 20 30))
                   (list 8 4 12 3 0 #t #f #t #f #f 30 #f))))
 
+(deftest "load: whole files preserve comments, errors and caller scope"
+  (define path "/tmp/tinylisp-spec-program.lisp")
+  (write-file path "")
+  (assert (eq? (load path) nil))
+  (write-file path "; comment only")
+  (assert (eq? (load path) nil))
+  (write-file path "(+ 20 22) ; trailing comment")
+  (assert (eq? (load path) 42))
+  (write-file path "(set! file-value (+ file-value 1)) ; trailing comment")
+  (assert (eq? ((lambda (file-value) (begin (load path) file-value)) 1) 2))
+  (write-file path "(")
+  (assert (eq? (try (lambda () (load path)) (lambda (e) "caught")) "caught")))
+
 (run-tests)

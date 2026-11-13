@@ -1,5 +1,6 @@
 // Native part of the stdlib (installed before src/stdlib.lisp is loaded).
 const std = @import("std");
+const source = @import("source.zig");
 const lang = @import("lang.zig");
 const gc = @import("gc.zig");
 const runtime = @import("runtime.zig");
@@ -145,12 +146,7 @@ fn split(_: *Fn, a: []const V) E!V {
 fn load(_: *Fn, k: *K, v: ?V) E!Go {
     if (v) |r| return runtime.finish(k, r);
     const path = text(runtime.frameArgs(k, 1)[0]);
-    const body = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch
-        return runtime.fail(runtime.str("cannot open {s}", .{path}));
-    defer gpa.free(body);
-    const program = std.fmt.allocPrint(gpa, "(begin {s}\n)", .{body}) catch gc.oom();
-    defer gpa.free(program);
-    return .{ .eval = lang.stub(try lang.parse(program)) };
+    return .{ .eval = lang.stub(try source.readProgram(io, path)) };
 }
 
 fn def(e: *runtime.Env, k: [*:0]const u8, f: runtime.Native) V {
