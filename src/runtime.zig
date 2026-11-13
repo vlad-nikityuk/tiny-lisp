@@ -133,10 +133,10 @@ pub const Ref = struct { sym: *Sym, g: ?*V = null }; // g: the global slot, once
 pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; // define or set!
 pub const Proto = struct { params: []const Key, body: *Node, cap: usize = 0, rest: bool = false, guard: ?*Guard = null, code: ?*Bytecode = null, tried: bool = false }; // code: the tier-2 form of the body (vm.zig) // cap: room for the scope of a call, grown by defines
 pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
-/// Tier 2 (vm.zig): a function body without lambdas as a stack bytecode over fixed scope slots (keys: parameters, then defines).
-pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, add, sub, mul, lt, gt, le, ge, eq, at, prim1, prim2, call, tailcall, ret };
+/// Tier 2 (vm.zig): a function body as a stack bytecode over fixed scope slots (keys: parameters, then defines).
+pub const Opcode = enum(u8) { konst, local, outer, setlocal, setouter, pop, jmp, jmpf, andj, orj, lambda, add, sub, mul, lt, gt, le, ge, eq, at, prim1, prim2, call, tailcall, ret };
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
-pub const Bytecode = struct { ins: []const Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, keys: []const Key, stamp: u32 };
+pub const Bytecode = struct { ins: []const Ins, consts: []const V, refs: []const *Ref, prims: []const *Prim, defs: []const *Def, protos: []const *Proto, keys: []const Key, stamp: u32 };
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
 /// calls it, so creating it does not capture its scope (lambda below).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };

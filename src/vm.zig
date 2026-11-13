@@ -1,7 +1,7 @@
-// Tier 2: the body of a function that creates no closures is compiled, on its first call, to a stack bytecode, and the function's
+// Tier 2: the body of a function is compiled, on its first call, to a stack bytecode, and the function's
 // parameters and defines get fixed slots in its scope (rt.bind creates them all up front). The bytecode runs inside the machine of
 // lang.zig: `exec` returns the next rt.Go (a call, or a return) and a call that is not a tail call leaves a `vm` frame on rt.ks
-// that resumes the code at the instruction after it. Anything this compiler does not know (lambda, a body nested too deep, an
+// that resumes the code at the instruction after it. Anything this compiler does not know (a body nested too deep, a define that may not run, an
 // error while expanding macros) leaves the function to the tree evaluator, which stays the reference semantics.
 const std = @import("std");
 const gc = @import("gc.zig");
@@ -20,6 +20,7 @@ const Comp = struct {
     refs: std.ArrayList(*rt.Ref) = .empty,
     prims: std.ArrayList(*rt.Prim) = .empty,
     defs: std.ArrayList(*rt.Def) = .empty,
+    protos: std.ArrayList(*rt.Proto) = .empty,
     keys: std.ArrayList(rt.Key) = .empty,
     seen: std.ArrayList(rt.Key) = .empty, // names read or set! so far, in scan order
     cond: usize = 0, // > 0 while scanning code that may not run
@@ -56,7 +57,7 @@ const Comp = struct {
         if (depth > max_depth) return error.Bail;
         try forced(n);
         switch (n.code) {
-            .val => {},
+            .val, .lambda => {}, // a lambda's body is compiled when it is called
             .ref => |r| if (!c.seenBefore(r.sym)) {
                 _ = c.add(rt.Key, &c.seen, r.sym.key);
             },
@@ -84,7 +85,7 @@ const Comp = struct {
                     sym.local = true;
                 }
             },
-            else => return error.Bail, // lambda
+            else => return error.Bail,
         }
     }
 
@@ -149,6 +150,10 @@ const Comp = struct {
                 if (tail) _ = c.emit(.ret, 0, 0);
             },
             .call => |k| try c.gen_call(k, tail),
+            .lambda => |lp| {
+                _ = c.emit(.lambda, c.add(*rt.Proto, &c.protos, lp), 0);
+                if (tail) _ = c.emit(.ret, 0, 0);
+            },
             .def => |d| {
                 try c.genAll(d.val, false);
                 if (d.sym) |sym| if (c.slotOf(sym)) |i| {
@@ -176,12 +181,12 @@ const Comp = struct {
 fn compile(p: *rt.Proto) void {
     p.tried = true;
     var c: Comp = .{};
-    defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.keys, &c.seen }) |l| l.deinit(std.heap.c_allocator);
+    defer inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.keys, &c.seen }) |l| l.deinit(std.heap.c_allocator);
     for (p.params) |k| _ = c.add(rt.Key, &c.keys, k);
     c.scan(p.body, 0) catch return;
     c.gen(p.body, true) catch return;
     const code = &rt.make(rt.Bytecode, 1)[0];
-    code.* = .{ .ins = dup(rt.Ins, c.ins.items), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current() };
+    code.* = .{ .ins = dup(rt.Ins, c.ins.items), .consts = dup(V, c.consts.items), .refs = dup(*rt.Ref, c.refs.items), .prims = dup(*rt.Prim, c.prims.items), .defs = dup(*rt.Def, c.defs.items), .protos = dup(*rt.Proto, c.protos.items), .keys = dup(rt.Key, c.keys.items), .stamp = lang.current() };
     for (code.consts) |v| _ = rt.pin(v);
     p.code = code;
 }
@@ -278,6 +283,11 @@ pub noinline fn exec(m: *rt.M, code: *rt.Bytecode, pc0: usize) E!rt.Go {
         },
         .setouter => {
             try rt.assign(code.defs[ip[0].a], e, vs.items[vs.items.len - 1]);
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .lambda => {
+            gc.push(V, vs, rt.lambda(code.protos[ip[0].a], e));
             ip += 1;
             continue :sw ip[0].op;
         },
