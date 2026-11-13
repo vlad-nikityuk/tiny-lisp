@@ -2,6 +2,7 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const prims = @import("primitives.zig");
 const vm = @import("vm.zig");
 const V = rt.V;
 const Node = rt.Node;
@@ -132,7 +133,7 @@ fn inplace(p: *rt.Prim, e: *rt.Env, depth: u8) rt.E!?V {
                 return null;
             };
     };
-    return if (p.c.len == 2) rt.fast1(p.op, x[0]) else rt.fast(p.op, x[0], x[1]);
+    return if (p.c.len == 2) prims.fast1(p.op, x[0]) else prims.fast(p.op, x[0], x[1]);
 }
 
 // evaluator

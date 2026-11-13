@@ -6,6 +6,7 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const prims = @import("primitives.zig");
 const lang = @import("lang.zig");
 const V = rt.V;
 const Node = rt.Node;
@@ -369,7 +370,7 @@ const Comp = struct {
         if (k.len == 4 and k[0].code == .ref) { // (vset! list index value), while vset! is the native
             const sym = k[0].code.ref.sym;
             const g = if (sym.local) null else rt.slotOf(rt.root, sym.key);
-            if (g) |slotp| if (rt.isVset(slotp.*)) {
+            if (g) |slotp| if (prims.isVset(slotp.*)) {
                 sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
                 const lo = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
                 const io = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
@@ -704,7 +705,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *rt.Bytecode, pc0: usize) E!rt.Go {
         },
         .prim1 => {
             const p = code.prims[ip[0].a];
-            const r = rt.fast1(p.op, st[sp - 1]);
+            const r = prims.fast1(p.op, st[sp - 1]);
             const v = r orelse {
                 vs.items.len = sp;
                 return slow(m, code, ip, 1);
