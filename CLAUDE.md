@@ -21,20 +21,32 @@ zig fmt --check src/       # every Zig source is zig fmt clean
 
 ## Architecture
 
-Each file has one job; read them in this order:
+`src/` is one entry point and four units; each file has one job:
 
-| File | Job |
-|---|---|
-| `src/parser.zig` | text → AST (lists of values), iteratively |
-| `src/lang.zig` | the tree tier, the reference semantics: the compiler (AST → nodes: `intern`, `form`, `call`, `force`) and the explicit-stack evaluator (`eval`/`exec`/`run`) |
-| `src/runtime.zig` | what everything shares: values (`V`, the printer `V.format`), constructors, compiled-code types (`Node`, `Code`, `Proto`, ...), the machine's state (`Frame`, `Go`, `ks`, `vs`) and the natives that call back into Lisp (`start`/`step`/`finish`/`callback`/`tail`, `try`, `recover`, the trampoline) |
-| `src/scope.zig` | scopes (`Env`), the global table, macro registration, the invalidation counters (`epoch`, `shape`), closures and scope recycling |
-| `src/primitives.zig` | `+ - car cons ...`: one function, `prim`, specialised per `Op` at compile time, and `fast`/`fast1`, the in-place forms both tiers use; arithmetic is written once (`numeric`) |
-| `src/bytecode.zig` | tier 2: the instruction set (`Opcode`, each instruction documented) and the compiler from nodes to bytecode |
-| `src/vm.zig` | tier 2: the executor (`exec`) |
-| `src/gc.zig` | memory management |
-| `src/stdlib_native.zig`, `src/stdlib.lisp` | the standard library: natives (`map each reduce apply ...`, the whole-file natives `read-file write-file split load`; `load` is a `step` native that returns `.eval` for the parsed file) and the Lisp part |
-| `src/repl.zig`, `src/source.zig` | the CLI/REPL: installs the native stdlib, loads `src/stdlib.lisp` (path relative to the repo root), then runs a file or the REPL; `source.readProgram` reads a whole file as one `begin` form |
+```
+src/repl.zig              the entry point: CLI and REPL
+src/runtime/              what both tiers and the natives share
+    value.zig             V (NaN-boxed), the objects it points to (Lst, Fn, Lam), constructors and tests, the printer, the error value
+    gc.zig                the memory manager: allocation, mark-sweep, the roots, pinned values
+    scope.zig             Env, the global table, epoch/shape, lookup and assignment, closures, scope recycling
+    node.zig              compiled-code data both tiers use: Node, Code, Prim, Ref, Def, Proto, Guard, Sym
+    machine.zig           Frame, Machine, Go, the ks/vs stacks, natives that call back into Lisp (start/step/finish/callback/tail), try/recover, the trampoline
+    primitives.zig        + - car cons ...: `prim` specialised per Op, `numeric`, and `fast`/`fast1`, the in-place forms both tiers use
+src/lang/                 the language: the reference semantics
+    parser.zig            text -> AST (lists of values), iteratively
+    compile.zig           AST -> nodes, lazily: intern, form, call recognition, macro expansion (force)
+    eval.zig              the explicit-stack evaluator (eval/exec/run): runs nodes, and hands compiled functions to vm/
+src/vm/                   the second tier, the fast path for function bodies
+    bytecode.zig          the format: Opcode (each instruction documented), Ins, Bytecode
+    compiler.zig          nodes -> bytecode (scan, gen, inlining), `ready`
+    exec.zig              the executor
+src/lib/                  the standard library
+    natives.zig           map each reduce apply range zip print, the file natives and load
+    source.zig            read a whole file as one program (for load and the REPL's -f)
+    stdlib.lisp           the Lisp part, loaded at start (path relative to the repo root)
+```
+
+**Dependency direction**: `runtime/` ← `lang/parser`, `lang/compile` ← `vm/` ← `lang/eval` ← `lib/` ← `repl.zig`; a file imports the specific module it uses, there are no forwarding files. `runtime/` imports nothing from `lang/`, `lib/` or `vm/`, except the type `vm/bytecode.Bytecode`, which `Proto`, `Frame` and `Go` point to and `scope.bind` reads the slot names from. Inside `runtime/`, `gc.zig` and the object owners refer to each other (the collector allocates their objects and traces their roots), and `value.zig` names the other parts' types as pointers. The one real cycle above `runtime/`: `lang/compile` runs the machine (`eval.exec`) to expand macros, and `lang/eval` compiles nodes on demand (`compile.force`). `vm/` uses `lang/compile` (`force`, `current`, `in_macro`) but never `lang/eval`; `lang/eval` dispatches into `vm/` (`compiler.ready`, `exec.exec`).
 
 Keep names meaningful and the total source small; keep the evaluator's control flow visible in `lang.run` and `vm.exec` rather than hidden behind helpers. All Zig sources are `zig fmt` clean. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `lang.errv`. `lang.zig` exposes `eval`, `out` and `errv`, and to the second tier and `load` also `force`, `current`, `in_macro` and `stub`.
 
