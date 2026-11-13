@@ -1,3 +1,5 @@
+// What the two tiers and the natives share: values, compiled code, the machine's state (frames and the value stack) and the
+// protocol of natives that call back into Lisp. Scopes are in scope.zig, the primitives in primitives.zig.
 const std = @import("std");
 const gc = @import("gc.zig");
 const lang = @import("lang.zig");
@@ -7,7 +9,9 @@ pub const Bytecode = @import("bytecode.zig").Bytecode;
 const scope = @import("scope.zig");
 pub const Env = scope.Env;
 
-pub const E = error{Lisp}; // the error value itself is in `errv`
+// values
+// ----------------------------------------------------------------
+pub const E = error{Lisp}; // the error value itself is in `lang.errv`
 /// A value in 8 bytes (NaN boxing): a number is its own double bits, everything else lives in the quiet-NaN space with a
 /// 3-bit tag in bits 48-50 and a 48-bit pointer or flag as payload. Numbers that are NaN are stored as one canonical NaN.
 pub const V = enum(u64) {
@@ -127,7 +131,111 @@ pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 };
 pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *Frame, ?V) E!Go };
 /// A closure: code and the scope it was made in.
 pub const Lam = struct { proto: *Proto, env: *Env };
-// Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
+
+pub const gpa = std.heap.c_allocator;
+
+// constructors and tests
+// ----------------------------------------------------------------
+/// The managed object a value points to, if any (for the collector).
+pub fn ptr(v: V) ?*anyopaque {
+    return switch (v.tag()) {
+        .nil, .b, .n => null,
+        .s, .lit => @ptrCast(@constCast(v.asStr())),
+        .l => v.asList(),
+        .f => v.asFn(),
+        .lam => v.asLam(),
+    };
+}
+
+pub fn arg(a: []const V, i: usize) V {
+    return if (i < a.len) a[i] else .nil;
+}
+
+pub fn items(v: V) []V {
+    return if (v.is(.l)) v.asList().items() else &.{};
+}
+
+/// A copy of s as a managed (or permanent) string.
+pub fn mkstr(s: []const u8, perm: bool) [*:0]u8 {
+    const t: [*]u8 = @ptrCast(if (perm) gc.perm(s.len + 1) else gc.alloc(s.len + 1, .str));
+    @memcpy(t[0..s.len], s);
+    t[s.len] = 0;
+    return @ptrCast(t);
+}
+
+pub fn str(comptime f: []const u8, args: anytype) V {
+    const m = std.fmt.allocPrint(gpa, f, args) catch gc.oom();
+    defer gpa.free(m);
+    return V.string(mkstr(m, false));
+}
+
+/// Raise the Lisp error e.
+pub fn fail(e: V) E {
+    lang.errv = e;
+    return error.Lisp;
+}
+
+/// The error of calling a name (as written in the source) that has no value.
+pub fn undefinedFunction(name: V) E {
+    return fail(str("TinyLisp: Function {f} is not defined", .{name}));
+}
+
+/// A list of n items: a, then nils.
+pub fn list(a: []const V, n: usize) V {
+    const l = gc.new(Lst, n * @sizeOf(V), .list, .{ .len = n });
+    for (l.items(), 0..) |*x, i| x.* = arg(a, i);
+    return V.listOf(l);
+}
+
+/// A native function value's object.
+pub fn nf(f: Native, d0: V, d1: V) *Fn {
+    return gc.new(Fn, 0, .func, .{ .f = f, .d0 = d0, .d1 = d1 });
+}
+
+pub fn truthy(v: V) bool {
+    return switch (v.tag()) {
+        .nil => false,
+        .b => v.asBool(),
+        .n => v.asNum() != 0 and v.asNum() == v.asNum(),
+        .s => v.asStr()[0] != 0,
+        else => true,
+    };
+}
+
+fn isNil(v: V) bool {
+    return v == V.nil or (v.is(.l) and v.asList().len == 0);
+}
+
+pub fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
+    return std.mem.orderZ(u8, a, b) == .eq;
+}
+
+pub fn eq(a: V, b: V) bool {
+    if (isNil(a) or isNil(b)) return isNil(a) and isNil(b);
+    if ((a.is(.s) and b.is(.s)) or (a.is(.lit) and b.is(.lit))) return streq(a.asStr(), b.asStr());
+    if (a.isNum() and b.isNum()) return a.asNum() == b.asNum();
+    return a == b;
+}
+
+/// The number a value counts as in arithmetic.
+pub fn num(v: V) f64 {
+    return switch (v.tag()) {
+        .n => v.asNum(),
+        .b => @floatFromInt(@intFromBool(v.asBool())),
+        .nil => 0,
+        else => std.math.nan(f64),
+    };
+}
+
+// compiled code
+// ----------------------------------------------------------------
+// See the compiler in lang.zig. Nodes and their arrays live forever, so frames and closures can keep pointing at them.
+
+/// n permanent Ts (compiled code lives forever).
+pub fn make(comptime T: type, n: usize) []T {
+    return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n];
+}
+
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct {
     key: Key,
@@ -151,9 +259,22 @@ pub const Proto = struct {
     tried: bool = false, // tier 2 compiled the body or rejected it (a rejected body is not tried again)
     inlined: bool = false, // other functions' bytecode contains this body: replacing the function bumps epoch
 };
-pub const Code = union(enum) { raw, val: V, ref: Ref, @"if": []const *Node, begin: []const *Node, def: *Def, lambda: *Proto, prim: *Prim, @"&&": []const *Node, @"||": []const *Node, call: []const *Node };
+/// What a node does. raw: not compiled yet.
+pub const Code = union(enum) {
+    raw,
+    val: V, // a constant
+    ref: Ref, // a variable
+    @"if": []const *Node, // condition, then, else
+    begin: []const *Node,
+    def: *Def,
+    lambda: *Proto,
+    prim: *Prim,
+    @"&&": []const *Node,
+    @"||": []const *Node,
+    call: []const *Node, // the function, then the arguments
+};
 /// The lambda that is the last operand of a call of each or map (while that name is still global and the native): the native only
-/// calls it, so creating it does not capture its scope (lambda below).
+/// calls it, so creating it does not capture its scope (scope.lambda).
 pub const Guard = struct { sym: *Sym, g: *V, f: V };
 /// One expression. Its code is built from the AST when it is first evaluated, and again when `stamp` is out of date.
 pub const Node = struct {
@@ -164,10 +285,9 @@ pub const Node = struct {
     guard: ?*Guard = null, // set on the lambda operand of each/map
 };
 
-pub const gpa = std.heap.c_allocator;
-
-// The machine's state: pending work lives in heap frames, so nothing grows the native stack.
-pub const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
+// the machine
+// ----------------------------------------------------------------
+// Its state: pending work lives in heap frames, so nothing grows the native stack. lang.zig runs it.
 pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm, loop };
 /// Pending work: what to do with the next value. One flat struct for every kind (a frame is pushed per call, so it stays small
 /// and is written in one go); each kind uses the fields it needs.
@@ -207,92 +327,6 @@ pub fn frame(kind: Kind, c: []const *Node, e: *Env) *Frame {
 pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
     if (i == 0 and v == V.nil) return undefinedFunction(c[0].ast);
     gc.push(V, &vs, v);
-}
-
-pub fn ptr(v: V) ?*anyopaque {
-    return switch (v.tag()) {
-        .nil, .b, .n => null,
-        .s, .lit => @ptrCast(@constCast(v.asStr())),
-        .l => v.asList(),
-        .f => v.asFn(),
-        .lam => v.asLam(),
-    };
-}
-
-pub fn arg(a: []const V, i: usize) V {
-    return if (i < a.len) a[i] else .nil;
-}
-
-pub fn items(v: V) []V {
-    return if (v.is(.l)) v.asList().items() else &.{};
-}
-
-pub fn mkstr(s: []const u8, perm: bool) [*:0]u8 {
-    const t: [*]u8 = @ptrCast(if (perm) gc.perm(s.len + 1) else gc.alloc(s.len + 1, .str));
-    @memcpy(t[0..s.len], s);
-    t[s.len] = 0;
-    return @ptrCast(t);
-}
-
-pub fn str(comptime f: []const u8, args: anytype) V {
-    const m = std.fmt.allocPrint(gpa, f, args) catch gc.oom();
-    defer gpa.free(m);
-    return V.string(mkstr(m, false));
-}
-
-pub fn fail(e: V) E {
-    lang.errv = e;
-    return error.Lisp;
-}
-
-/// The error of calling a name (as written in the source) that has no value.
-pub fn undefinedFunction(name: V) E {
-    return fail(str("TinyLisp: Function {f} is not defined", .{name}));
-}
-
-/// A list of n items: a, then nils.
-pub fn list(a: []const V, n: usize) V {
-    const l = gc.new(Lst, n * @sizeOf(V), .list, .{ .len = n });
-    for (l.items(), 0..) |*x, i| x.* = arg(a, i);
-    return V.listOf(l);
-}
-
-pub fn nf(f: Native, d0: V, d1: V) *Fn {
-    return gc.new(Fn, 0, .func, .{ .f = f, .d0 = d0, .d1 = d1 });
-}
-
-pub fn truthy(v: V) bool {
-    return switch (v.tag()) {
-        .nil => false,
-        .b => v.asBool(),
-        .n => v.asNum() != 0 and v.asNum() == v.asNum(),
-        .s => v.asStr()[0] != 0,
-        else => true,
-    };
-}
-
-fn isNil(v: V) bool {
-    return v == V.nil or (v.is(.l) and v.asList().len == 0);
-}
-
-pub fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
-    return std.mem.orderZ(u8, a, b) == .eq;
-}
-
-pub fn eq(a: V, b: V) bool {
-    if (isNil(a) or isNil(b)) return isNil(a) and isNil(b);
-    if ((a.is(.s) and b.is(.s)) or (a.is(.lit) and b.is(.lit))) return streq(a.asStr(), b.asStr());
-    if (a.isNum() and b.isNum()) return a.asNum() == b.asNum();
-    return a == b;
-}
-
-pub fn num(v: V) f64 {
-    return switch (v.tag()) {
-        .n => v.asNum(),
-        .b => @floatFromInt(@intFromBool(v.asBool())),
-        .nil => 0,
-        else => std.math.nan(f64),
-    };
 }
 
 /// The natives each and map themselves (not a function that merely is a step native): the loop lambda exemption and the bytecode loops are for them.
@@ -418,9 +452,4 @@ pub fn topLevel() *Env {
     scope.set(e, "trampoline", V.fnOf(nf(.{ .plain = trampoline }, .nil, .nil)));
     scope.set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
     return e;
-}
-
-/// n permanent Ts (compiled code lives forever).
-pub fn make(comptime T: type, n: usize) []T {
-    return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n];
 }

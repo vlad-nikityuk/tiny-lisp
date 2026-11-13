@@ -72,10 +72,12 @@ fn expand(x: V) rt.E!V {
     return y;
 }
 
+const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
+
 /// The code of a list: a special form by its head, or a call.
 fn form(a: []const V) rt.E!rt.Code {
     if (a.len == 0) return rt.fail(rt.str("TinyLisp: cannot evaluate an empty list", .{}));
-    const head = if (a[0].is(.s)) std.meta.stringToEnum(rt.Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
+    const head = if (a[0].is(.s)) std.meta.stringToEnum(Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
     switch (head) {
         .quote => return .{ .val = rt.arg(a, 1) },
         .lambda => {
