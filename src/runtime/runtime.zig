@@ -4,7 +4,7 @@ const std = @import("std");
 const gc = @import("gc.zig");
 const prims = @import("primitives.zig");
 pub const Op = prims.Op;
-pub const Bytecode = @import("../vm/compiler.zig").Bytecode;
+pub const Bytecode = @import("../vm/bytecode.zig").Bytecode;
 const scope = @import("scope.zig");
 pub const Env = scope.Env;
 

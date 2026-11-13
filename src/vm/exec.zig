@@ -1,21 +1,23 @@
-// Tier 2, the executor: runs the bytecode that bytecode.zig compiles, inside the machine of compile.zig. `exec` runs
+// Tier 2, the executor: runs the bytecode that compiler.zig produces, inside the machine of compile.zig. `exec` runs
 // instructions until it needs the machine and returns the next rt.Go (a call, or a return); a call that is not a tail call
 // leaves a `vm` frame on rt.ks that resumes the code at the instruction after it.
 const std = @import("std");
 const gc = @import("../runtime/gc.zig");
 const rt = @import("../runtime/runtime.zig");
 const scope = @import("../runtime/scope.zig");
-const bc = @import("compiler.zig");
+const bytecode = @import("bytecode.zig");
+const Bytecode = bytecode.Bytecode;
+const Ins = bytecode.Ins;
 const prims = @import("../runtime/primitives.zig");
 const compile = @import("../lang/compile.zig");
 const V = rt.V;
 const E = rt.E;
-const Op = bc.Opcode;
+const Op = bytecode.Opcode;
 
 /// (op x y) with both operands on the stack: replace them by the value, or leave them and say false.
 inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
     const n = sp.*;
-    st[n - 2] = prims.fast(comptime bc.primOf(op), st[n - 2], st[n - 1]) orelse return false;
+    st[n - 2] = prims.fast(comptime bytecode.primOf(op), st[n - 2], st[n - 1]) orelse return false;
     sp.* = n - 1;
     return true;
 }
@@ -23,7 +25,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
 /// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
-inline fn outerSlot(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
+inline fn outerSlot(e: *rt.Env, ins: *Ins, sym: *rt.Sym, g: *?*V) ?*V {
     if (ins.b != 0 and ins.c == scope.shape) {
         var s = e;
         var hops = ins.b >> 16;
@@ -34,7 +36,7 @@ inline fn outerSlot(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
     return outerLook(e, ins, sym, g);
 }
 
-noinline fn outerLook(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
+noinline fn outerLook(e: *rt.Env, ins: *Ins, sym: *rt.Sym, g: *?*V) ?*V {
     var s = e;
     var hops: u32 = 0;
     var fixed = true; // every scope passed so far is a tier-2 scope
@@ -55,8 +57,8 @@ noinline fn outerLook(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
 }
 
 /// The index of the instruction at ip.
-inline fn pcOf(code: *bc.Bytecode, ip: [*]const bc.Ins) usize {
-    return (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(bc.Ins);
+inline fn pcOf(code: *Bytecode, ip: [*]const Ins) usize {
+    return (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(Ins);
 }
 
 /// Store v at index i of the list l, if they are a list and an index in range.
@@ -70,7 +72,7 @@ inline fn storeAt(l: V, i: V, v: V) bool {
 }
 
 /// An operation on values it does not compute in place: call whatever its name is now (it was a primitive when compiled).
-fn slow(m: *rt.Machine, code: *bc.Bytecode, ip: [*]const bc.Ins, arity: usize) E!rt.Go {
+fn slow(m: *rt.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!rt.Go {
     const p = code.prims[ip[0].a];
     const vs = &rt.vs;
     const n = vs.items.len;
@@ -83,7 +85,7 @@ fn slow(m: *rt.Machine, code: *bc.Bytecode, ip: [*]const bc.Ins, arity: usize) E
 
 /// Run code from pc until it calls or returns; the next step is the result. The stack of values is rt.vs, with room for the whole
 /// function reserved up front, so its top is kept in a local (sp) and rt.vs.items.len is brought up to date only when leaving.
-pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
+pub noinline fn exec(m: *rt.Machine, code0: *Bytecode, pc0: usize) E!rt.Go {
     const vs = &rt.vs;
     const ks = &rt.ks;
     var e = m.e;
@@ -177,8 +179,8 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         },
         inline .add_lk, .sub_lk, .mul_lk, .lt_lk, .gt_lk, .le_lk, .ge_lk, .eq_lk, .at_lk, .add_ll, .sub_ll, .mul_ll, .lt_ll, .gt_ll, .le_ll, .ge_ll, .eq_ll, .at_ll => |op| {
             const x = e.vars[ip[0].b >> 16].v;
-            const y = if (comptime bc.secondIsConst(op)) code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
-            if (prims.fast(comptime bc.primOf(op), x, y)) |v| {
+            const y = if (comptime bytecode.secondIsConst(op)) code.consts[ip[0].b & 0xffff] else e.vars[ip[0].b & 0xffff].v;
+            if (prims.fast(comptime bytecode.primOf(op), x, y)) |v| {
                 st[sp] = v;
                 sp += 1;
                 ip += 1;
@@ -190,8 +192,8 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             return slow(m, code, ip, 2);
         },
         inline .add_sk, .sub_sk, .mul_sk, .lt_sk, .gt_sk, .le_sk, .ge_sk, .eq_sk, .at_sk, .add_sl, .sub_sl, .mul_sl, .lt_sl, .gt_sl, .le_sl, .ge_sl, .eq_sl, .at_sl => |op| { // the first operand is on the stack, the second a constant or a local
-            const y = if (comptime bc.secondIsConst(op)) code.consts[ip[0].b] else e.vars[ip[0].b].v;
-            if (prims.fast(comptime bc.primOf(op), st[sp - 1], y)) |v| {
+            const y = if (comptime bytecode.secondIsConst(op)) code.consts[ip[0].b] else e.vars[ip[0].b].v;
+            if (prims.fast(comptime bytecode.primOf(op), st[sp - 1], y)) |v| {
                 st[sp - 1] = v;
                 ip += 1;
                 continue :sw ip[0].op;
@@ -375,13 +377,13 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
 }
 
 /// A call that is not a tail call: leave a frame that resumes at pc with the value pushed.
-fn call(m: *rt.Machine, b: usize, code: *bc.Bytecode, pc: usize) rt.Go {
+fn call(m: *rt.Machine, b: usize, code: *Bytecode, pc: usize) rt.Go {
     resumeFrame(.vm, m.e, code, pc, b);
     return .{ .apply = b };
 }
 
 /// Push a frame that comes back to the bytecode: at instruction pc, with the stack cut to base and then the value.
-fn resumeFrame(kind: rt.Kind, e: *rt.Env, code: *bc.Bytecode, pc: usize, base: usize) void {
+fn resumeFrame(kind: rt.Kind, e: *rt.Env, code: *Bytecode, pc: usize, base: usize) void {
     const k = rt.frame(kind, &.{}, e);
     k.i = pc;
     k.base = base;
