@@ -1,10 +1,11 @@
 // Tier 2, the compiler: the body of a function becomes, on its first call, a stack bytecode, and the function's parameters
-// and defines get fixed slots in its scope (rt.bind creates them all up front). vm.zig runs the bytecode. Anything this
+// and defines get fixed slots in its scope (scope.bind creates them all up front). vm.zig runs the bytecode. Anything this
 // compiler does not know (a body nested too deep, a define that may not run, an error while expanding macros) leaves the
 // function to the tree evaluator, which stays the reference semantics.
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const prims = @import("primitives.zig");
 const lang = @import("lang.zig");
 const V = rt.V;
@@ -86,7 +87,7 @@ pub fn secondIsConst(comptime op: Opcode) bool {
 }
 
 /// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b, and the
-/// `rt.shape` that was valid for in c.
+/// `scope.shape` that was valid for in c.
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 };
 /// The compiled body of a function. Instructions refer to the tables by index.
 pub const Bytecode = struct {
@@ -352,7 +353,7 @@ const Comp = struct {
             .val, .ref => true,
             .call => |kids| calls: {
                 if (kids[0].code != .ref or kids[0].code.ref.sym.local) break :calls false; // a function it is given may be load, which runs code in the scope it is called from
-                if (rt.slotOf(rt.root, kids[0].code.ref.sym.key)) |g| {
+                if (scope.slotOf(scope.root, kids[0].code.ref.sym.key)) |g| {
                     if (g.*.is(.f) and g.*.asFn().f == .step) break :calls false; // so may a native that runs code (try, map...)
                 }
                 for (kids) |x| if (!inlinable(x, depth + 1, count)) break :calls false;
@@ -373,10 +374,10 @@ const Comp = struct {
     /// parameters and defines and its free names read as globals. Redefining f compiles this code again (epoch).
     fn genInline(c: *Comp, k: []const *Node, tail: bool) error{Bail}!bool {
         if (c.inline_scope != null or c.inline_sites >= max_inline_sites or k[0].code != .ref) return false;
-        const g = rt.globalOf(k[0].code.ref.sym) orelse return false;
+        const g = scope.globalOf(k[0].code.ref.sym) orelse return false;
         if (!g.*.is(.lam)) return false;
         const l = g.*.asLam();
-        if (l.env != rt.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
+        if (l.env != scope.root or l.proto == c.self or l.proto.rest or l.proto.params.len != k.len - 1) return false;
         var sub: Comp = .{};
         defer sub.deinit();
         for (l.proto.params) |pk| _ = add(rt.Key, &sub.keys, pk);
@@ -402,7 +403,7 @@ const Comp = struct {
         if (k.len != 3 or k[0].code != .ref or k[2].code != .lambda or k[2].guard == null) return false;
         const sym = k[0].code.ref.sym;
         const lp = k[2].code.lambda;
-        const g = rt.globalOf(sym) orelse return false;
+        const g = scope.globalOf(sym) orelse return false;
         const is_map = g.* == rt.map_v;
         if (!(is_map or g.* == rt.each_v) or lp.params.len != 1 or lp.rest) return false;
         const body = ready(lp) orelse return false;
@@ -411,7 +412,7 @@ const Comp = struct {
         var source = k[1];
         if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
             const range = k[1].code.call[0].code.ref.sym;
-            if (rt.globalOf(range)) |rg| if (rg.* == rt.range_v) {
+            if (scope.globalOf(range)) |rg| if (rg.* == rt.range_v) {
                 counted = 1;
                 source = k[1].code.call[1];
                 range.inlined = true; // rebinding range makes epoch change
@@ -429,7 +430,7 @@ const Comp = struct {
     fn genVset(c: *Comp, k: []const *Node) error{Bail}!bool {
         if (k.len != 4 or k[0].code != .ref) return false;
         const sym = k[0].code.ref.sym;
-        const g = rt.globalOf(sym) orelse return false;
+        const g = scope.globalOf(sym) orelse return false;
         if (!prims.isVset(g.*)) return false;
         sym.inlined = true; // rebinding it makes epoch change, so this code is compiled again
         const native = add(V, &c.consts, g.*);

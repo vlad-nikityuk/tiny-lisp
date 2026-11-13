@@ -4,6 +4,7 @@ const source = @import("source.zig");
 const lang = @import("lang.zig");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const V = rt.V;
 const Fn = rt.Fn;
 const Frame = rt.Frame;
@@ -151,7 +152,7 @@ fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
 
 fn def(e: *rt.Env, k: [*:0]const u8, f: rt.Native) V {
     const v = V.fnOf(rt.nf(f, .nil, .nil));
-    rt.set(e, k, v);
+    scope.set(e, k, v);
     return v;
 }
 

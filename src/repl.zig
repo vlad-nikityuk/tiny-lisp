@@ -3,6 +3,7 @@ const std = @import("std");
 const source = @import("source.zig");
 const lang = @import("lang.zig");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const native = @import("stdlib_native.zig");
 
 const gpa = std.heap.c_allocator;
@@ -28,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {
         if (std.mem.eql(u8, a, "--debug")) {
-            rt.set(e, "*DEBUG*", rt.V.boolean(true));
+            scope.set(e, "*DEBUG*", rt.V.boolean(true));
             try out.writeAll("\x1b[33mDebug mode enabled\x1b[39m\n");
         }
         if (std.mem.eql(u8, a, "-f") and i + 1 < args.len) file = args[i + 1];

@@ -2,6 +2,7 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const prims = @import("primitives.zig");
 const vm = @import("vm.zig");
 const bytecode = @import("bytecode.zig");
@@ -15,7 +16,7 @@ pub const parse = @import("parser.zig").parse;
 // compiler
 // ----------------------------------------------------------------
 // The AST becomes nodes (rt.Node) once, lazily: a node is compiled when first evaluated, so macros see code in the order it
-// runs. Every macro/* runs once per node; a new or redefined one (rt.epoch) recompiles all nodes. Nodes and symbols are
+// runs. Every macro/* runs once per node; a new or redefined one (scope.epoch) recompiles all nodes. Nodes and symbols are
 // permanent; their AST is pinned.
 
 /// While a macro runs, code is not expanded (so expansion nests one level).
@@ -52,7 +53,7 @@ fn kids(a: []const V, n: usize) []const *Node {
 
 /// The stamp of up-to-date code; 0 means not compiled yet.
 pub fn current() u32 {
-    return rt.epoch *% 2 +% @intFromBool(in_macro) +% 1;
+    return scope.epoch *% 2 +% @intFromBool(in_macro) +% 1;
 }
 
 /// Every macro/* over x in turn; one that returns a false value leaves x as it was.
@@ -60,12 +61,12 @@ fn expand(x: V) rt.E!V {
     in_macro = true;
     defer in_macro = false;
     var y = x;
-    for (rt.macros.items) |macro| {
+    for (scope.macros.items) |macro| {
         const b = rt.vs.items.len;
         defer rt.vs.items.len = b;
         gc.push(V, &rt.vs, macro.*);
         gc.push(V, &rt.vs, y);
-        const z = try exec(.{ .apply = b }, rt.root);
+        const z = try exec(.{ .apply = b }, scope.root);
         if (rt.truthy(z)) y = z;
     }
     return y;
@@ -89,7 +90,7 @@ fn form(a: []const V) rt.E!rt.Code {
                     continue;
                 }
                 const sym = intern(p);
-                if (sym.inlined and !sym.local) rt.epoch +%= 1;
+                if (sym.inlined and !sym.local) scope.epoch +%= 1;
                 sym.local = true;
                 params[n] = sym.key;
                 n += 1;
@@ -111,12 +112,12 @@ fn form(a: []const V) rt.E!rt.Code {
 }
 
 /// The code of the call a (c: its items). Two kinds of call are recognised by their head, while it is a global no scope binds:
-/// - the native each or map with a lambda as the last operand: the lambda gets a guard, so making it captures nothing (rt.lambda);
+/// - the native each or map with a lambda as the last operand: the lambda gets a guard, so making it captures nothing (scope.lambda);
 /// - a primitive that `primitives.fast` knows, with one or two operands: a Prim node, computed in place (`inplace` below).
 fn call(a: []const V, c: []const *Node) rt.Code {
     if (!a[0].is(.s)) return .{ .call = c };
     const sym = intern(a[0]);
-    const g = rt.globalOf(sym) orelse return .{ .call = c };
+    const g = scope.globalOf(sym) orelse return .{ .call = c };
     const last = rt.items(a[a.len - 1]);
     if (a.len >= 3 and last.len > 0 and last[0].is(.s) and std.mem.eql(u8, std.mem.span(last[0].asStr()), "lambda")) {
         if (g.* == rt.each_v or g.* == rt.map_v) {
@@ -154,7 +155,7 @@ inline fn leaf(n: *Node, e: *rt.Env) rt.E!?V {
     if (n.stamp != current()) try force(n);
     return switch (n.code) {
         .val => |v| v,
-        .ref => |*r| rt.fetch(e, r),
+        .ref => |*r| scope.fetch(e, r),
         else => null,
     };
 }
@@ -214,7 +215,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             if (!in_macro and gc.due()) gc.collect(); // all live managed values are rooted
             if (try atom(n, m.e)) |v| continue :sw .{ .ret = v };
             switch (n.code) {
-                .lambda => |p| continue :sw .{ .ret = rt.lambda(p, m.e) },
+                .lambda => |p| continue :sw .{ .ret = scope.lambda(p, m.e) },
                 .@"if" => |c| {
                     if (try atom(c[0], m.e)) |v| continue :sw .{ .eval = c[if (rt.truthy(v)) 1 else 2] };
                     _ = rt.frame(.@"if", c, m.e);
@@ -231,7 +232,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                 },
                 .def => |d| {
                     if (try atom(d.val, m.e)) |v| {
-                        try rt.assign(d, m.e, v);
+                        try scope.assign(d, m.e, v);
                         continue :sw .{ .ret = v };
                     }
                     rt.frame(.def, &.{}, m.e).d = d;
@@ -249,7 +250,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
             if (ks.items.len == m.base) return v;
             const k = &ks.items[ks.items.len - 1];
             const c = k.c;
-            if (m.e != k.e) rt.release(m.e); // the call that returned is over
+            if (m.e != k.e) scope.release(m.e); // the call that returned is over
             m.e = k.e;
             switch (k.kind) {
                 .@"if" => {
@@ -270,7 +271,7 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                     continue :sw .{ .ret = v };
                 },
                 .def => {
-                    try rt.assign(k.d, m.e, v);
+                    try scope.assign(k.d, m.e, v);
                     ks.items.len -= 1;
                     continue :sw .{ .ret = v };
                 },
@@ -314,8 +315,8 @@ fn run(m: *rt.Machine, go: rt.Go) rt.E!V {
                 .lam => { // a tail call: only the new scope stays live
                     const l = f.asLam();
                     const code = bytecode.ready(l.proto); // (compiling may expand macros, which runs the machine: take the arguments after it)
-                    if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) rt.release(m.e); // no frame needs the old one
-                    m.e = rt.bind(l, vs.items[b + 1 ..]);
+                    if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) scope.release(m.e); // no frame needs the old one
+                    m.e = scope.bind(l, vs.items[b + 1 ..]);
                     vs.items.len = b;
                     continue :sw if (code) |c| .{ .vm = .{ .code = c, .pc = 0 } } else .{ .eval = l.proto.body };
                 },

@@ -7,6 +7,7 @@
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
 const std = @import("std");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const lang = @import("lang.zig");
 const V = rt.V;
 
@@ -146,7 +147,7 @@ fn bytesOf(h: *H) usize {
         .list => @sizeOf(rt.Lst) + @as(*rt.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
         .func => @sizeOf(rt.Fn),
         .lam => @sizeOf(rt.Lam),
-        .env => @sizeOf(rt.Env) + @as(*rt.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(rt.Var),
+        .env => @sizeOf(rt.Env) + @as(*rt.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(scope.Var),
         .perm => 0,
     };
     return n + @sizeOf(H);
@@ -154,14 +155,14 @@ fn bytesOf(h: *H) usize {
 
 /// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
 fn markRoots() void {
-    rt.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
+    scope.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
     for (rt.ks.items) |k| {
         markPtr(k.e);
         if (k.kind == .loop) markPtr(k.iter_env);
     }
     for (rt.vs.items) |v| markV(v);
     for (rt.machines.items) |m| markPtr(m.e);
-    for (rt.gk, rt.gv) |k, v| if (k != null) markV(v);
+    for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
     for (rt.pins.items) |v| markV(v);
     markV(lang.errv);
 }
@@ -184,7 +185,7 @@ pub fn collect() void {
         if (prev) |q| setNext(q, next) else all = next;
         if (kindOf(h) == .env) {
             const e: *rt.Env = @ptrCast(@alignCast(body(h)));
-            if (e.vars.ptr != after(rt.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
+            if (e.vars.ptr != after(scope.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
         }
         std.c.free(h);
     }

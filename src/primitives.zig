@@ -4,6 +4,7 @@
 // primitive call in place.
 const std = @import("std");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const V = rt.V;
 const E = rt.E;
 const arg = rt.arg;
@@ -120,7 +121,7 @@ inline fn prim(comptime op: Op, a: []const V) E!V {
 
 /// Define every primitive in the root scope, under its own name.
 pub fn install(e: *rt.Env) void {
-    inline for (comptime std.enums.values(Op)) |op| rt.set(e, @tagName(op), V.fnOf(rt.nf(.{ .plain = primFor(op) }, .nil, .nil)));
+    inline for (comptime std.enums.values(Op)) |op| scope.set(e, @tagName(op), V.fnOf(rt.nf(.{ .plain = primFor(op) }, .nil, .nil)));
 }
 
 /// Is v the native vset!? (tier 2 has an instruction for it)

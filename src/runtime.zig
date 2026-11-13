@@ -4,6 +4,8 @@ const lang = @import("lang.zig");
 const prims = @import("primitives.zig");
 pub const Op = prims.Op;
 pub const Bytecode = @import("bytecode.zig").Bytecode;
+const scope = @import("scope.zig");
+pub const Env = scope.Env;
 
 pub const E = error{Lisp}; // the error value itself is in `errv`
 /// A value in 8 bytes (NaN boxing): a number is its own double bits, everything else lives in the quiet-NaN space with a
@@ -125,17 +127,6 @@ pub const Fn = struct { f: Native, d0: V, d1: V, i: usize = 0 };
 pub const Native = union(enum) { plain: *const fn (*Fn, []const V) E!V, step: *const fn (*Fn, *Frame, ?V) E!Go };
 /// A closure: code and the scope it was made in.
 pub const Lam = struct { proto: *Proto, env: *Env };
-/// A scope: the variables of one call. The root scope has none: its names are in the global table.
-pub const Env = struct {
-    p: ?*Env, // the enclosing scope
-    vars: []Var, // stored inline, right after the Env, until they outgrow cap
-    cap: usize,
-    proto: ?*Proto = null, // the function whose call this is
-    recyclable: bool = false, // `release` may hand it to a free list: it has a pooled size, no closure holds it or an inner scope, and it is not on a list yet
-    captured: bool = false, // a closure holds it or an inner scope: a loop or a self tail call must not use it again
-};
-pub const Var = struct { k: Key, v: V };
-
 // Compiled code (see the compiler in lang.zig). Nodes and their arrays live forever, so frames and closures can keep pointing at them.
 pub const Key = [*:0]const u8; // a symbol, interned: equal names are the same pointer
 pub const Sym = struct {
@@ -284,7 +275,7 @@ fn isNil(v: V) bool {
     return v == V.nil or (v.is(.l) and v.asList().len == 0);
 }
 
-fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
+pub fn streq(a: [*:0]const u8, b: [*:0]const u8) bool {
     return std.mem.orderZ(u8, a, b) == .eq;
 }
 
@@ -304,14 +295,6 @@ pub fn num(v: V) f64 {
     };
 }
 
-// scopes
-// ----------------------------------------------------------------
-pub var macros: std.ArrayList(*V) = .empty; // root slots of the macro/* functions
-pub var gk: [1 << 13]?[*:0]const u8 = @splat(null); // globals: open addressing, FNV-1a
-pub var gv: [1 << 13]V = @splat(.nil);
-
-/// Bumped when a name is added to a scope whose layout tier-2 code relies on (by load, say): remembered lookups are void.
-pub var shape: u32 = 1;
 /// The natives each and map themselves (not a function that merely is a step native): the loop lambda exemption and the bytecode loops are for them.
 pub var each_v: V = .nil;
 pub var map_v: V = .nil;
@@ -320,148 +303,6 @@ pub var range_v: V = .nil; // the native range: a loop over a call of it counts 
 /// How many items (range v) has.
 pub fn rangeLen(v: V) usize {
     return @intFromFloat(@max(0, num(v)));
-}
-pub var epoch: u32 = 0; // bumped when a macro/* changes: code compiled before it is compiled again
-
-pub fn slotOf(e: *Env, k: Key) ?*V {
-    return slot(e, k, false);
-}
-
-fn slot(e: *Env, k: Key, create: bool) ?*V {
-    if (e.p == null) {
-        var i: usize = std.hash.Fnv1a_32.hash(std.mem.span(k)) & (gk.len - 1);
-        while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (streq(key, k)) return &gv[i];
-        if (create) gk[i] = k;
-        return if (create) &gv[i] else null;
-    }
-    var i = e.vars.len; // the latest binding of a name wins
-    while (i > 0) : (i -= 1) if (e.vars[i - 1].k == k) return &e.vars[i - 1].v;
-    if (!create) return null;
-    if (e.vars.len == e.cap) {
-        const more = gpa.alloc(Var, e.cap * 2) catch gc.oom();
-        @memcpy(more[0..e.cap], e.vars);
-        if (e.vars.ptr != gc.after(Var, e)) gpa.free(e.vars);
-        e.vars.ptr, e.cap = .{ more.ptr, more.len };
-        if (e.proto) |p| p.cap = e.cap; // the next call of this function gets a scope that is big enough
-    }
-    if (e.proto != null and e.proto.?.code != null) {
-        shape +%= 1;
-    }
-    e.vars.len += 1;
-    e.vars[e.vars.len - 1] = .{ .k = k, .v = .nil };
-    return &e.vars[e.vars.len - 1].v;
-}
-
-/// The innermost binding of the name: scope keys are interned, so they are compared by address. A name that no scope binds
-/// is global without searching. g caches the global slot.
-pub fn find(env: *Env, sym: *Sym, g: *?*V) ?*V {
-    var e = env;
-    while (sym.local and e.p != null) : (e = e.p.?) {
-        var i = e.vars.len;
-        while (i > 0) : (i -= 1) if (e.vars[i - 1].k == sym.key) return &e.vars[i - 1].v;
-    }
-    if (g.* == null) g.* = slot(root, sym.key, false);
-    return g.*;
-}
-
-pub fn fetch(env: *Env, r: *Ref) V {
-    return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
-}
-
-pub fn assign(d: *Def, e: *Env, v: V) E!void {
-    const sym = d.sym orelse return fail(str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
-    if (d.define) {
-        if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
-        sym.local = sym.local or e.p != null;
-        set(e, sym.key, v);
-    } else if (find(e, sym, &d.g)) |p| replace(p, v);
-}
-
-/// set! of the variable at p. If its old value is compiled into tier-2 code, that code is out of date.
-pub inline fn replace(p: *V, v: V) void {
-    if (compiledInto(p.*)) epoch +%= 1;
-    p.* = v;
-}
-
-/// Root keys are copied to permanent memory; scope keys are interned already.
-pub fn set(e: *Env, key: Key, v: V) void {
-    const s = slot(e, key, false) orelse blk: {
-        const s = slot(e, if (e.p != null) key else mkstr(std.mem.span(key), true), true).?;
-        if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) gc.push(*V, &macros, s);
-        break :blk s;
-    };
-    if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) or an inlined function is replaced
-    s.* = v;
-    if (e.p == null and std.mem.startsWith(u8, std.mem.span(key), "macro/")) epoch +%= 1;
-}
-
-/// Replacing this value must compile the tier-2 code again: it is a native, or a function that other functions' code contains.
-pub fn compiledInto(v: V) bool {
-    return v.is(.f) or (v.is(.lam) and v.asLam().proto.inlined);
-}
-
-pub fn lambda(p: *Proto, e: *Env) V {
-    if (p.guard) |d| if (!d.sym.local and d.g.* == d.f) return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e })); // a loop body: dead once the loop is over
-    var s: ?*Env = e; // a closure holds the scope and, through it, the enclosing ones: none can be recycled when its call ends
-    while (s) |x| : (s = x.p) {
-        x.recyclable = false;
-        x.captured = true;
-    }
-    return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
-}
-
-// Most scopes die when their call ends: a call's scope is recycled then, unless a closure captured it. Recycled scopes wait on
-// free lists by capacity (linked through `p`); the collector forgets the lists, so whatever they hold is simply collected.
-const pool_caps = [_]usize{ 4, 8, 16 };
-pub var env_pools: [pool_caps.len]?*Env = @splat(null);
-
-fn poolOf(cap: usize) ?usize {
-    return switch (cap) {
-        4 => 0,
-        8 => 1,
-        16 => 2,
-        else => null,
-    };
-}
-
-/// The capacity a scope for n variables gets: one of the pooled sizes if it fits.
-fn capFor(n: usize) usize {
-    for (pool_caps) |c| if (n <= c) return c;
-    return n;
-}
-
-pub fn bind(f: *Lam, a: []const V) *Env {
-    return bindWith(f, a, f.proto.code);
-}
-
-/// The scope of a call of f; for tier-2 code (`code`), the defines of the body have their slots from the start.
-pub fn bindWith(f: *Lam, a: []const V, code: ?*Bytecode) *Env {
-    const ps = f.proto.params;
-    const n = if (code) |c| c.keys.len else ps.len;
-    const cap = capFor(@max(f.proto.cap, n));
-    const pool = poolOf(cap);
-    const e = if (pool != null and env_pools[pool.?] != null) blk: {
-        const e = env_pools[pool.?].?;
-        env_pools[pool.?] = e.p;
-        break :blk e;
-    } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
-    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .recyclable = pool != null };
-    const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
-    for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = arg(a, i) };
-    if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
-    if (code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
-        x.* = .{ .k = k, .v = .nil };
-    };
-    return e;
-}
-
-/// The call that ran in e is over (nothing but a closure could still use it).
-pub fn release(e: *Env) void {
-    if (!e.recyclable or e.p == null or e.vars.ptr != gc.after(Var, e)) return;
-    const pool = poolOf(e.cap) orelse return;
-    e.recyclable = false; // never twice
-    e.p = env_pools[pool];
-    env_pools[pool] = e;
 }
 
 // natives that call back into Lisp
@@ -566,28 +407,20 @@ fn trampRun(s: *Fn, k: *Frame, v: ?V) E!Go {
     return finish(k, r);
 }
 
-pub var root: *Env = undefined;
-
+/// The root scope, with the constants, the primitives and the natives of this file.
 pub fn topLevel() *Env {
-    const e: *Env = @ptrCast(@alignCast(gc.perm(@sizeOf(Env)))); // the root scope lives forever
-    root = e;
-    e.* = .{ .p = null, .vars = &.{}, .cap = 0 };
-    set(e, "nil", .nil);
-    set(e, "#t", V.boolean(true));
-    set(e, "#f", V.boolean(false));
-    set(e, "ESC", str("\x1b", .{}));
+    const e = scope.init();
+    scope.set(e, "nil", .nil);
+    scope.set(e, "#t", V.boolean(true));
+    scope.set(e, "#f", V.boolean(false));
+    scope.set(e, "ESC", str("\x1b", .{}));
     prims.install(e);
-    set(e, "trampoline", V.fnOf(nf(.{ .plain = trampoline }, .nil, .nil)));
-    set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
+    scope.set(e, "trampoline", V.fnOf(nf(.{ .plain = trampoline }, .nil, .nil)));
+    scope.set(e, "try", V.fnOf(nf(.{ .step = tryRun }, .nil, .nil)));
     return e;
 }
 
 /// n permanent Ts (compiled code lives forever).
 pub fn make(comptime T: type, n: usize) []T {
     return @as([*]T, @ptrCast(@alignCast(gc.perm(n * @sizeOf(T)))))[0..n];
-}
-
-/// The global slot of a name that no scope binds: only then does the name always mean the global.
-pub fn globalOf(sym: *Sym) ?*V {
-    return if (sym.local) null else slot(root, sym.key, false);
 }

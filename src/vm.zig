@@ -4,6 +4,7 @@
 const std = @import("std");
 const gc = @import("gc.zig");
 const rt = @import("runtime.zig");
+const scope = @import("scope.zig");
 const bc = @import("bytecode.zig");
 const prims = @import("primitives.zig");
 const lang = @import("lang.zig");
@@ -23,7 +24,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
 /// and only check the key.
 inline fn outerSlot(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
-    if (ins.b != 0 and ins.c == rt.shape) {
+    if (ins.b != 0 and ins.c == scope.shape) {
         var s = e;
         var hops = ins.b >> 16;
         while (hops > 0) : (hops -= 1) s = s.p.?;
@@ -42,14 +43,14 @@ noinline fn outerLook(e: *rt.Env, ins: *bc.Ins, sym: *rt.Sym, g: *?*V) ?*V {
         while (i > 0) : (i -= 1) if (s.vars[i - 1].k == sym.key) {
             if (fixed and hops < 0x7fff and i - 1 < 0x10000) {
                 ins.b = (hops << 16) | @as(u32, @intCast(i - 1));
-                ins.c = rt.shape;
+                ins.c = scope.shape;
             }
             return &s.vars[i - 1].v;
         };
         fixed = fixed and s.proto != null and s.proto.?.code != null;
         hops += 1;
     }
-    if (g.* == null) g.* = rt.slotOf(rt.root, sym.key);
+    if (g.* == null) g.* = scope.slotOf(scope.root, sym.key);
     return g.*;
 }
 
@@ -74,7 +75,7 @@ fn slow(m: *rt.Machine, code: *bc.Bytecode, ip: [*]const bc.Ins, arity: usize) E
     const vs = &rt.vs;
     const n = vs.items.len;
     var g: ?*V = null;
-    const f = if (rt.find(m.e, p.sym, &g)) |s| s.* else V.nil;
+    const f = if (scope.find(m.e, p.sym, &g)) |s| s.* else V.nil;
     if (f == V.nil) return rt.undefinedFunction(p.c[0].ast);
     vs.insert(rt.gpa, n - arity, f) catch gc.oom();
     return call(m, n - arity, code, pcOf(code, ip) + 1);
@@ -113,7 +114,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             continue :sw ip[0].op;
         },
         .lambda => {
-            st[sp] = rt.lambda(code.protos[ip[0].a], e);
+            st[sp] = scope.lambda(code.protos[ip[0].a], e);
             sp += 1;
             ip += 1;
             continue :sw ip[0].op;
@@ -125,7 +126,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         },
         .setouter => {
             const d = code.defs[ip[0].a];
-            if (d.define) try rt.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| rt.replace(p, st[sp - 1]);
+            if (d.define) try scope.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| scope.replace(p, st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -300,7 +301,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         },
         .global => { // a name of an inlined function's body: only the global scope is looked at
             const r = code.refs[ip[0].a];
-            if (r.g == null) r.g = rt.slotOf(rt.root, r.sym.key);
+            if (r.g == null) r.g = scope.slotOf(scope.root, r.sym.key);
             st[sp] = if (r.g) |p| p.* else V.nil;
             sp += 1;
             ip += 1;
@@ -308,8 +309,8 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
         },
         .setglobal => {
             const d = code.defs[ip[0].a];
-            if (d.g == null) d.g = rt.slotOf(rt.root, d.sym.?.key);
-            if (d.g) |p| rt.replace(p, st[sp - 1]);
+            if (d.g == null) d.g = scope.slotOf(scope.root, d.sym.?.key);
+            if (d.g) |p| scope.replace(p, st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -331,7 +332,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
             if (idx >= @as(f64, @floatFromInt(len))) { // done: the value of the loop is nil (each) or the results (map)
                 if (idx > 0) { // there is a loop frame
                     const k = &ks.items[ks.items.len - 1];
-                    if (k.iter_env) |x| if (!x.captured) rt.release(x);
+                    if (k.iter_env) |x| if (!x.captured) scope.release(x);
                     ks.items.len -= 1;
                 }
                 st[ib - 1] = if (is_map) st[ib + 1] else V.nil;
@@ -355,7 +356,7 @@ pub noinline fn exec(m: *rt.Machine, code0: *bc.Bytecode, pc0: usize) E!rt.Go {
                 for (e.vars[1..]) |*v| v.v = V.nil;
             } else {
                 var lam: rt.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
-                e = rt.bindWith(&lam, &.{item}, body);
+                e = scope.bindWith(&lam, &.{item}, body);
             }
             k.iter_env = e;
             m.e = e;
