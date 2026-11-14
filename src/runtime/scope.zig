@@ -155,10 +155,13 @@ pub fn bindWith(f: *Lam, a: []const V, code: *bytecode.Bytecode) *Env {
     const ps = f.proto.params;
     const n = code.keys.len;
     const cap = capFor(n);
-    const e = gc.new(Env, cap * @sizeOf(Var), .env, undefined);
-    // Do not reuse pooled envs: markRoots clears env_pools at collection start, so a nested
-    // collection during macro expansion can free a scope still being wired up from the pool.
-    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .recyclable = false };
+    const pool = poolOf(cap);
+    const e = if (pool != null and env_pools[pool.?] != null) blk: {
+        const e = env_pools[pool.?].?;
+        env_pools[pool.?] = e.p;
+        break :blk e;
+    } else gc.new(Env, cap * @sizeOf(Var), .env, undefined);
+    e.* = .{ .p = f.env, .vars = gc.after(Var, e)[0..n], .cap = cap, .proto = f.proto, .recyclable = pool != null };
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = value.arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = value.list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };

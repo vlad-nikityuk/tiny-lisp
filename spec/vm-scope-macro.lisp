@@ -1,5 +1,5 @@
-;; Regression: many nested macro expansions (defn) after heavy top-level work must not
-;; corrupt the scope pool (see scope.bindWith).
+;; Regression: many nested macro expansions (defn) after heavy top-level work and uv-make-tcp
+;; must not corrupt scopes or the bytecode heap (wrong libuv type ids used to smash compiled code).
 (load "src/lib/uv.lisp")
 (define PORT 19877)
 (define *loop* (uv_default_loop))
