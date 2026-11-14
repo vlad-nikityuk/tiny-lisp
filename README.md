@@ -66,7 +66,8 @@ You need [Zig 0.17](https://ziglang.org/download/).
 make                         # build ./tinylisp
 ./tinylisp                  # REPL
 ./tinylisp -f file.lisp     # run a file
-make test                    # run the tests
+make test                    # run the tests (see CLAUDE.md: also collector stress and microgpt check)
+make check-all               # make test && make lint
 make bench                   # compare with CPython on the programs in bench/
 ```
 
@@ -173,7 +174,7 @@ Run from the repository root.
 | `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps the code waiting for a call to return and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Each node of the expanded code is compiled once, the first time it is evaluated: names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
+Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps bytecode resuming after a call and a `map` or `try` waiting for its callback as frames on a heap stack; tail calls replace the current state. The parser, printer and freeing are iterative. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Names become interned symbols with cached slots when the typed AST is built; scopes of finished calls are recycled unless a closure captured them; values are 8 bytes (NaN-boxed).
 
 ## History
 

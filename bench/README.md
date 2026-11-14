@@ -62,7 +62,7 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 
 - **Everything runs as bytecode.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
   parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); a top-level form is compiled the same way, as a function without
-  parameters whose names are globals. (There used to be a tree evaluator for top-level code and the functions the compiler rejected; it is gone.) Macros are expanded eagerly for a whole top-level form before it runs; the bytecode is compiled lazily at the first call (from the expanded code), and sees primitive rebinding only on subsequent calls,
+  parameters whose names are globals. Macros are expanded eagerly for a whole top-level form before it runs; a function's bytecode is compiled on its first call and sees primitive rebinding only on subsequent calls,
   as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
   and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.
 - **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,
@@ -71,5 +71,5 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 - **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, measured then at about 2 ns each (240M of them), and about
   7M calls that are not inlined (a call builds a scope and a frame, measured then at about 25 ns).
 - **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
-  the place of a variable in the old tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
+  caching outer lookups beyond the bytecode's `(hops, index)` pair (no gain), three-operand forms of `+`, running calls between compiled functions
   without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.
