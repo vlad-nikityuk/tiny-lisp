@@ -64,7 +64,10 @@ def import_diag(importer: Path, spec: str) -> tuple[str | None, str | None]:
         return None, f"imports: {rel} -> {spec!r} is not a .zig file"
     if not target.is_file():
         return None, f"imports: {rel} -> {spec!r} does not exist"
-    return unit_of(target), None
+    try:
+        return unit_of(target), None
+    except ValueError:
+        return None, f"imports: {rel} -> {spec!r} is an unknown unit"
 
 
 def resolve_import(importer: Path, spec: str) -> str | None:
@@ -202,9 +205,20 @@ def check_stale() -> list[str]:
     return errs
 
 
+def check_import_diag_self() -> list[str]:
+    """import_diag must not traceback on an existing .zig outside the four trees."""
+    importer = ROOT / "src/repl.zig"
+    stray = "../spec/repo_rules_stray.zig"
+    _, bad = import_diag(importer, stray)
+    want = f"imports: {importer.relative_to(ROOT)} -> {stray!r} is an unknown unit"
+    if bad != want:
+        return [f"import_diag self-test: {bad!r} != {want!r}"]
+    return []
+
+
 def main() -> int:
     mapped = parse_file_map()
-    errors = check_file_map(mapped) + check_imports() + check_stale()
+    errors = check_import_diag_self() + check_file_map(mapped) + check_imports() + check_stale()
     for e in errors:
         print(e, file=sys.stderr)
     return 1 if errors else 0
