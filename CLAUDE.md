@@ -47,6 +47,7 @@ src/lib/                  the standard library
     ffi.zig               dlopen/dlsym, register-split C calls, memory peek/poke, FFI callback pool
     ffi.lisp              marshaling helpers (ffi-build-call); bind libraries by hand or generate
     uv.lisp               example libuv bindings (hand marshaled; load on demand)
+    node.lisp             Node-like fs/path/process helpers on libc via FFI (load on demand; dirent/stat offsets probed at load)
     source.zig            a file's text, and running a file form by form (for the REPL's -f and the stdlib)
     stdlib.lisp           the Lisp part, loaded at start (path relative to the repo root)
 ```

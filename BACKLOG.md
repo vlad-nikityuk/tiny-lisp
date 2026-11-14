@@ -11,6 +11,7 @@ The owner's plan for tiny-lisp, in order. Status as of 2026-11-14. PR: #38 (`per
 - **Stage 3**: the tree interpreter is removed. One engine: the bytecode VM. Top-level forms compile to bytecode too. Makefile targets: `make test`, `make lint`, `make check-all`, `make fmt`, `make bench`.
 - **call/cc**: full re-entrant continuations (`call/cc`, `call-with-current-continuation`); see `src/runtime/continuation.zig`, `spec/continuations.lisp`, `examples/continuations.lisp`.
 - **CFFI + libuv**: register-split C calls, callback pool, `define-library`, libuv bindings with load-time type-id checks; stable `uv-loopback-run` and `spec/uv-integration.lisp` (three HTTP requests on one loop); teaching `examples/uv-server.lisp` / `uv-client.lisp`.
+- **Node-like stdlib (`node.lisp`)**: libc fs/path/process/os/time on top of FFI (load on demand); `spec/node.lisp`, `examples/node-tour.lisp`.
 
 ## In progress
 
@@ -18,9 +19,8 @@ The owner's plan for tiny-lisp, in order. Status as of 2026-11-14. PR: #38 (`per
 
 ## Next
 
-1. **Node.js-like basic standard library** on top of the CFFI (files, and whatever else macOS offers that Node has), added to the stdlib.
-2. **Stage 4: static variable addresses.** With no scope that can grow at run time, compile every variable reference to a fixed (hops, index) and drop names from scopes; remove the quickened lookup caches. Expected to simplify and speed things up.
-3. **Stage 5: folder renames** as the owner proposed: `syntax/` (parser, ast, expand), `bytecode/` (format, scan, compiler, interpreter), `builtins/` (natives + source + stdlib.lisp), `runtime/` (value, gc, scope, primitives); rename `node` to `ast`; decide where `machine.zig` lives.
+1. **Stage 4: static variable addresses.** With no scope that can grow at run time, compile every variable reference to a fixed (hops, index) and drop names from scopes; remove the quickened lookup caches. Expected to simplify and speed things up.
+2. **Stage 5: folder renames** as the owner proposed: `syntax/` (parser, ast, expand), `bytecode/` (format, scan, compiler, interpreter), `builtins/` (natives + source + stdlib.lisp), `runtime/` (value, gc, scope, primitives); rename `node` to `ast`; decide where `machine.zig` lives.
 
 ## Known limitations and ideas (not scheduled)
 
