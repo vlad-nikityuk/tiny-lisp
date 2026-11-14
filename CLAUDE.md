@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+This file is a copy of [CLAUDE.md](CLAUDE.md) for Cursor agent routing; keep it in sync with CLAUDE.md.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## This is an educational project
@@ -27,7 +29,7 @@ src/repl.zig              the entry point: CLI and REPL, sets up the root scope 
 src/runtime/              what the compiler, the VM and the natives share
     value.zig             V (NaN-boxed), the objects it points to (Lst, Fn, Lam), constructors and tests, the printer, the error value (errv, fail)
     gc.zig                the memory manager: allocation, mark-sweep, the roots, pinned values
-    scope.zig             Env, the global table, epoch/shape, lookup and assignment, closures, scope recycling
+    scope.zig             Env, the global table, epoch, lookup and assignment, closures, scope recycling
     node.zig              the typed AST: Node, Code, Ref, Def, Proto, Guard, Sym
     machine.zig           Frame, Machine, Go, the ks/vs stacks, natives that call back into Lisp (start/step/finish/callback/tail), try/recover, the trampoline
     primitives.zig        + - car cons ...: `prim` specialised per Op, `numeric`, and `fast`/`fast1`, the in-place forms the VM uses

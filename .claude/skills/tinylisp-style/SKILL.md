@@ -96,6 +96,6 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
   (`deftest` adds that when it expands, via `patch-asserts`), so write plain `(assert …)`.
 - Beware assertions that cannot fail: before trusting an `equal?` on a result, check that a wrong value would be caught.
 - REPL-visible behaviour goes in `spec/repl.py`. Add a case for every change.
-- After changing a native or the machine, stress the collector: build with a tiny `limit` in `src/runtime/gc.zig` (2048)
-  and run both suites and the microgpt example, then put the limit back.
+- After changing a native or the machine, run `make test`: it already builds a copy with a tiny `limit` in `src/runtime/gc.zig` (2048)
+  and runs both suites and the microgpt example.
 - Do not name a test helper like a macro the specs define (`twice`, …): the macro rewrites it.

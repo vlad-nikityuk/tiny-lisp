@@ -71,5 +71,5 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 - **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, measured then at about 2 ns each (240M of them), and about
   7M calls that are not inlined (a call builds a scope and a frame, measured then at about 25 ns).
 - **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
-  caching outer lookups beyond the bytecode's `(hops, index)` pair (no gain), three-operand forms of `+`, running calls between compiled functions
+  outer lookups beyond the bytecode's `(hops, index)` pair (no gain), three-operand forms of `+`, running calls between compiled functions
   without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.
