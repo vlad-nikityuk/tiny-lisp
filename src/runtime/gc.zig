@@ -178,6 +178,7 @@ fn markRoots() void {
     var macros = scope.macros.valueIterator();
     while (macros.next()) |f| markV(f.*);
     markV(value.errv);
+    if (machine.ffi_pending_err) |e| markV(e);
 }
 
 pub fn collect() void {

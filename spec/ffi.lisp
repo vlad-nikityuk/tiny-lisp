@@ -1,4 +1,5 @@
 ;; FFI: libc/libSystem only (portable). libuv tests live in spec/ffi-libuv.lisp.
+(load "src/lib/ffi.lisp")
 (deftest "ffi: strlen round trip"
   (define libc (ffi-dlopen-self))
   (define strlen (ffi-dlsym libc "strlen"))
@@ -24,6 +25,20 @@
   (define r2 (ffi-call-f64 sqrt nil (list 9)))
   (assert (< (abs (- r2 3)) 1e-9))
   (ffi-dlclose libm))
+(deftest "ffi: marshal-out sign-extends int and int32"
+  (assert (eq? -1 (ffi-marshal-out 'int 4294967295)))
+  (assert (eq? -42 (ffi-marshal-out 'int32 4294967254))))
+(deftest "ffi: callback returns negative int to C"
+  (define libc (ffi-dlopen-self))
+  (define qsort (ffi-dlsym libc "qsort"))
+  (define arr (ffi-malloc 16))
+  (ffi-poke-f64 arr 2)
+  (ffi-poke-f64 (+ arr 8) 1)
+  (define id (ffi-register-callback (lambda (a b) -1)))
+  (ffi-call-void qsort (list arr 2 8 (ffi-callback-ptr id)) nil)
+  (ffi-release-callback id)
+  (ffi-free arr)
+  (assert #t))
 (deftest "ffi: peek poke i32 negative"
   (define p (ffi-malloc 4))
   (ffi-poke p 4 -42)
@@ -95,5 +110,8 @@
   (define libc (ffi-dlopen-self))
   (define strlen (lambda (s) (ffi-build-call (ffi-dlsym libc "strlen") 'int (list (list s 'string)))))
   (assert (eq? 5 (strlen "hello"))))
+
+
+
 
 (run-tests)

@@ -23,9 +23,6 @@ extern "c" fn dlclose(handle: ?*anyopaque) i32;
 extern "c" fn dlerror() ?[*:0]const u8;
 const RTLD_LAZY: i32 = 0x1;
 
-/// Re-raised after the C call that faulted a callback returns (ffi-take-error clears it).
-pub var pending_err: ?V = null;
-
 const pool_n = 64;
 const CallbackStub = *const fn (a0: i64, a1: i64, a2: i64, a3: i64) callconv(.c) i64;
 
@@ -43,6 +40,12 @@ fn ensurePool() void {
 fn ptrNum(p: usize) V {
     if (p < (1 << 53)) return V.num(@floatFromInt(p));
     return V.num(@bitCast(@as(u64, @intCast(p))));
+}
+
+/// A C callback argument passed as i64 (pointers and signed integers share the stub).
+fn callbackArg(x: i64) V {
+    if (x < 0 or x >= (1 << 53)) return V.num(@floatFromInt(x));
+    return ptrNum(@bitCast(x));
 }
 
 fn numPtr(v: V) E!usize {
@@ -83,7 +86,7 @@ fn invoke(comptime Ret: enum { i64, f64, void }, ptr: usize, ints: []const V, fl
         .i64 => {
             const cfn: Ci64 = @ptrCast(@alignCast(f));
             const r = cfn(ir[0], ir[1], ir[2], ir[3], ir[4], ir[5], ir[6], ir[7], fr[0], fr[1], fr[2], fr[3], fr[4], fr[5], fr[6], fr[7]);
-            return ptrNum(@bitCast(r));
+            return callbackArg(r);
         },
         .f64 => {
             const cfn: Cf64 = @ptrCast(@alignCast(f));
@@ -99,8 +102,8 @@ fn invoke(comptime Ret: enum { i64, f64, void }, ptr: usize, ints: []const V, fl
 }
 
 fn finishCall(v: V) E!V {
-    if (pending_err) |e| {
-        pending_err = null;
+    if (machine.ffi_pending_err) |e| {
+        machine.ffi_pending_err = null;
         value.errv = e;
         return error.Lisp;
     }
@@ -220,13 +223,13 @@ fn runCallback(comptime id: usize, args: [4]i64) i64 {
     defer machine.callback_depth -= 1;
     const b = machine.vs.items.len;
     gc.push(V, &machine.vs, f);
-    const xs = [_]V{ ptrNum(@bitCast(args[0])), ptrNum(@bitCast(args[1])), ptrNum(@bitCast(args[2])), ptrNum(@bitCast(args[3])) };
+    const xs = [_]V{ callbackArg(args[0]), callbackArg(args[1]), callbackArg(args[2]), callbackArg(args[3]) };
     machine.vs.appendSlice(value.gpa, &xs) catch {
-        pending_err = value.str("TinyLisp: out of memory", .{});
+        machine.ffi_pending_err = value.str("TinyLisp: out of memory", .{});
         return 0;
     };
     const r = eval.exec(.{ .apply = b }, scope.root) catch {
-        pending_err = value.errv;
+        machine.ffi_pending_err = value.errv;
         return 0;
     };
     if (r.isNum()) return @intFromFloat(r.asNum());
@@ -286,8 +289,8 @@ fn releaseCallback(_: *Fn, a: []const V) E!V {
 }
 
 fn takeError(_: *Fn, _: []const V) E!V {
-    const e = pending_err orelse V.nil;
-    pending_err = null;
+    const e = machine.ffi_pending_err orelse V.nil;
+    machine.ffi_pending_err = null;
     return e;
 }
 

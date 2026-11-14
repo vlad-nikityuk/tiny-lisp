@@ -10,7 +10,8 @@
   (if (>= x 2147483648) (- x 4294967296) x))
 
 (defn ffi-marshal-out-int (ty v)
-  (if (eq? ty 'int32) (ffi-sign-extend32 (mod v 4294967296)) v))
+  (if (eq? ty 'int) (ffi-sign-extend32 (mod v 4294967296))
+    (if (eq? ty 'int32) (ffi-sign-extend32 (mod v 4294967296)) v)))
 
 (defn ffi-marshal-out (ty v)
   (if (eq? ty 'string) (ffi-string-at v)

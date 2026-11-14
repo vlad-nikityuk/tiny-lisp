@@ -42,6 +42,8 @@ pub var macro_depth: usize = 0;
 pub var callback_depth: usize = 0;
 /// Lisp functions registered for FFI C callbacks (lib/ffi.zig); the collector traces them.
 pub var ffi_roots: std.ArrayList(V) = .empty;
+/// Deferred Lisp error from inside an FFI callback (lib/ffi.zig); rooted until the C call returns.
+pub var ffi_pending_err: ?V = null;
 
 pub fn frame(kind: Kind, e: *Env) *Frame {
     gc.push(Frame, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .e = e });
