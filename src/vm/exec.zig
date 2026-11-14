@@ -8,6 +8,7 @@ const node = @import("../runtime/node.zig");
 const machine = @import("../runtime/machine.zig");
 const primitives = @import("../runtime/primitives.zig");
 const bytecode = @import("bytecode.zig");
+const compiler = @import("compiler.zig");
 const Bytecode = bytecode.Bytecode;
 const Ins = bytecode.Ins;
 const V = value.V;
@@ -329,24 +330,32 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             vs.items.len = sp - 1;
             return .{ .ret = st[sp - 1] };
         },
-        .each => { // the list is on the stack: add the index and a place for the body's value
-            if (!loopGuardOk(e, code, ip[0].b)) {
-                sp -= 1; // drop the list or n the fast path would have used
-                ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+        .each => {
+            if (ip[0].b & bytecode.loop_guard_flag != 0) { // top-level: still the natives, before the list is evaluated
+                if (!loopGuardOk(e, code, ip[0].b)) {
+                    ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+                    continue :sw ip[0].op;
+                }
+                ip += 1;
                 continue :sw ip[0].op;
             }
+            // the list is on the stack: add the index and a place for the body's value
             st[sp] = V.num(-1);
             st[sp + 1] = V.nil;
             sp += 2;
             ip += 1;
             continue :sw ip[0].op;
         },
-        .map => { // as each, with the list of results (the body's values) between the index and that place
-            if (!loopGuardOk(e, code, ip[0].b)) {
-                sp -= 1; // drop the list or n the fast path would have used
-                ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+        .map => {
+            if (ip[0].b & bytecode.loop_guard_flag != 0) { // top-level: check the names before the list or n is evaluated
+                if (!loopGuardOk(e, code, ip[0].b)) {
+                    ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+                    continue :sw ip[0].op;
+                }
+                ip += 1;
                 continue :sw ip[0].op;
             }
+            // as each, with the list of results (the body's values) between the index and that place
             const counted = ip[0].b & 1;
             st[sp] = V.num(-1);
             st[sp + 1] = value.list(&.{}, if (counted != 0) node.rangeLen(st[sp - 1]) else value.items(st[sp - 1]).len);
@@ -403,7 +412,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 vs.items.len = sp;
                 gc.collect();
             }
-            const body = code.bodies[ip[0].a].?;
+            const body = compiler.ready(code.protos[ip[0].a]);
             const item = if (counted) V.num(idx) else items[@intFromFloat(idx)];
             const last = k.iter_env;
             if (last != null and !last.?.captured and last.?.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again

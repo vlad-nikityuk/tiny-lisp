@@ -255,8 +255,8 @@ const Compiler = struct {
     }
 
     /// (each list (lambda (x) ...)) or (map list (lambda (x) ...)), while the name is the native: a loop of the bytecode, with
-    /// the lambda's body compiled on its own. Over (range n) it counts to n and builds no list. Top-level code may still use the loop,
-    /// but checks the names when it runs and falls back to an ordinary call if they were rebound earlier in the same form.
+    /// the lambda's body compiled on its own (when the loop is entered for a top-level thunk). Over (range n) it counts to n and builds no list.
+    /// Top-level code checks the names before the list is evaluated and falls back to one ordinary call if they were rebound earlier in the same form.
     fn genLoop(c: *Compiler, k: []const *Node) bool {
         if (k.len != 3 or k[0].code != .ref or k[2].code != .lambda) return false;
         const sym = k[0].code.ref.sym;
@@ -264,7 +264,6 @@ const Compiler = struct {
         const g = scope.globalOf(sym) orelse return false;
         const is_map = g.* == node.map_v;
         if (!(is_map or g.* == node.each_v) or lp.params.len != 1 or lp.rest) return false;
-        const body = ready(lp);
         sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
         var counted: usize = 0;
         var source = k[1];
@@ -279,7 +278,6 @@ const Compiler = struct {
             };
         }
         const at = add(*node.Proto, &c.protos, lp);
-        _ = add(?*Bytecode, &c.bodies, body);
         if (c.top) {
             const gidx = add(bytecode.LoopGuard, &c.loops, .{
                 .sym = sym,
@@ -288,9 +286,11 @@ const Compiler = struct {
                 .expect_range = if (counted != 0) gc.pin(node.range_v) else V.nil,
                 .fail_pc = 0,
             });
+            _ = add(?*Bytecode, &c.bodies, null); // the body is compiled when the loop runs (rebinds in the same form are visible)
+            const flags: u32 = bytecode.loop_guard_flag | (@as(u32, @intCast(gidx)) << 1);
+            _ = c.emit(if (is_map) .map else .each, at, flags); // check the names before the list or n is evaluated
             c.gen(source, false);
-            const flags: u32 = bytecode.loop_guard_flag | @as(u32, @intCast(counted)) | (@as(u32, @intCast(gidx)) << 1);
-            _ = c.emit(if (is_map) .map else .each, at, @intCast(flags));
+            _ = c.emit(if (is_map) .map else .each, at, @intCast(counted));
             _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
             const over = c.emit(.jmp, 0, 0);
             c.loops.items[gidx].fail_pc = c.ins.items.len;
@@ -301,6 +301,8 @@ const Compiler = struct {
             c.ins.items[over].b = @intCast(c.ins.items.len);
             return true;
         }
+        const body = ready(lp);
+        _ = add(?*Bytecode, &c.bodies, body);
         c.gen(source, false);
         _ = c.emit(if (is_map) .map else .each, at, counted);
         _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
