@@ -4,8 +4,8 @@
 (if (not (fs-exists? NODE_TEST_ROOT)) (fs-mkdir NODE_TEST_ROOT))
 
 (defn node-spec-cleanup ()
-  (for (fs-read-dir NODE_TEST_ROOT)
-       (lambda (name)
+  (each (fs-read-dir NODE_TEST_ROOT)
+       (fn (name)
          (define child (path-join NODE_TEST_ROOT name))
          (try (lambda () (fs-unlink child))
               (lambda (e) (try (lambda () (fs-rmdir child)) (lambda (e2) nil))))))
