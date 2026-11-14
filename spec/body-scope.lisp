@@ -111,6 +111,52 @@
   (assert (eq? 1 (eval-in-function)))
   (assert (eq? 8 x)))
 
+;; evaluation order: a define in an argument is visible to the arguments after it, not before
+(defn order-forward () (list (define a 1) (+ a 1)))
+(defn order-reverse () (list a (define a 1)))
+(defn self-initializer () (define x (+ x 1)) x)
+(defn or-define (flag) (|| flag (define v 5)) v)
+(deftest "body: evaluation order decides what a define in an argument or initializer can see"
+  (assert (equal? (list 1 2) (order-forward)))
+  (assert (eq? "TinyLisp: a is used before it is defined" (message-of order-reverse)))
+  (assert (eq? unbound-x (message-of self-initializer))))
+(deftest "body: a define in a later operand of || is certain only if the operand ran"
+  (assert (eq? 5 (or-define #f)))
+  (assert (eq? "TinyLisp: v is used before it is defined" (message-of (lambda () (or-define #t))))))
+
+;; the operands of vset! are checked reads too
+(defn vset-both (flag) (if flag (begin (define l (list 1 2)) (define i 0)) 0) (vset! l i 9) l)
+(defn vset-index (flag) (define l (list 1 2)) (if flag (define i 1) 0) (vset! l i 9) l)
+(deftest "body: the list and the index of vset! may be unbound"
+  (assert (equal? (list 9 2) (vset-both #t)))
+  (assert (eq? "TinyLisp: l is used before it is defined" (message-of (lambda () (vset-both #f)))))
+  (assert (equal? (list 1 9) (vset-index #t)))
+  (assert (eq? "TinyLisp: i is used before it is defined" (message-of (lambda () (vset-index #f))))))
+
+;; a closure's remembered lookup of a captured name is still checked when the name is unbound in a later scope
+(defn warm-then-unbound ()
+  (define results '())
+  (for (i (range 2))
+    (define g (lambda () cap))
+    (if (eq? i 0) (define cap 7) 0)
+    (set! results (cons (try g (lambda (e) e)) results)))
+  results)
+(deftest "body: a warmed outer lookup still raises when the captured name is unbound"
+  (assert (equal? (list "TinyLisp: cap is used before it is defined" 7) (warm-then-unbound))))
+
+;; code compiled with a global primitive is compiled again when a function first defines that name locally
+(defmacro too-deep () (reduce (range 125) (lambda (a i) (list 'begin a)) 0))
+(defn mark-plus () (define + (lambda (a b) 42)))
+(defn local-plus-later ()
+  (if #f (too-deep) 0) ; (nested too deep: this function stays with the tree evaluator)
+  (define f (lambda () (+ 1 2)))
+  (f)
+  (mark-plus)
+  (define + (lambda (a b) 99))
+  (f))
+(deftest "body: defining a primitive's name locally makes earlier code see it"
+  (assert (eq? 99 (local-plus-later))))
+
 (deftest "body: deep recursion and deep data are fine with checked reads"
   (defn count-down (n) (if (eq? n 0) 0 (begin (define r (count-down (- n 1))) (+ r 1))))
   (assert (eq? 100000 (count-down 100000))))
