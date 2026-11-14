@@ -61,10 +61,14 @@
 
 (define connect-cb (ffi-callback-ptr (ffi-register-callback on-connect)))
 
-(defn uv-loopback-run ()
+(defn uv-loopback-run (& port)
   (begin
-    (assert (eq? 0 (uv_tcp_bind *server* *addr* 0)))
+    (define addr (uv-sockaddr "127.0.0.1" (if port (car port) PORT)))
+    (set! *server* (uv-make-tcp *loop*))
+    (set! *client* (uv-make-tcp *loop*))
+    (set! done #f)
+    (assert (eq? 0 (uv_tcp_bind *server* addr 0)))
     (assert (eq? 0 (uv_listen *server* 4 accept-cb)))
-    (assert (eq? 0 (uv_tcp_connect (uv-make-connect-req) *client* *addr* connect-cb)))
-    (uv_run *loop* UV_RUN_DEFAULT)
+    (assert (eq? 0 (uv_tcp_connect (uv-make-connect-req) *client* addr connect-cb)))
+    (assert (eq? 0 (uv_run *loop* UV_RUN_DEFAULT)))
     (assert done)))

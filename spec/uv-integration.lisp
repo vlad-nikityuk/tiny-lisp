@@ -1,4 +1,4 @@
-;; libuv binding smoke test; skipped when the library is absent.
+;; libuv HTTP loopback: server and client on one loop, repeated requests. Skipped when libuv is absent.
 (load "src/lib/ffi.lisp")
 
 (define *have-uv*
@@ -7,12 +7,12 @@
                         (lambda (e2) (try (lambda () (begin (ffi-dlopen "libuv.dylib") #t))
                                          (lambda (e3) #f)))))))
 
-(deftest "uv: define-library binding loads"
+(deftest "uv: HTTP loopback three times"
   (if *have-uv*
     (begin
-      (load "src/lib/uv.lisp")
-      (assert uv-lib)
-      (assert (> (uv_handle_size UV_TCP) 0)))
+      (load "examples/uv-loopback.lisp")
+      (for (i (range 3)) (uv-loopback-run (+ 19877 i)))
+      (assert done))
     (assert #t)))
 
 (run-tests)
