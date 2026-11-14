@@ -58,6 +58,10 @@ Redefining a macro changes the forms that come after it; code that was expanded 
 
 `defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/lib/stdlib.lisp`.
 
+## Documentation
+
+Language features, architecture, VM, memory, continuations, FFI, and design notes: [`docs/`](docs/README.md).
+
 ## Get started
 
 You need [Zig 0.17](https://ziglang.org/download/).
