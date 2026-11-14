@@ -108,7 +108,7 @@ def check_file_map(mapped: set[str]) -> list[str]:
     actual = {
         str(p.relative_to(ROOT)).replace("\\", "/")
         for p in ROOT.glob("src/**/*.zig")
-    } | {"src/lib/stdlib.lisp"}
+    } | {str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "src/lib").glob("*.lisp")}
     for p in sorted(actual - mapped):
         errs.append(f"file map: missing {p}")
     for p in sorted(mapped - actual):
