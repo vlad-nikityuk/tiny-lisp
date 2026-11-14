@@ -1,4 +1,5 @@
 ;; FFI: libc/libSystem only (portable). libuv tests live in spec/ffi-libuv.lisp.
+(load "src/lib/ffi.lisp")
 (deftest "ffi: strlen round trip"
   (define libc (ffi-dlopen-self))
   (define strlen (ffi-dlsym libc "strlen"))
@@ -14,7 +15,7 @@
   (define path (ffi-cstr "PATH"))
   (define p (ffi-call-i64 getenv (list path) ()))
   (assert (> p 0))
-  (assert (> (string-length (ffi-string-at p)) 0)))
+  (assert (not (eq? "" (ffi-string-at p)))))
 (deftest "ffi: libm sqrt and mixed args"
   (define libm (ffi-dlopen "libm.dylib"))
   (if libm
@@ -35,3 +36,72 @@
   (ffi-poke p 4 -42)
   (assert (= -42 (ffi-peek p 4 #t)))
   (ffi-free p))
+(deftest "ffi: qsort callback"
+  (define libc (ffi-dlopen-self))
+  (define qsort (ffi-dlsym libc "qsort"))
+  (define n 5)
+  (define bytes (* n 8))
+  (define arr (ffi-malloc bytes))
+  (define vals '(3 1 4 1 5))
+  (for i (range 5)
+    (ffi-poke-f64 (+ arr (* i 8)) (at vals i)))
+  (define cmp-id (ffi-register-callback
+    (lambda (a b)
+      (define da (ffi-peek-f64 a))
+      (define db (ffi-peek-f64 b))
+      (if (< da db) -1 (if (> da db) 1 0)))))
+  (define cmp (ffi-callback-ptr cmp-id))
+  (ffi-call-void qsort (list arr n 8 cmp) ())
+  (assert (= 1 (ffi-peek-f64 arr)))
+  (ffi-release-callback cmp-id)
+  (ffi-free arr))
+(deftest "ffi: callback error is deferred"
+  (define libc (ffi-dlopen-self))
+  (define qsort (ffi-dlsym libc "qsort"))
+  (define arr (ffi-malloc 8))
+  (ffi-poke-f64 arr 1)
+  (define id (ffi-register-callback (lambda (a b) (error "boom"))))
+  (define ok (try (lambda ()
+    (ffi-call-void qsort (list arr 1 8 (ffi-callback-ptr id)) ()))
+    (lambda (e) #f)))
+  (assert ok)
+  (assert (equal? "TinyLisp: boom" (ffi-take-error)))
+  (ffi-release-callback id)
+  (ffi-free arr))
+(deftest "ffi: many ffi calls in a loop"
+  (define libc (ffi-dlopen-self))
+  (define strlen (ffi-dlsym libc "strlen"))
+  (define s (ffi-cstr "x"))
+  (define n 0)
+  (for i (range 200)
+    (set! n (+ n (ffi-call-i64 strlen (list s) ()))))
+  (assert (= 200 n))
+  (ffi-free s))
+(deftest "ffi: libm pow mixes int and double"
+  (define libm (try (lambda () (ffi-dlopen "libm.dylib")) (lambda (e) (ffi-dlopen "libm.so.6"))))
+  (assert libm)
+  (define pow (ffi-dlsym libm "pow"))
+  (define r (ffi-call-f64 pow (list 2) (list 10)))
+  (assert (< (abs (- r 1024)) 1e-6))
+  (ffi-dlclose libm))
+(deftest "ffi: call/cc inside callback is an error"
+  (define libc (ffi-dlopen-self))
+  (define qsort (ffi-dlsym libc "qsort"))
+  (define arr (ffi-malloc 16))
+  (ffi-poke-f64 arr 2)
+  (ffi-poke-f64 (+ arr 8) 1)
+  (define id (ffi-register-callback (lambda (a b) (call/cc (lambda (k) 0)))))
+  (define msg (try (lambda ()
+    (ffi-call-void qsort (list arr 2 8 (ffi-callback-ptr id)) ()))
+    (lambda (e) e)))
+  (assert (equal? "TinyLisp: a continuation cannot cross an FFI callback" msg))
+  (ffi-release-callback id)
+  (ffi-free arr))
+(deftest "ffi dsl: define-library strlen"
+  (define-library libc #f
+    (function strlen ((s string)) int))
+  (assert (= 5 (strlen "hello"))))
+(deftest "ffi dsl: strtol negative"
+  (define-library libc #f
+    (function strtol ((text string) (end pointer) (base int)) long))
+  (assert (= -99 (strtol "-99" 0 10))))
