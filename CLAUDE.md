@@ -10,12 +10,12 @@ Readability and understandability come first: someone should be able to read the
 
 ```bash
 make                       # build ./tinylisp (Zig 0.17, ReleaseSafe: bounds/overflow checks, links libc)
-make test                  # spec/repl.py + spec/specs.lisp
-make test-gc               # the same tests with the collection threshold at 2 KB (at least 2 KB allocated between collections, then half the live size, instead of 2 MB): stresses the collector's roots
-make bench                 # bench/run.py: 18 programs in Python and tinylisp, same output checked, times compared (ARGS="-n 1 nbody")
-make fast                  # ReleaseFast build without the checks (a previously measured ~4% faster): ./tinylisp-fast
+make test                  # REPL and Lisp suites, collector stress, microgpt output
+make lint                  # zig fmt --check, zig ast-check, spec/repo_rules.py
+make check-all             # make test && make lint
+make fmt                   # zig fmt src/
+make bench                 # bench/run.py: 18 programs in Python and tinylisp (ARGS="-n 1 nbody")
 ./tinylisp [-f file.lisp] [--debug]
-zig fmt --check src/       # every Zig source is zig fmt clean
 ```
 
 ## Architecture
@@ -80,7 +80,7 @@ Keep names meaningful and the total source small; keep the machine's control flo
 - Anything new that holds a value outside those roots (a Zig-side global, a cache) must be marked in `gc.markRoots`.
 - At collection, publish the VM stack pointer in `vs.items.len` and keep the active scope in the registered machine. A Zig local may survive collection only if its managed object is also reachable from a root; never rely on a local alone across a `.vm` step.
 - **Scope recycling**: the scope of a call (`Env`, `scope.bind`) is handed back to a free list (`scope.release`) when the call ends (a tail call, or a return into a frame of another scope) if it is still `Env.recyclable` (`scope.lambda` clears that when a closure captures it). Recycling assumes only frames, `m.e` and closures hold a scope; the collector forgets the free list. A closure (`scope.lambda`) marks its scope and every enclosing one as `captured` and no longer recyclable. The exception is the lambda that is the last operand of a call of the native `each`/`map` (`Proto.guard`, set by the bytecode compiler, `guardLoopBody`, checked again when the lambda is created: the name must still be global and the same native): it only lives while the loop runs, so it captures nothing, and a `for` inside a loop body no longer costs its enclosing scope its recycling (this works only because a real closure marks the whole chain). This removes most allocation (about two thirds of all objects in microgpt).
-- To stress the collector, `make test-gc` runs both suites with the initial `limit` and the floor assigned by `collect` in gc.zig at 2048 bytes (a minimum threshold of 2 KB allocated between collections; afterwards the limit follows half the live size as usual).
+- To stress the collector, `make test` also runs both suites on a build with the initial `limit` and the floor assigned by `collect` in gc.zig at 2048 bytes (a minimum threshold of 2 KB allocated between collections; afterwards the limit follows half the live size as usual).
 
 ## Language semantics
 

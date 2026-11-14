@@ -1,0 +1,19 @@
+num docs: 1000
+vocab size: 27
+num params: 4192
+step 1 / 10 | loss 3.3183
+step 2 / 10 | loss 3.2453
+step 3 / 10 | loss 2.9924
+step 4 / 10 | loss 3.1839
+step 5 / 10 | loss 3.2665
+step 6 / 10 | loss 3.2671
+step 7 / 10 | loss 3.0302
+step 8 / 10 | loss 2.7751
+step 9 / 10 | loss 3.1957
+step 10 / 10 | loss 3.0667
+--- inference (new, hallucinated names) ---
+sample 1 : zrpeeuapeengear
+sample 2 : zuzejmhocydba
+sample 3 : xuvarhrdeemloxgc
+sample 4 : czyeumoamtmxjisa
+sample 5 : zpaa

@@ -5,8 +5,8 @@ description: Good practices for writing tinylisp (this repo's Lisp) code, from i
 
 # Writing good tinylisp
 
-Run from the repo root: `./tinylisp -f file.lisp`, `make test`. Measure with `time`, and check a refactor with a
-`diff` of the program's output against the output before the change.
+Run from the repo root: `./tinylisp -f file.lisp`, `make test` (or `make check-all` before a push). Measure with `time`;
+`make test` already compares `examples/microgpt.lisp` to `spec/microgpt.expected`.
 
 ## Performance: what is cheap and what is not
 
