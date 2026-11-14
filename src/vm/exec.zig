@@ -214,7 +214,9 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             if (!storeAt(st[sp - 3], st[sp - 2], st[sp - 1])) {
                 const n = code.consts[ip[0].a].asFn();
                 vs.items.len = sp;
-                st[sp - 1] = try n.f.plain(n, st[sp - 3 .. sp]);
+                const v = try n.f.plain(n, st[sp - 3 .. sp]);
+                st = vs.items.ptr;
+                st[sp - 1] = v;
             }
             st[sp - 3] = st[sp - 1];
             sp -= 2;
@@ -256,7 +258,9 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 st[sp - 1] = l;
                 st[sp] = i;
                 vs.items.len = sp + 2;
-                st[sp - 1] = try n.f.plain(n, st[sp - 1 .. sp + 2]);
+                const v = try n.f.plain(n, st[sp - 1 .. sp + 2]);
+                st = vs.items.ptr;
+                st[sp - 1] = v;
             }
             ip += 1;
             continue :sw ip[0].op;
@@ -277,7 +281,11 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             const b = sp - ip[0].a - 1;
             if (st[b].is(.f)) if (st[b].asFn().f == .plain) { // a native that just computes a value: no need to leave
                 const n = st[b].asFn();
-                st[b] = try n.f.plain(n, st[b + 1 .. sp]);
+                // The native may re-enter Lisp (an FFI callback is eval.exec on this same vs). That
+                // grows vs, so the cached pointer is no longer the stack.
+                const v = try n.f.plain(n, st[b + 1 .. sp]);
+                st = vs.items.ptr;
+                st[b] = v;
                 sp = b + 1;
                 ip += 1;
                 continue :sw ip[0].op;

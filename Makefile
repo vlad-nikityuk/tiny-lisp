@@ -22,6 +22,7 @@ define run-tests
 	"$(1)" -f spec/body-scope.lisp
 	"$(1)" -f spec/continuations.lisp
 	"$(1)" -f spec/ffi.lisp
+	"$(1)" -f spec/ffi-exec-vs.lisp
 	"$(1)" -f spec/vm-ffi-compile.lisp
 	"$(1)" -f spec/vm-scope-macro.lisp
 	"$(1)" -f spec/ffi-dsl.lisp
