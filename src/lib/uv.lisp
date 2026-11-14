@@ -3,9 +3,9 @@
 
 (define-library uv ("/opt/homebrew/lib/libuv.dylib" "libuv.dylib" "libuv.so.1")
   (constant UV_RUN_DEFAULT 0)
-  (constant UV_TCP 6)
-  (constant UV_CONNECT 3)
-  (constant UV_WRITE 2)
+  (constant UV_TCP 12)
+  (constant UV_CONNECT 2)
+  (constant UV_WRITE 3)
   (function uv_default_loop () pointer)
   (function uv_loop_size () int)
   (function uv_version () int)
@@ -28,6 +28,15 @@
 (define UV_TCP_BYTES (if uv-lib (uv_handle_size UV_TCP) 0))
 (define UV_CONNECT_BYTES (if uv-lib (uv_req_size UV_CONNECT) 0))
 (define UV_WRITE_BYTES (if uv-lib (uv_req_size UV_WRITE) 0))
+
+;; libuv type ids are handwritten; catch swapped TCP/WRITE constants before init writes past the buffer.
+(if uv-lib
+  (begin
+    (if (<= UV_TCP_BYTES (uv_handle_size 6))
+      (error "TinyLisp: UV_TCP handle size is not larger than an idle handle; fix UV_TCP"))
+    (if (<= UV_WRITE_BYTES UV_CONNECT_BYTES)
+      (error "TinyLisp: UV_WRITE request must be larger than UV_CONNECT; fix UV_CONNECT and UV_WRITE"))
+    nil))
 
 (defn uv-buf-fill (buf-ptr base len)
   (begin (ffi-poke buf-ptr 8 base) (ffi-poke (+ buf-ptr 8) 8 len)))
