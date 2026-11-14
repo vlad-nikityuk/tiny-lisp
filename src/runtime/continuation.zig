@@ -21,14 +21,16 @@ const Snap = struct {
     values: []V,
 };
 
+const hdr = 4 * @sizeOf(usize);
+
 fn snap(f: *Fn) Snap {
-    const nframes: usize = @intFromFloat(f.d0.asNum());
-    const vbase: usize = @intFromFloat(f.d1.asNum());
     const p: [*]u8 = @ptrCast(@alignCast(f));
     const kbase: usize = @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn)))).*;
-    const nvalues: usize = @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + @sizeOf(usize)))).*;
-    const frames: [*]Frame = @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize)));
-    const values: [*]V = @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize) + nframes * @sizeOf(Frame)));
+    const vbase: usize = @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + @sizeOf(usize)))).*;
+    const nframes: usize = @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize)))).*;
+    const nvalues: usize = @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + 3 * @sizeOf(usize)))).*;
+    const frames: [*]Frame = @ptrCast(@alignCast(p + @sizeOf(Fn) + hdr));
+    const values: [*]V = @ptrCast(@alignCast(p + @sizeOf(Fn) + hdr + nframes * @sizeOf(Frame)));
     return .{
         .kbase = kbase,
         .vbase = vbase,
@@ -56,13 +58,15 @@ fn capture(m: *machine.Machine, cc: *const Frame) E!V {
     const vs = &machine.vs;
     const nframes = ks.items.len - m.base - 1; // below the call/cc frame (zero after a tail call)
     const nvalues = cc.base -| m.vbase; // as if call/cc had returned: the native stack is not kept
-    const extra = 2 * @sizeOf(usize) + nframes * @sizeOf(Frame) + nvalues * @sizeOf(V);
-    const f = gc.new(Fn, extra, .func, .{ .f = .{ .step = invokeCont }, .d0 = V.num(@floatFromInt(nframes)), .d1 = V.num(@floatFromInt(m.vbase)) });
+    const extra = hdr + nframes * @sizeOf(Frame) + nvalues * @sizeOf(V);
+    const f = gc.new(Fn, extra, .func, .{ .f = .{ .step = invokeCont }, .d0 = .nil, .d1 = .nil });
     const p: [*]u8 = @ptrCast(@alignCast(f));
     @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn)))).* = m.base;
-    @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + @sizeOf(usize)))).* = nvalues;
-    const frames: [*]Frame = @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize)));
-    const vals: [*]V = @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize) + nframes * @sizeOf(Frame)));
+    @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + @sizeOf(usize)))).* = m.vbase;
+    @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + 2 * @sizeOf(usize)))).* = nframes;
+    @as(*usize, @ptrCast(@alignCast(p + @sizeOf(Fn) + 3 * @sizeOf(usize)))).* = nvalues;
+    const frames: [*]Frame = @ptrCast(@alignCast(p + @sizeOf(Fn) + hdr));
+    const vals: [*]V = @ptrCast(@alignCast(p + @sizeOf(Fn) + hdr + nframes * @sizeOf(Frame)));
     const saved = ks.items[m.base .. ks.items.len - 1];
     @memcpy(frames[0..nframes], saved);
     @memcpy(vals[0..nvalues], vs.items[m.vbase..][0..nvalues]);
@@ -124,7 +128,7 @@ pub fn contExtraBytes(f: *Fn) usize {
     };
     if (step != invokeCont) return 0;
     const s = snap(f);
-    return hdr + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
+    return 2 * @sizeOf(usize) + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
 }
 
 pub fn install(e: *scope.Env) void {

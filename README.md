@@ -169,7 +169,7 @@ Run from the repository root.
 | `src/repl.zig` | the entry point: command line, REPL, setting up the root scope |
 | `src/lang/parser.zig` | parser: text to AST |
 | `src/lang/expand.zig`, `src/lang/compile.zig`, `src/lang/eval.zig` | the front end and the machine loop: macro expansion of a top-level form (and `defmacro`), the expanded AST to typed nodes, and the loop that runs the bytecode, applies functions and returns into frames |
-| `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (the typed AST), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
+| `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (the typed AST), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `continuation.zig` (`call/cc`), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
 | `src/vm/` | the one execution engine: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body or top-level form to bytecode), `exec.zig` (the executor) |
 | `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
