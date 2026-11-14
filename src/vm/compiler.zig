@@ -60,8 +60,13 @@ const Compiler = struct {
     inline_scope: ?struct { keys: []const node.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
     inline_sites: usize = 0, // functions inlined so far
     barrier: usize = 0, // the last jump target: instructions before it are not merged with the ones after
+    bc_overflow: bool = false,
 
     fn emit(c: *Compiler, op: Op, a: usize, b: usize) usize {
+        if (a > max_table_index) {
+            c.bc_overflow = true;
+            return 0;
+        }
         c.ins.append(value.gpa, .{ .op = op, .a = @intCast(a), .b = @intCast(b) }) catch gc.oom();
         return c.ins.items.len - 1;
     }
@@ -93,7 +98,7 @@ const Compiler = struct {
 
     fn patch(c: *Compiler, at: usize) void {
         c.barrier = c.ins.items.len;
-        c.ins.items[at].b = @intCast(c.ins.items.len);
+        if (c.ins.items.len > max_table_index) c.bc_overflow = true else c.ins.items[at].b = @intCast(c.ins.items.len);
     }
 
     /// Code that leaves the value of n on the stack; in tail position it returns it (or tail-calls) instead.
@@ -379,11 +384,14 @@ const Compiler = struct {
 };
 
 fn checkLimits(c: *const Compiler) value.E!void {
+    const msg = "TinyLisp: compiled function is too large for the bytecode format (limit {d})";
+    if (c.bc_overflow)
+        return value.fail(value.str(msg, .{max_table_index}));
     if (c.keys.items.len > max_function_slots)
         return value.fail(value.str("TinyLisp: function has too many local slots (limit {d})", .{max_function_slots}));
     for (c.ins.items) |i| {
         if (i.a > max_table_index)
-            return value.fail(value.str("TinyLisp: compiled function is too large for the bytecode format (limit {d})", .{max_table_index}));
+            return value.fail(value.str(msg, .{max_table_index}));
     }
 }
 

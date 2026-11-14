@@ -24,6 +24,8 @@ define run-tests
 	"$(1)" -f spec/ffi.lisp
 	"$(1)" -f spec/ffi-exec-vs.lisp
 	"$(1)" -f spec/vm-ffi-compile.lisp
+	"$(1)" -f spec/vm-bytecode-limit.lisp
+	@"$(1)" -f spec/vm-huge-top.lisp 2>&1 | grep -q 'limit 65535'
 	"$(1)" -f spec/vm-scope-macro.lisp
 	"$(1)" -f spec/ffi-dsl.lisp
 	"$(1)" -f spec/ffi-libuv.lisp
