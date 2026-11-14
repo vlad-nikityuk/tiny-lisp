@@ -37,6 +37,8 @@ fn call(f: V, parts: []const V) value.E!V {
     defer machine.vs.items.len = b;
     gc.push(V, &machine.vs, f);
     machine.vs.appendSlice(value.gpa, parts) catch gc.oom();
+    machine.macro_depth += 1;
+    defer machine.macro_depth -= 1;
     return eval.exec(.{ .apply = b }, scope.root);
 }
 

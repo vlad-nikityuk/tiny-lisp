@@ -47,7 +47,7 @@ fn holdFrames(frames: []const Frame) void {
 }
 
 fn macroBoundary() E!void {
-    if (machine.machines.items.len > 1)
+    if (machine.machines.items.len > 1 or machine.macro_depth > 0)
         return value.fail(value.str("TinyLisp: a continuation cannot cross a macro expansion", .{}));
 }
 
@@ -124,7 +124,7 @@ pub fn contExtraBytes(f: *Fn) usize {
     };
     if (step != invokeCont) return 0;
     const s = snap(f);
-    return 2 * @sizeOf(usize) + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
+    return hdr + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
 }
 
 pub fn install(e: *scope.Env) void {
