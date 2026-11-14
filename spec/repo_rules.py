@@ -52,15 +52,24 @@ def unit_of(zig: Path) -> str:
     raise ValueError(rel)
 
 
-def resolve_import(importer: Path, spec: str) -> str | None:
+def import_diag(importer: Path, spec: str) -> tuple[str | None, str | None]:
+    """A resolved unit, or an error message for a bad in-repo import path."""
     if spec == "std":
-        return None
+        return None, None
     target = (importer.parent / spec).resolve()
+    rel = importer.relative_to(ROOT)
     if not target.is_relative_to(ROOT):
-        return None
+        return None, None
     if target.suffix != ".zig":
-        return None
-    return unit_of(target)
+        return None, f"imports: {rel} -> {spec!r} is not a .zig file"
+    if not target.is_file():
+        return None, f"imports: {rel} -> {spec!r} does not exist"
+    return unit_of(target), None
+
+
+def resolve_import(importer: Path, spec: str) -> str | None:
+    unit, _ = import_diag(importer, spec)
+    return unit
 
 
 def parse_file_map() -> set[str]:
@@ -106,9 +115,15 @@ def check_imports() -> list[str]:
     errs: list[str] = []
     for zig in sorted((ROOT / "src").rglob("*.zig")):
         u = unit_of(zig)
-        layer = LAYER[u]
+        layer = LAYER.get(u)
+        if layer is None:
+            errs.append(f"imports: {zig.relative_to(ROOT)} is an unknown unit {u!r}")
+            continue
         for spec in re.findall(r'@import\(\s*"([^"]+)"\s*\)', zig.read_text()):
-            target = resolve_import(zig, spec)
+            target, bad = import_diag(zig, spec)
+            if bad:
+                errs.append(bad)
+                continue
             if target is None:
                 continue
             if u == "runtime" and target == "runtime":
