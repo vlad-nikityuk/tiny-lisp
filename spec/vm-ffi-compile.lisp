@@ -1,4 +1,4 @@
-;; Regression: many FFI root lambdas and ffi-build-call without ffi-no-inline (GC during marshaling).
+;; Regression: ffi-build-call uses a local accumulator (safe when a callback re-enters marshaling).
 (load "src/lib/ffi.lisp")
 (define libc (ffi-dlopen-self))
 (define strlen-ptr (ffi-dlsym libc "strlen"))
@@ -9,9 +9,20 @@
   (assert (eq? 1 (w0 "a")))
   (assert (eq? 1 (w1 "b")))
   (assert (eq? 2 (w2 "xy"))))
-(deftest "vm: genInline skips ffi-build-call callees"
-  (define acc (lambda (tagged) (ffi-build-call strlen-ptr 'int tagged)))
-  (define outer (lambda (s) (acc (list (list s 'string)))))
+(deftest "vm: ffi-build-call may be inlined into callers"
+  (define inner (lambda (s) (ffi-build-call strlen-ptr 'int (list (list s 'string)))))
+  (define outer (lambda (s) (inner s)))
   (assert (eq? 3 (outer "foo"))))
+(deftest "vm: ffi-build-call re-enters from an FFI callback"
+  (define qsort (ffi-dlsym libc "qsort"))
+  (define arr (ffi-malloc 16))
+  (ffi-poke-f64 arr 2)
+  (ffi-poke-f64 (+ arr 8) 1)
+  (define id (ffi-register-callback
+    (lambda (a b) (ffi-build-call strlen-ptr 'int (list (list "abcd" 'string))))))
+  (ffi-call-void qsort (list arr 2 8 (ffi-callback-ptr id)) nil)
+  (assert (eq? 4 (ffi-build-call strlen-ptr 'int (list (list "abcd" 'string)))))
+  (ffi-release-callback id)
+  (ffi-free arr))
 
 (run-tests)

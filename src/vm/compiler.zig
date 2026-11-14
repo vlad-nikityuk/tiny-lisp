@@ -190,22 +190,6 @@ const Compiler = struct {
         return true;
     }
 
-    /// Calls ffi-build-call (marshaling runs Lisp and allocates; do not inline callers or callees of this).
-    fn callsBuildCall(n: *Node) bool {
-        return switch (n.code) {
-            .call => |k| blk: {
-                if (k[0].code == .ref and std.mem.eql(u8, std.mem.span(k[0].code.ref.sym.key), "ffi-build-call")) break :blk true;
-                for (k) |x| if (callsBuildCall(x)) break :blk true;
-                break :blk false;
-            },
-            .@"if", .begin, .@"&&", .@"||" => |kids| for (kids) |x| {
-                if (callsBuildCall(x)) return true;
-            } else false,
-            .def => |d| callsBuildCall(d.val),
-            else => false,
-        };
-    }
-
     /// Does evaluating this change nothing and call nothing (constants, names, primitives on those)?
     fn plain(n: *Node, depth: usize) bool {
         if (depth > max_plain_depth) return false;
@@ -254,7 +238,6 @@ const Compiler = struct {
         var count: usize = 0;
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         if (c.keys.items.len + sub.keys.items.len > max_function_slots) return false;
-        if (callsBuildCall(l.proto.body)) return false;
         for (k[1..]) |x| c.gen(x, false);
         const base = c.keys.items.len;
         for (sub.keys.items) |_| {
