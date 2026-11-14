@@ -88,8 +88,8 @@ Numbers (`42`, `1.5`), booleans (`#t`, `#f`), `nil`, lists (`'(1 2 3)`), functio
 |---|---|
 | `(quote x)` or `'x` | the unevaluated `x` |
 | `(if c a b)` | `a` if `c` is true, else `b` |
-| `(define name v)` | create a variable in the current scope |
-| `(set! name v)` | update the nearest existing variable |
+| `(define name v)` | create a variable: a global at top level; inside a function the name is local to the whole function body (defined anywhere in it, even in a branch) and reading it before the define ran is an error |
+| `(set! name v)` | update the nearest existing variable; an error if there is none |
 | `(lambda (args) body)` | a closure; missing arguments are `nil`, extra ones are ignored |
 | `(lambda (a & rest) body)` | `rest` is the list of the arguments after `a` |
 | `(begin e1 e2 ...)` | evaluate in order, return the last |
@@ -153,7 +153,7 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Files and strings
 
-`(read-file path)` returns a file's text, `(write-file path text)` replaces it, `(split text sep)` cuts a string into a list (an empty `sep` gives single characters), and `(load path)` evaluates a file's expressions in the caller's scope. Each call opens, uses and closes the file itself, so there are no handles to leak; failures raise errors that `try` catches.
+`(read-file path)` returns a file's text, `(write-file path text)` replaces it, `(split text sep)` cuts a string into a list (an empty `sep` gives single characters), and `(load path)` evaluates a file's expressions at top level (in the global scope, like `eval`). Each call opens, uses and closes the file itself, so there are no handles to leak; failures raise errors that `try` catches.
 
 ## Examples
 

@@ -207,7 +207,7 @@ const Compiler = struct {
         return switch (n.code) {
             .val, .ref => true,
             .call => |kids| calls: {
-                if (kids[0].code != .ref or kids[0].code.ref.sym.local) break :calls false; // a function it is given may be load, which runs code in the scope it is called from
+                if (kids[0].code != .ref or kids[0].code.ref.sym.local) break :calls false; // a function it is given may be load, which runs code
                 if (scope.slotOf(scope.root, kids[0].code.ref.sym.key)) |g| {
                     if (g.*.is(.f) and g.*.asFn().f == .step) break :calls false; // so may a native that runs code (try, map...)
                 }
