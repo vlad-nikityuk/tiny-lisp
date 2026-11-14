@@ -14,4 +14,4 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.1
-      - run: make test
+      - run: make check-all

@@ -1,33 +1,24 @@
-;; Lisp part of the stdlib, loaded after the native part (src/stdlib_native.zig).
+;; The Lisp part of the standard library, loaded after the native part (natives.zig).
 (define pi 3.141592653589793)
 (define first car)
 (define rest cdr)
 
-;; (defmacro name (a b & rest) body...) defines macro/name: it applies to forms (name x y z ...), binds a, b and rest to the
-;; parts after the name (rest: all that remain), and its value is the new form; any other form is left as it is.
-;; (defmacro twice (x) `(begin ~x ~x)) -> (define macro/twice (lambda (defmacro/form)
-;;                                          (if (eq? (first defmacro/form) 'twice) (begin (define x (at defmacro/form 1)) ...) defmacro/form)))
-;; The macro bodies are not macro-expanded, apart from backquote: use only functions, special forms and ` ~ ~@ in them.
-(define macro/defmacro
-  (lambda (ast)
-    (if (eq? (first ast) "defmacro")
-      (begin
-        (define name (first (rest ast)))
-        (define params (first (rest (rest ast))))
-        (define body (rest (rest (rest ast))))
-        (list "define" (+ "macro/" name)
-          (list "lambda" (list "defmacro/form")
-            (list "if" (list "eq?" (list "first" "defmacro/form") (list "quote" name))
-              (quasi-walk (begin-of (concat (macro-bindings params 1) body)))
-              "defmacro/form"))))
-      ast)))
+;; Macros. (defmacro name (a b & rest) body...) is understood by the expander itself (src/lang/expand.zig), not defined here: when
+;; a top-level form containing one is expanded, the macro's function (lambda (a b & rest) body...) is made right away and kept
+;; under name. Wherever (name x y z ...) appears in a form read later, it is replaced by the function's value for x, y, z, ...
+;; (until its head is no macro), so (defmacro twice (x) (list 'begin x x)) makes (twice (print 1)) mean (begin (print 1) (print 1)).
+;;
+;; Bootstrapping: a macro body may use macros, but only those defined before it. Backquote is the macro `quasiquote`, so the
+;; helpers it needs (begin-of, quasi-item, quasi) are plain functions written with define and lambda, and the quasiquote macro
+;; comes right after them. Everything below may use backquote, and the macros defined above it (defn, fn, for, ...).
 
 ;; several expressions in a row become one (begin ...); a single expression stays as it is
 (define begin-of
   (lambda (exprs)
     (if (eq? (len exprs) 1) (first exprs) (cons "begin" exprs))))
 
-;; `x builds the list x with holes: ~e is replaced by the value of e, ~@e by the items of the list e (nesting is not supported)
+;; `x builds the list x with holes: ~e is replaced by the value of e, ~@e by the items of the list e (a template inside a
+;; template is an error)
 ;; `(define ~name (lambda ~args ~@body)) -> (concat (list 'define) (list name) (list (concat ...)))
 (define quasi-item
   (lambda (item)
@@ -36,32 +27,12 @@
 (define quasi
   (lambda (x)
     (if (list? x)
-      (if (eq? (first x) "unquote") (first (rest x)) (cons "concat" (map x quasi-item)))
+      (if (eq? (first x) "unquote") (first (rest x))
+        (if (eq? (first x) "quasiquote") (error "TinyLisp: nested quasiquote is not supported")
+          (cons "concat" (map x quasi-item))))
       (list "quote" x))))
 
-(define macro/quasiquote
-  (lambda (ast)
-    (if (eq? (first ast) "quasiquote") (quasi (first (rest ast))) ast)))
-
-;; Code that runs inside a macro is not macro-expanded (expansion does not nest), so defmacro rewrites the backquotes in a
-;; macro's body itself, with this: every (quasiquote x) outside of quoted data becomes the code that builds x.
-(define quasi-walk
-  (lambda (x)
-    (if (list? x)
-      (if (eq? (first x) "quote") x
-        (if (eq? (first x) "quasiquote") (quasi-walk (quasi (first (rest x)))) (map x quasi-walk)))
-      x)))
-
-;; helpers of defmacro: the parameters become defines at the top of the macro's body
-(define macro-rest
-  (lambda (i) (if (eq? i 0) "defmacro/form" (list "rest" (macro-rest (- i 1))))))
-
-(define macro-bindings
-  (lambda (params i)
-    (if (eq? (len params) 0) '()
-      (if (eq? (first params) "&")
-        (list (list "define" (first (rest params)) (macro-rest i)))
-        (cons (list "define" (first params) (list "at" "defmacro/form" i)) (macro-bindings (rest params) (+ i 1)))))))
+(defmacro quasiquote (x) (quasi x))
 
 ;; shorthand for defining functions; the body may be several expressions
 ;; (defn name args expr...) -> (define name (lambda args (begin expr...)))
@@ -74,7 +45,6 @@
 (defmacro fn (args & body)
   `(lambda ~args ~(begin-of body)))
 
-(defn not (x) (if x #f #t))
 (defn second (l) (first (rest l)))
 (defn third (l) (first (rest (rest l))))
 
@@ -90,20 +60,20 @@
     (list "lambda" (list var) (begin-of body))))
 
 ;; the loop as a map call; over (zip xs ys) it walks the lists side by side, without building the pairs
-(defn for/map (var source body)
+(defn for/map (var source body head)
   (if (&& (list? var) (eq? (first source) "zip"))
-    (concat (list "map") (rest source) (list (list "lambda" var (begin-of body))))
-    (list "map" source (for/lambda var body))))
+    (concat (list head) (rest source) (list (list "lambda" var (begin-of body))))
+    (list head source (for/lambda var body))))
 
 ;; loops over a list, like Python's for and list comprehensions
-;; (for (x lst) body...)      -> (begin (map lst (lambda (x) body...)) nil)
+;; (for (x lst) body...)      -> (each lst (lambda (x) body...))   ; each is map without the result list; it returns nil
 ;; (for/list (x lst) body...) -> (map lst (lambda (x) body...))
 ;; (for/list ((a b) (zip xs ys)) (* a b)) -> (map xs ys (lambda (a b) (* a b)))
 (defmacro for (spec & body)
-  `(begin ~(for/map (first spec) (second spec) body) nil))
+  (for/map (first spec) (second spec) body "each"))
 
 (defmacro for/list (spec & body)
-  (for/map (first spec) (second spec) body))
+  (for/map (first spec) (second spec) body "map"))
 
 ;; (-> x step...) threads a value through the steps, like a stream pipeline: a name f is (f x), a form (f a) is (f x a)
 ;; (-> probs (at 3) vlog vneg) -> (vneg (vlog (at probs 3)))
@@ -189,7 +159,7 @@
     (eq? a b)))
 
 ;; (patch-asserts '(assert (eq? 1 x)) 'my-test) -> (assert (eq? 1 x) (quote my-test) (quote (eq? 1 x)))
-;; Quoted data is left alone. Runs inside the deftest macro, so it uses only functions and special forms.
+;; Quoted data is left alone. Called by the deftest macro.
 (defn patch-asserts (x test-name)
   (if (list? x)
     (if (eq? (first x) "quote") x

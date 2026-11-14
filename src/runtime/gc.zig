@@ -1,14 +1,16 @@
 // Mark-sweep memory manager.
 //
 // Every managed object is malloc'd with a header and linked into one list. Nothing is counted and nothing is swept per
-// call: when enough has been allocated, the evaluator loop calls `collect` at a safe point, where no Zig local holds a
-// value (everything live is on the machine's stacks, in scopes, in globals, or in the registered machines). Marking uses a
+// call: the machine loop and the VM collect at rooted transitions and backedges, publishing the VM stack length first.
+// Every live managed value must be reachable from roots, even if also held in a Zig local. Marking uses a
 // worklist, never recursion; sweeping frees what stayed unmarked. Cycles (a closure stored in the scope it captures) are
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
 const std = @import("std");
-const lisp = @import("runtime.zig");
-const lang = @import("lang.zig");
-const V = lisp.V;
+const value = @import("value.zig");
+const scope = @import("scope.zig");
+const machine = @import("machine.zig");
+const continuation = @import("continuation.zig");
+const V = value.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
 /// Header in front of every object, one word: the next object's address (16-aligned, so its low bits are free) with the
@@ -96,6 +98,14 @@ pub fn perm(n: usize) *anyopaque {
     return body(h);
 }
 
+/// Values that permanent compiled nodes point to (the AST and its expansions) stay alive for good.
+pub var pins: std.ArrayList(V) = .empty;
+
+pub fn pin(v: V) V {
+    push(V, &pins, v);
+    return v;
+}
+
 // collection
 // ----------------------------------------------------------------
 pub fn due() bool {
@@ -110,24 +120,25 @@ pub fn markPtr(p: ?*anyopaque) void {
 }
 
 pub fn markV(v: V) void {
-    markPtr(lisp.ptr(v));
+    markPtr(value.ptr(v));
 }
 
 fn drain() void {
     while (gray.pop()) |h| {
         const p = body(h);
         switch (kindOf(h)) {
-            .list => for (@as(*lisp.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
+            .list => for (@as(*value.Lst, @ptrCast(@alignCast(p))).items()) |v| markV(v),
             .func => {
-                const f: *lisp.Fn = @ptrCast(@alignCast(p));
+                const f: *value.Fn = @ptrCast(@alignCast(p));
                 markV(f.d0);
                 markV(f.d1);
+                continuation.markCont(f);
             },
             .lam => {
-                markPtr(@as(*lisp.Lam, @ptrCast(@alignCast(p))).env);
+                markPtr(@as(*value.Lam, @ptrCast(@alignCast(p))).env);
             },
             .env => {
-                const e: *lisp.Env = @ptrCast(@alignCast(p));
+                const e: *scope.Env = @ptrCast(@alignCast(p));
                 markPtr(e.p);
                 for (e.vars) |x| {
                     markPtr(@constCast(x.k));
@@ -143,24 +154,29 @@ fn bytesOf(h: *H) usize {
     const p = body(h);
     const n: usize = switch (kindOf(h)) {
         .str => std.mem.len(@as([*:0]const u8, @ptrCast(p))) + 1,
-        .list => @sizeOf(lisp.Lst) + @as(*lisp.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
-        .func => @sizeOf(lisp.Fn),
-        .lam => @sizeOf(lisp.Lam),
-        .env => @sizeOf(lisp.Env) + @as(*lisp.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(lisp.Var),
+        .list => @sizeOf(value.Lst) + @as(*value.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
+        .func => @sizeOf(value.Fn) + continuation.contExtraBytes(@as(*value.Fn, @ptrCast(@alignCast(p)))),
+        .lam => @sizeOf(value.Lam),
+        .env => @sizeOf(scope.Env) + @as(*scope.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(scope.Var),
         .perm => 0,
     };
     return n + @sizeOf(H);
 }
 
-/// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the error value.
+/// Everything the collector starts from: the machine's stacks and running loops, the globals, pinned code values, the macros, the error value.
 fn markRoots() void {
-    lisp.env_pool = null; // recycled scopes are garbage as far as the collector is concerned
-    for (lisp.ks.items) |k| markPtr(k.e);
-    for (lisp.vs.items) |v| markV(v);
-    for (lisp.machines.items) |m| markPtr(m.e);
-    for (lisp.gk, lisp.gv) |k, v| if (k != null) markV(v);
-    for (lisp.pins.items) |v| markV(v);
-    markV(lang.errv);
+    scope.env_pools = @splat(null); // recycled scopes are garbage as far as the collector is concerned
+    for (machine.ks.items) |k| {
+        markPtr(k.e);
+        if (k.kind == .loop) markPtr(k.iter_env);
+    }
+    for (machine.vs.items) |v| markV(v);
+    for (machine.machines.items) |m| markPtr(m.e);
+    for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
+    for (pins.items) |v| markV(v);
+    var macros = scope.macros.valueIterator();
+    while (macros.next()) |f| markV(f.*);
+    markV(value.errv);
 }
 
 pub fn collect() void {
@@ -179,10 +195,6 @@ pub fn collect() void {
             continue;
         }
         if (prev) |q| setNext(q, next) else all = next;
-        if (kindOf(h) == .env) {
-            const e: *lisp.Env = @ptrCast(@alignCast(body(h)));
-            if (e.vars.ptr != after(lisp.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
-        }
         std.c.free(h);
     }
     limit = @max(2 << 20, live / 2); // the heap grows to about 1.5x its live size between collections

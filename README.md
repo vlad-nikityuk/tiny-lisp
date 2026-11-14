@@ -12,12 +12,12 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 (map '(1 2 3) (lambda (x) (* x x)))            ; (1 4 9)
 ```
 
-- It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
-- It is small: the compiler, evaluator and parser are one file of 200 lines (`src/lang.zig`) and the whole interpreter is about 1,100 lines of Zig, with no dependencies beyond libc.
+- It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`, and full re-entrant `call/cc`.
+- It is small: the parser, expander, compiler and machine loop are about 400 lines (`src/lang/`) and the whole interpreter, with its bytecode VM and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
 - It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
-- It has macros: any function named `macro/…` rewrites every expression before it runs.
+- It has macros: `defmacro` defines one, and every form is expanded before it runs.
 - It has tail-call optimization and is stack safe: recursion is limited only by memory.
-- It has a small mark-sweep GC that runs at one safe point of the evaluator loop. Reference cycles are collected.
+- It has a small mark-sweep GC that runs at a few safe points of the machine. Reference cycles are collected.
 
 ## Stack safety
 
@@ -30,9 +30,9 @@ Pending work lives in heap frames, not on the native stack, so recursion is limi
 
 ## Performance
 
-Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 4 MB) has been allocated, so a program that churns through garbage stays small.
+Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 2 MB) has been allocated, so a program that churns through garbage stays small.
 
-`examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
+`examples/continuations.lisp` saves a continuation in one top-level form and invokes it in the next. `examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
 
 | microgpt, 10 steps + 5 samples | Python 3.14 | tinylisp |
 |---|---|---|
@@ -41,11 +41,11 @@ Memory is managed by a stop-the-world mark-sweep collector that runs once about 
 
 Apple Silicon, best of 3 runs.
 
-[`bench/`](bench/README.md) has 18 more programs like this one, each in Python and in tinylisp, with the same output and a runner that compares them: tinylisp takes 1.1x-7.5x as long as CPython 3.14 (2.4x on average), closest on the autograd and float programs.
+[`bench/`](bench/README.md) has 18 more programs like this one, each in Python and in tinylisp, with the same output and a runner that compares them: in the recorded run tinylisp takes 0.26x-1.14x as long as CPython 3.14 (0.59x as a geometric mean).
 
 ## Macros
 
-A macro is a function named `macro/…`. Before any expression runs, every macro gets to rewrite it (raw form in, new form out). `defmacro` writes one without the boilerplate: it names the macro, binds parameters to the parts of the form, and `&` collects the rest, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.
+A macro is a function that makes code. Each top-level form is read, expanded and then run, one after the other: before the form runs, every call of a macro in it (in the bodies of its lambdas too) is replaced by what the macro returns for the parts of the call. `(defmacro name (params) body...)` defines one: it is made as soon as its form is expanded, so the forms after it see it (and a macro body may use the macros and functions defined before it), and `&` collects the rest of the parts, like in a `lambda`. A backquote template is the new form, with `~x` inserting the value of `x` and `~@xs` splicing in the items of the list `xs`.
 
 ```lisp
 (defmacro unless (test & body)
@@ -54,17 +54,9 @@ A macro is a function named `macro/…`. Before any expression runs, every macro
 (unless #f (print "runs"))
 ```
 
-The same macro without `defmacro` and backquote:
+Redefining a macro changes the forms that come after it; code that was expanded already keeps its expansion. `defmacro` is only allowed at top level (directly in a file, or inside a top-level `begin`); anywhere else is an error. A template cannot contain another template (an error), though one may sit inside a `~` of another.
 
-```lisp
-(define macro/unless
-  (lambda (ast)
-    (if (eq? (first ast) "unless")
-      (list "if" (list "not" (first (rest ast))) (first (rest (rest ast))))
-      ast)))
-```
-
-`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/stdlib.lisp`. Macro bodies are not macro-expanded themselves (expansion does not nest), so inside one use only functions, special forms and the backquote syntax; `defmacro` rewrites the backquotes of its body when it is defined. Templates cannot be nested.
+`defn`, `fn`, `defrec`, `for`, `for/list`, `->`, `chain` and `deftest` are macros defined this way in `src/lib/stdlib.lisp`.
 
 ## Get started
 
@@ -74,11 +66,12 @@ You need [Zig 0.17](https://ziglang.org/download/).
 make                         # build ./tinylisp
 ./tinylisp                  # REPL
 ./tinylisp -f file.lisp     # run a file
-make test                    # run the tests
+make test                    # run the tests (see CLAUDE.md: also collector stress and microgpt check)
+make check-all               # make test && make lint
 make bench                   # compare with CPython on the programs in bench/
 ```
 
-Run it from the repository root: it loads `src/stdlib.lisp` on start.
+Run it from the repository root: it loads `src/lib/stdlib.lisp` on start.
 
 ## Guide
 
@@ -96,8 +89,8 @@ Numbers (`42`, `1.5`), booleans (`#t`, `#f`), `nil`, lists (`'(1 2 3)`), functio
 |---|---|
 | `(quote x)` or `'x` | the unevaluated `x` |
 | `(if c a b)` | `a` if `c` is true, else `b` |
-| `(define name v)` | create a variable in the current scope |
-| `(set! name v)` | update the nearest existing variable |
+| `(define name v)` | create a variable: a global at top level; inside a function the name is local to the whole function body (defined anywhere in it, even in a branch) and reading it before the define ran is an error |
+| `(set! name v)` | update the nearest existing variable; an error if there is none |
 | `(lambda (args) body)` | a closure; missing arguments are `nil`, extra ones are ignored |
 | `(lambda (a & rest) body)` | `rest` is the list of the arguments after `a` |
 | `(begin e1 e2 ...)` | evaluate in order, return the last |
@@ -157,11 +150,11 @@ Tail calls (the branches of `if`, the last expression of `begin`, a function bod
 
 ### Standard library
 
-`src/stdlib_native.zig` provides `print list? at map reduce partial concat range zip apply read-file write-file split load`; `src/runtime.zig` adds the math primitives `exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors). Everything else (`pi rand color red green first rest second third not defmacro defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/stdlib.lisp`.
+`src/runtime/primitives.zig` defines the primitives `+ - * / mod < > <= >= eq? car cdr len cons list at not min max abs error exp log sqrt cos floor` and `(vset! list i v)`, which stores into a list in place (lists are otherwise immutable; this makes them usable as mutable records and vectors); `try` and `trampoline` are natives of `src/runtime/machine.zig`. `src/lib/natives.zig` provides `print list? map each reduce partial concat range zip apply read-file write-file split load eval`. Everything else (`pi rand color red green first rest second third quasiquote defn defrec fn -> chain for for/list empty? iterate flatten filter equal? deftest assert run-tests`) is written in Lisp in `src/lib/stdlib.lisp`.
 
 ### Files and strings
 
-`(read-file path)` returns a file's text, `(write-file path text)` replaces it, `(split text sep)` cuts a string into a list (an empty `sep` gives single characters), and `(load path)` evaluates a file's expressions in the caller's scope. Each call opens, uses and closes the file itself, so there are no handles to leak; failures raise errors that `try` catches.
+`(read-file path)` returns a file's text, `(write-file path text)` replaces it, `(split text sep)` cuts a string into a list (an empty `sep` gives single characters), and `(load path)` evaluates a file's expressions at top level (in the global scope, like `eval`). Each call opens, uses and closes the file itself, so there are no handles to leak; failures raise errors that `try` catches.
 
 ## Examples
 
@@ -173,14 +166,15 @@ Run from the repository root.
 
 | File | |
 |---|---|
-| `src/lang.zig` | parser, compiler, evaluator |
-| `src/runtime.zig` | values, scopes, primitives, trampoline |
-| `src/gc.zig` | memory management (mark-sweep) |
-| `src/repl.zig` | REPL |
-| `src/stdlib_native.zig`, `src/stdlib.lisp` | standard library (native part and Lisp part) |
-| `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
+| `src/repl.zig` | the entry point: command line, REPL, setting up the root scope |
+| `src/lang/parser.zig` | parser: text to AST |
+| `src/lang/expand.zig`, `src/lang/compile.zig`, `src/lang/eval.zig` | the front end and the machine loop: macro expansion of a top-level form (and `defmacro`), the expanded AST to typed nodes, and the loop that runs the bytecode, applies functions and returns into frames |
+| `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (the typed AST), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `continuation.zig` (`call/cc`), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
+| `src/vm/` | the one execution engine: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body or top-level form to bytecode), `exec.zig` (the executor) |
+| `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
+| `spec/specs.lisp`, `spec/continuations.lisp`, `spec/repl.py` | Lisp test suite, continuation tests, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Each node is compiled once, the first time it is evaluated: macros run then (defining a macro makes nodes compile again), names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Numbers, booleans and nil are not passed to macros. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed).
+Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps bytecode resuming after a call and a `map` or `try` waiting for its callback as frames on a heap stack; tail calls replace the current state. The parser, printer and freeing are iterative. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Names become interned symbols with cached slots when the typed AST is built; scopes of finished calls are recycled unless a closure captured them; values are 8 bytes (NaN-boxed).
 
 ## History
 
