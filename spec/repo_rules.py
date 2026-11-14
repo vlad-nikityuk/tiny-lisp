@@ -114,7 +114,11 @@ def check_file_map(mapped: set[str]) -> list[str]:
 def check_imports() -> list[str]:
     errs: list[str] = []
     for zig in sorted((ROOT / "src").rglob("*.zig")):
-        u = unit_of(zig)
+        try:
+            u = unit_of(zig)
+        except ValueError:
+            errs.append(f"imports: {zig.relative_to(ROOT)} is an unknown unit")
+            continue
         layer = LAYER.get(u)
         if layer is None:
             errs.append(f"imports: {zig.relative_to(ROOT)} is an unknown unit {u!r}")
