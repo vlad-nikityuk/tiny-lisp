@@ -1,17 +1,17 @@
-// The tree tier's compiler: the AST (parser.zig, after expand.zig has run the macros over it) becomes nodes, which eval.zig runs
-// and vm/compiler.zig compiles further. A node is compiled the first time it is evaluated (`force`); no macro runs here.
+// The typed AST: the (macro-expanded, see expand.zig) AST of a top-level form becomes nodes, once, all of it at the time the form is
+// compiled. vm/compiler.zig turns the nodes into bytecode, a function at a time, when the function is first called.
 const std = @import("std");
 const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
 const scope = @import("../runtime/scope.zig");
 const node = @import("../runtime/node.zig");
-const machine = @import("../runtime/machine.zig");
-const primitives = @import("../runtime/primitives.zig");
 const V = value.V;
 const Node = node.Node;
 
-// The AST becomes nodes (node.Node) once, lazily: a node is compiled when first evaluated. The AST is already macro-expanded
-// (expand.zig does that for a whole top-level form before it runs). Nodes and symbols are permanent; their AST is pinned.
+/// The deepest nesting of one form that is compiled. The compiler's own recursion (here, in vm/scan.zig and vm/compiler.zig) follows
+/// the nesting of the code, so it is bounded; the limit leaves the native stack room for that (a frame is a few hundred bytes).
+/// Deep *data* (quote) and deep run-time recursion are not code and have no limit.
+pub const max_depth = 5000;
 
 const make = node.make;
 var interned: std.StringHashMapUnmanaged(*node.Sym) = .empty;
@@ -28,23 +28,29 @@ fn intern(v: V) *node.Sym {
     return entry.value_ptr.*;
 }
 
-/// A node that is not compiled yet.
-pub fn stub(v: V) *Node {
+/// The nodes of a top-level form, expanded already. The AST is pinned for good: nodes and the bytecode refer to it.
+pub fn top(x: V) value.E!*Node {
+    return build(gc.pin(x), 0);
+}
+
+fn build(x: V, depth: usize) value.E!*Node {
+    if (depth > max_depth) return value.fail(value.str("TinyLisp: expression is nested too deeply to compile (limit {d})", .{max_depth}));
     const n = &make(Node, 1)[0];
-    n.* = .{ .ast = gc.pin(v) };
+    const code: node.Code = switch (x.tag()) {
+        .s => .{ .ref = .{ .sym = intern(x) } },
+        .lit => .{ .val = V.string(x.asStr()) }, // a string literal evaluates to a string
+        .l => try form(x.asList().items(), depth),
+        else => .{ .val = x },
+    };
+    n.* = .{ .ast = x, .code = code };
     return n;
 }
 
 /// n nodes for the items of a, nil for missing ones.
-fn kids(a: []const V, n: usize) []const *Node {
+fn kids(a: []const V, n: usize, depth: usize) value.E![]const *Node {
     const c = make(*Node, n);
-    for (c, 0..) |*x, i| x.* = stub(value.arg(a, i));
+    for (c, 0..) |*x, i| x.* = try build(value.arg(a, i), depth + 1);
     return c;
-}
-
-/// The stamp of up-to-date code (scope.epoch changes when code that was compiled around a rebound primitive is out of date); 0 means not compiled yet.
-pub fn current() u32 {
-    return scope.epoch +% 1;
 }
 
 const Form = enum { quote, lambda, @"if", begin, define, @"set!", @"&&", @"||", apply }; // apply: anything else
@@ -55,8 +61,8 @@ pub fn isSpecial(name: []const u8) bool {
 }
 
 /// The code of a list: a special form by its head, or a call.
-fn form(a: []const V) value.E!node.Code {
-    if (a.len == 0) return value.fail(value.str("TinyLisp: cannot evaluate an empty list", .{}));
+fn form(a: []const V, depth: usize) value.E!node.Code {
+    if (a.len == 0) return .empty;
     const head = if (a[0].is(.s)) std.meta.stringToEnum(Form, std.mem.span(a[0].asStr())) orelse .apply else .apply;
     switch (head) {
         .quote => return .{ .val = value.arg(a, 1) },
@@ -64,7 +70,7 @@ fn form(a: []const V) value.E!node.Code {
             const ps = value.items(value.arg(a, 1));
             const params = make(node.Key, ps.len);
             const proto = &make(node.Proto, 1)[0];
-            proto.* = .{ .params = params[0..0], .body = stub(value.arg(a, 2)) };
+            proto.* = .{ .params = params[0..0], .body = try build(value.arg(a, 2), depth + 1) };
             var n: usize = 0;
             for (ps) |p| {
                 if (p.is(.s) and std.mem.eql(u8, std.mem.span(p.asStr()), "&")) { // (a b & rest): rest takes the extra arguments
@@ -72,60 +78,23 @@ fn form(a: []const V) value.E!node.Code {
                     continue;
                 }
                 const sym = intern(p);
-                if (sym.inlined and !sym.local) scope.epoch +%= 1;
+                if (sym.inlined and !sym.local) scope.epoch +%= 1; // code compiled with the global (a primitive, each...) is out of date
                 sym.local = true;
                 params[n] = sym.key;
                 n += 1;
-                proto.params = params[0..n];
             }
+            proto.params = params[0..n];
             return .{ .lambda = proto };
         },
-        .@"if" => return .{ .@"if" = kids(a[1..], 3) },
-        .begin => return .{ .begin = kids(a[1..], @max(a.len - 1, 1)) }, // (begin) is nil
-        .@"&&" => return .{ .@"&&" = kids(a[1..], @max(a.len - 1, 1)) }, // short-circuit
-        .@"||" => return .{ .@"||" = kids(a[1..], @max(a.len - 1, 1)) },
+        .@"if" => return .{ .@"if" = try kids(a[1..], 3, depth) },
+        .begin => return .{ .begin = try kids(a[1..], @max(a.len - 1, 1), depth) }, // (begin) is nil
+        .@"&&" => return .{ .@"&&" = try kids(a[1..], @max(a.len - 1, 1), depth) }, // short-circuit
+        .@"||" => return .{ .@"||" = try kids(a[1..], @max(a.len - 1, 1), depth) },
         .define, .@"set!" => {
             const d = &make(node.Def, 1)[0];
-            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = stub(value.arg(a, 2)), .define = head == .define };
+            d.* = .{ .sym = if (a.len > 1) intern(a[1]) else null, .val = try build(value.arg(a, 2), depth + 1), .define = head == .define };
             return .{ .def = d };
         },
-        .apply => return call(a, kids(a, a.len)),
+        .apply => return .{ .call = try kids(a, a.len, depth) },
     }
-}
-
-/// The code of the call a (c: its items). Two kinds of call are recognised by their head, while it is a global no scope binds:
-/// - the native each or map with a lambda as the last operand: the lambda gets a guard, so making it captures nothing (scope.lambda);
-/// - a primitive that `primitives.fast` knows, with one or two operands: a Prim node, computed in place (`inplace` in eval.zig).
-fn call(a: []const V, c: []const *Node) node.Code {
-    if (!a[0].is(.s)) return .{ .call = c };
-    const sym = intern(a[0]);
-    const g = scope.globalOf(sym) orelse return .{ .call = c };
-    const last = value.items(a[a.len - 1]);
-    if (a.len >= 3 and last.len > 0 and last[0].is(.s) and std.mem.eql(u8, std.mem.span(last[0].asStr()), "lambda")) {
-        if (g.* == node.each_v or g.* == node.map_v) {
-            c[c.len - 1].guard = &make(node.Guard, 1)[0];
-            c[c.len - 1].guard.?.* = .{ .sym = sym, .g = g, .f = gc.pin(g.*) };
-        }
-    }
-    if (a.len == 2 or a.len == 3) if (primitives.primOp(g.*)) |op| if ((a.len == 2) == primitives.unary(op)) {
-        const p = &make(node.Prim, 1)[0];
-        sym.inlined = true;
-        p.* = .{ .op = op, .sym = sym, .g = g, .f = gc.pin(g.*), .c = c };
-        return .{ .prim = p };
-    };
-    return .{ .call = c };
-}
-
-/// Build the code of n from its AST (once), and stamp it as up to date.
-pub fn force(n: *Node) value.E!void {
-    if (n.code == .raw) {
-        n.code = switch (n.ast.tag()) {
-            .s => .{ .ref = .{ .sym = intern(n.ast) } },
-            .lit => .{ .val = V.string(n.ast.asStr()) }, // a string literal evaluates to a string
-            .l => try form(n.ast.asList().items()),
-            else => .{ .val = n.ast },
-        };
-        if (n.code == .lambda) n.code.lambda.guard = n.guard;
-    }
-    n.stamp = current();
 }

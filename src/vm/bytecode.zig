@@ -1,4 +1,4 @@
-// Tier 2, the format: a function body as a stack bytecode over fixed scope slots. compiler.zig produces it, exec.zig runs it.
+// The bytecode format: a function body (or a top-level form) as a stack bytecode over fixed scope slots. compiler.zig produces it, exec.zig runs it.
 const value = @import("../runtime/value.zig");
 const node = @import("../runtime/node.zig");
 const primitives = @import("../runtime/primitives.zig");
@@ -18,8 +18,10 @@ pub const Opcode = enum(u8) {
     setlocal,   // slot a = top
     setouter,   // set! defs[a], a name outside this function's slots (b as in outer): an error if no scope and no global has it
     setglobal,  // set! the global defs[a] (an error if there is none)
+    assign,     // define or set! defs[a] the general way (scope.assign): a global define of top-level code, or a form without a name, which is an error
     storelocal, // slot a = pop (an argument of an inlined function)
     pop,
+    empty,      // the form `()`: an error
     // control
     jmp,        // go to instruction b
     jmpf,       // pop; go to b if it was false
@@ -78,19 +80,23 @@ pub fn secondIsConst(comptime op: Opcode) bool {
     return name[name.len - 1] == 'k';
 }
 
+/// A call of a primitive that became an instruction (the ordinary call it falls back to is made through the name, `slow` in exec.zig).
+pub const PrimCall = struct { op: primitives.Op, sym: *node.Sym, head: V };
+
 /// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b, and the
 /// `scope.shape` that was valid for in c.
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 };
-/// The compiled body of a function. Instructions refer to the tables by index.
+/// The compiled body of a function, or of a top-level form (a function without parameters, run in the root scope).
+/// Instructions refer to the tables by index.
 pub const Bytecode = struct {
     ins: []Ins,
     consts: []const V,
     refs: []const *node.Ref, // names read outside this function's slots
-    prims: []const *node.Prim, // primitive calls, for the ordinary call when the operands are not plain numbers
+    prims: []const PrimCall, // primitive calls, for the ordinary call when the operands are not plain numbers
     defs: []const *node.Def, // define/set! of names outside this function's slots
     protos: []const *node.Proto, // lambdas
     bodies: []const ?*Bytecode, // by the same index as protos: the compiled body of a loop lambda
     keys: []const node.Key, // the names of the scope's slots: parameters, then defines, then the slots of inlined functions
-    stamp: u32, // compile.current() when it was compiled
+    stamp: u32, // scope.epoch when it was compiled: out of date after a rebound primitive or inlined function
     room: usize, // the most values it can have on the stack
 };

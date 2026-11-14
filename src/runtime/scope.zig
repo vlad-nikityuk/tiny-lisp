@@ -37,10 +37,10 @@ pub fn init() *Env {
 }
 
 // Two counters say when compiled code is out of date.
-/// Bumped when a value that tier-2 code was compiled with (a native, an inlined function) is replaced: all code compiles
-/// again (compile.current in lang/).
+/// Bumped when a value that compiled code was compiled with (a native, an inlined function) is replaced: all code compiles
+/// again (`ready` in vm/compiler.zig).
 pub var epoch: u32 = 0;
-/// Bumped when a name is added to a scope whose layout tier-2 code relies on (by load, say): remembered lookups are void.
+/// Bumped when a name is added to a scope whose layout compiled code relies on (by load, say): remembered lookups are void.
 pub var shape: u32 = 1;
 
 // lookup and assignment
@@ -90,12 +90,6 @@ pub fn globalOf(sym: *Sym) ?*V {
     return if (sym.local) null else slot(root, sym.key, false);
 }
 
-/// The value of a variable (nil if no scope binds the name). A slot whose define has not run yet is an error.
-pub fn fetch(env: *Env, r: *node.Ref) E!V {
-    const v = if (find(env, r.sym, &r.g)) |p| p.* else return .nil;
-    return if (v == V.unbound) usedBeforeDefined(r.sym.key) else v;
-}
-
 pub fn usedBeforeDefined(name: Key) E {
     return value.fail(value.str("TinyLisp: {s} is used before it is defined", .{name}));
 }
@@ -115,7 +109,7 @@ pub fn assign(d: *node.Def, e: *Env, v: V) E!void {
     } else replace(find(e, sym, &d.g) orelse return notDefined(sym.key), v);
 }
 
-/// set! of the variable at p. If its old value is compiled into tier-2 code, that code is out of date.
+/// set! of the variable at p. If its old value is compiled into compiled code, that code is out of date.
 pub inline fn replace(p: *V, v: V) void {
     if (compiledInto(p.*)) epoch +%= 1;
     p.* = v;
@@ -124,11 +118,11 @@ pub inline fn replace(p: *V, v: V) void {
 /// Root keys are copied to permanent memory; scope keys are interned already.
 pub fn set(e: *Env, key: Key, v: V) void {
     const s = slot(e, key, false) orelse slot(e, if (e.p != null) key else value.mkstr(std.mem.span(key), true), true).?;
-    if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that tier-2 code inlines) or an inlined function is replaced
+    if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that compiled code inlines) or an inlined function is replaced
     s.* = v;
 }
 
-/// Replacing this value must compile the tier-2 code again: it is a native, or a function that other functions' code contains.
+/// Replacing this value must compile the compiled code again: it is a native, or a function that other functions' code contains.
 fn compiledInto(v: V) bool {
     return v.is(.f) or (v.is(.lam) and v.asLam().proto.inlined);
 }
@@ -167,14 +161,15 @@ fn capFor(n: usize) usize {
     return n;
 }
 
+/// The scope of a call of f, whose body is compiled (compiler.ready).
 pub fn bind(f: *Lam, a: []const V) *Env {
-    return bindWith(f, a, f.proto.code);
+    return bindWith(f, a, f.proto.code.?);
 }
 
-/// The scope of a call of f; for tier-2 code (`code`), the defines of the body have their slots from the start.
-pub fn bindWith(f: *Lam, a: []const V, code: ?*bytecode.Bytecode) *Env {
+/// The scope of a call of f running `code`: the defines of the body have their slots from the start.
+pub fn bindWith(f: *Lam, a: []const V, code: *bytecode.Bytecode) *Env {
     const ps = f.proto.params;
-    const n = if (code) |c| c.keys.len else ps.len;
+    const n = code.keys.len;
     const cap = capFor(@max(f.proto.cap, n));
     const pool = poolOf(cap);
     const e = if (pool != null and env_pools[pool.?] != null) blk: {
@@ -186,9 +181,7 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*bytecode.Bytecode) *Env {
     const fixed = ps.len - @intFromBool(f.proto.rest); // a last parameter after & takes the extra arguments as a list
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = value.arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = value.list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
-    if (code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
-        x.* = .{ .k = k, .v = V.unbound }; // a define has not run yet
-    };
+    for (code.keys[ps.len..], e.vars[ps.len..]) |k, *x| x.* = .{ .k = k, .v = V.unbound }; // a define has not run yet
     return e;
 }
 

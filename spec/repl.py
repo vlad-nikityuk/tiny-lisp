@@ -20,8 +20,14 @@ CASES = [
     ("quote: a symbol with a dash", "'hello-world", "hello-world"),
     ("quote: a list holding a dashed symbol", "'(hello-world)", "(hello-world)"),
     ("quote: a dashed symbol next to a number", "'(hello-world 1)", "(hello-world 1)"),
-    ("parse: 10,000 nested ifs", "(if #t " * 10000 + "42" + " 0)" * 10000, "42"),
-    ("parse: 10,000 nested begins", "(begin " * 10000 + "42" + ")" * 10000, "42"),
+    # (the parser, expander and printer have no nesting limit: deep data is fine. Code is compiled by recursion, so it has one.)
+    ("parse: 10,000 nested ifs as data", "(len '" + "(if #t " * 10000 + "42" + " 0)" * 10000 + ")", "4"),
+    ("parse: 10,000 nested begins as data", "(len '" + "(begin " * 10000 + "42" + ")" * 10000 + ")", "2"),
+    ("compile: code nested 4,900 deep runs", "(if #t " * 4900 + "42" + " 0)" * 4900, "42"),
+    ("compile: code nested 5,100 deep is refused", "(if #t " * 5100 + "42" + " 0)" * 5100, Error("TinyLisp: expression is nested too deeply to compile (limit 5000)")),
+    ("compile: a function nested 4,900 deep runs", "((lambda () " + "(+ 1 " * 4900 + "0" + ")" * 4900 + "))", "4900"),
+    ("compile: a function nested 5,100 deep is refused", "(define too-deep-f (lambda () " + "(+ 1 " * 5100 + "0" + ")" * 5100 + "))", Error("TinyLisp: expression is nested too deeply to compile (limit 5000)")),
+    ("compile: the REPL goes on after a refused form", "(+ 1 2)", "3"),
     ("eq?: nil is the empty list", "(eq? nil '())", "#t"),
     ("cons: builds a list", "(cons 1 (cons 2 nil))", "(1 2)"),
     ("lambda: applied at once", "((lambda (x) x) 0)", "0"),
@@ -65,7 +71,7 @@ CASES = [
     ("errors: error raises", "(error 'custom)", ERROR),
     ("errors: try hands the error to the handler", "(try (lambda () (error 'custom)) (lambda (e) (list 'got e)))", "(got custom)"),
     ("parse: a trailing comment is ignored", "(+ 1 2) ;; trailing comment", "3"),
-    ("parse: 100,000 nested calls", "(+ 1 " * 100000 + "0" + ")" * 100000, "100000"),
+    ("parse: 100,000 nested calls as data", "(len '" + "(+ 1 " * 100000 + "0" + ")" * 100000 + ")", "3"),
     ("parse: a call with 5,000 arguments", "(len (list " + "'(1) " * 5000 + "))", "5000"),
     # natives calling back into Lisp are frames: no depth limit, errors unwind them
     ("stack: 100,000 deep recursion through map", "(begin (define walk (lambda (n) (if (eq? n 0) 0 (+ 1 (first (map '(1) (lambda (x) (walk (- n 1))))))))) (walk 100000))", "100000"),
@@ -79,16 +85,14 @@ CASES = [
     ("files: loading a missing file is an error", '(load "/nonexistent/file")', ERROR),
     ("partial: a partly applied map", "((partial map '((1 2))) (lambda (x) (+ x 1)))", "(2 3)"),
 ]
-# The scoping rules of function bodies are the bytecode tier's (`make test-tree` sets TIER2=0 and skips them).
-BODY = [
+# The scoping rules of function bodies.
+CASES += [
     ("body: a define in a branch that did not run", "(define body-f (lambda (flag) (begin (if flag (define v 2) 0) v)))", "<function>"),
     ("body: the branch ran", "(body-f #t)", "2"),
     ("body: reading the name before its define is an error", "(body-f #f)", Error("TinyLisp: v is used before it is defined")),
     ("body: set! of a name that exists nowhere is an error", "(set! nowhere-at-all 1)", Error("TinyLisp: set!: nowhere-at-all is not defined")),
     ("body: set! of a global is fine", "(begin (define body-g 1) (set! body-g 2))", "2"),
 ]
-if os.environ.get("TIER2", "1") != "0":
-    CASES += BODY
 
 process = subprocess.run(sys.argv[1:], input="\n".join(src for _, src, _ in CASES) + "\n", capture_output=True, text=True)
 results = re.findall(r"\x1b\[(32|31)m(.*?)\x1b\[39m", process.stdout, re.S)

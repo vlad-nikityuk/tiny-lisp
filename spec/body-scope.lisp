@@ -145,17 +145,14 @@
   (assert (equal? (list "TinyLisp: cap is used before it is defined" 7) (warm-then-unbound))))
 
 ;; code compiled with a global primitive is compiled again when a function first defines that name locally
-(defmacro too-deep () (reduce (range 125) (lambda (a i) (list 'begin a)) 0))
-(defn mark-plus () (define + (lambda (a b) 42)))
+(defn warm-plus () (+ 1 2))
+(warm-plus) ; compiled with the primitive as an instruction
 (defn local-plus-later ()
-  (if #f (too-deep) 0) ; (nested too deep: this function stays with the tree evaluator)
   (define f (lambda () (+ 1 2)))
-  (f)
-  (mark-plus)
   (define + (lambda (a b) 99))
-  (f))
-(deftest "body: defining a primitive's name locally makes earlier code see it"
-  (assert (eq? 99 (local-plus-later))))
+  (list (f) (warm-plus)))
+(deftest "body: defining a primitive's name locally makes the closures of the function see it"
+  (assert (equal? '(99 3) (local-plus-later))))
 
 (deftest "body: deep recursion and deep data are fine with checked reads"
   (defn count-down (n) (if (eq? n 0) 0 (begin (define r (count-down (- n 1))) (+ r 1))))

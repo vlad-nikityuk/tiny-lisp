@@ -1,4 +1,4 @@
-// Tier 2, the executor: runs the bytecode that compiler.zig produces, inside the machine that lang/eval.zig runs. `exec` runs
+// The executor: runs the bytecode that compiler.zig produces, inside the machine that lang/eval.zig runs. `exec` runs
 // instructions until it needs the machine and returns the next machine.Go (a call, or a return); a call that is not a tail call
 // leaves a `vm` frame on machine.ks that resumes the code at the instruction after it.
 const value = @import("../runtime/value.zig");
@@ -23,7 +23,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 }
 
 /// The slot of a name that is not one of this function's slots. The first lookup of an instruction notes where the name was found
-/// (hops << 16 | index in b); the scopes it passed must have a fixed layout (tier 2), so later lookups go straight there
+/// (hops << 16 | index in b); the scopes it passed must have a fixed layout (a function's scope), so later lookups go straight there
 /// and only check the key.
 inline fn outerSlot(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     if (ins.b != 0 and ins.c == scope.shape) {
@@ -39,7 +39,7 @@ inline fn outerSlot(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
 noinline fn outerLook(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     var s = e;
     var hops: u32 = 0;
-    var fixed = true; // every scope passed so far is a tier-2 scope
+    var fixed = true; // every scope passed so far is a function's scope
     while (sym.local and s.p != null) : (s = s.p.?) {
         var i = s.vars.len;
         while (i > 0) : (i -= 1) if (s.vars[i - 1].k == sym.key) {
@@ -60,6 +60,12 @@ noinline fn outerLook(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
 noinline fn unbound(name: node.Key, sp: usize) E {
     machine.vs.items.len = sp;
     return scope.usedBeforeDefined(name);
+}
+
+/// Evaluating `()`: the stack is published first, as the error unwinds it.
+noinline fn emptyForm(sp: usize) E {
+    machine.vs.items.len = sp;
+    return value.fail(value.str("TinyLisp: cannot evaluate an empty list", .{}));
 }
 
 /// The index of the instruction at ip.
@@ -85,7 +91,7 @@ fn slow(m: *machine.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!
     var g: ?*V = null;
     const f = if (scope.find(m.e, p.sym, &g)) |s| s.* else V.nil;
     if (f == V.unbound) return scope.usedBeforeDefined(p.sym.key);
-    if (f == V.nil) return value.undefinedFunction(p.c[0].ast);
+    if (f == V.nil) return value.undefinedFunction(p.head);
     vs.insert(value.gpa, n - arity, f) catch gc.oom();
     return call(m, n - arity, code, pcOf(code, ip) + 1);
 }
@@ -149,6 +155,12 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             ip += 1;
             continue :sw ip[0].op;
         },
+        .assign => { // define of a global (top-level code), or define/set! without a name
+            try scope.assign(code.defs[ip[0].a], e, st[sp - 1]);
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .empty => return emptyForm(sp),
         .pop => {
             sp -= 1;
             ip += 1;
@@ -401,7 +413,7 @@ fn call(m: *machine.Machine, b: usize, code: *Bytecode, pc: usize) machine.Go {
 
 /// Push a frame that comes back to the bytecode: at instruction pc, with the stack cut to base and then the value.
 fn resumeFrame(kind: machine.Kind, e: *scope.Env, code: *Bytecode, pc: usize, base: usize) void {
-    const k = machine.frame(kind, &.{}, e);
+    const k = machine.frame(kind, e);
     k.i = pc;
     k.base = base;
     k.code = code;

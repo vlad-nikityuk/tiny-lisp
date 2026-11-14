@@ -1,33 +1,28 @@
 // The machine's state: pending work lives in heap frames (ks) and values on one stack (vs), so nothing grows the native
-// stack. lang/eval.zig is the loop that runs it; vm/exec.zig runs bytecode on the same two stacks. Also here: the protocol
+// stack. lang/eval.zig is the loop that runs it; vm/exec.zig runs the bytecode on the same two stacks. Also here: the protocol
 // of natives that call back into Lisp, which run as frames, and the two natives built on it, try and the trampoline.
 const std = @import("std");
 const value = @import("value.zig");
 const gc = @import("gc.zig");
 const scope = @import("scope.zig");
-const node = @import("node.zig");
 const bytecode = @import("../vm/bytecode.zig");
 const V = value.V;
 const E = value.E;
 const Fn = value.Fn;
 const Env = scope.Env;
-const Node = node.Node;
-const Def = node.Def;
 const Bytecode = bytecode.Bytecode;
 const gpa = value.gpa;
 const arg = value.arg;
 const list = value.list;
 const nf = value.nf;
 
-pub const Kind = enum { @"if", @"&&", @"||", begin, def, call, native, vm, loop };
+pub const Kind = enum { native, vm, loop };
 /// Pending work: what to do with the next value. One flat struct for every kind (a frame is pushed per call, so it stays small
 /// and is written in one go); each kind uses the fields it needs.
 pub const Frame = struct {
     kind: Kind,
-    i: usize, // begin, &&, ||, call: the item being evaluated; native: its own state; vm, loop: the instruction to resume at
-    base: usize, // call, native: where the function and its arguments start on vs; vm, loop: the top of vs to return to
-    c: []const *Node, // if, begin, &&, ||, call: the items
-    d: *Def = undefined, // def
+    i: usize, // native: its own state; vm, loop: the instruction to resume at
+    base: usize, // native: where the function and its arguments start on vs; vm, loop: the top of vs to return to
     e: *Env, // the scope to go back to
     code: *Bytecode = undefined, // vm, loop: the bytecode to resume
     iter_env: ?*Env = null, // loop: the scope of the iteration that is running, which the next one reuses if nothing captured it
@@ -35,22 +30,16 @@ pub const Frame = struct {
 /// A running evaluator loop: its scope is a root for the collector. ks[base..] are its frames.
 pub const Machine = struct { e: *Env, base: usize };
 pub var machines: std.ArrayList(*Machine) = .empty;
-/// What the machine does next. eval: evaluate a node; ret: hand a value to the innermost frame; vm: run bytecode from pc;
-/// apply: call the function at vs[apply] with the arguments after it; args: collect a call's items from c[i] on, they start at vs[b].
-pub const Go = union(enum) { eval: *Node, ret: V, vm: struct { code: *Bytecode, pc: usize }, apply: usize, args: struct { c: []const *Node, i: usize, b: usize } };
+/// What the machine does next. ret: hand a value to the innermost frame; vm: run bytecode from pc;
+/// apply: call the function at vs[apply] with the arguments after it.
+pub const Go = union(enum) { ret: V, vm: struct { code: *Bytecode, pc: usize }, apply: usize };
 
 pub var ks: std.ArrayList(Frame) = .empty; // the frames
 pub var vs: std.ArrayList(V) = .empty; // the values: functions and arguments being collected, native frames' state, the bytecode's stack
 
-pub fn frame(kind: Kind, c: []const *Node, e: *Env) *Frame {
-    gc.push(Frame, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .c = c, .e = e });
+pub fn frame(kind: Kind, e: *Env) *Frame {
+    gc.push(Frame, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .e = e });
     return &ks.items[ks.items.len - 1];
-}
-
-/// Push the value of c[i], an item of a call: the function first, which must exist.
-pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
-    if (i == 0 and v == V.nil) return value.undefinedFunction(c[0].ast);
-    gc.push(V, &vs, v);
 }
 
 // natives that call back into Lisp
@@ -60,7 +49,7 @@ pub inline fn operand(c: []const *Node, i: usize, v: V) E!void {
 
 /// Push the frame of the native at vs[b] (its arguments follow it) and run its first step.
 pub fn start(b: usize, e: *Env) E!Go {
-    const k = frame(.native, &.{}, e);
+    const k = frame(.native, e);
     k.base = b;
     return step(k, null);
 }

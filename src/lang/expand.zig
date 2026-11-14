@@ -2,7 +2,7 @@
 // `defmacro` forms are carried out. So a form is read, expanded, then run, one at a time; a macro defined by one form is in
 // effect for the next, and redefining it changes only the forms that follow.
 // It needs eval.zig: a macro is a Lisp function, called on a nested machine (macro bodies run during expansion only; running a form
-// never nests a machine).
+// never nests a machine). A form that is expanded is compiled as a function without parameters (compiler.top) and run in the root scope.
 //
 // Rooting rule: a macro runs Lisp, and the collector may run meanwhile, so nothing managed is held in a Zig local across a macro
 // run (or across running the defmacro lambda) unless it is on machine.vs or pinned. What is needed afterwards is read, or copied
@@ -14,12 +14,13 @@ const gc = @import("../runtime/gc.zig");
 const scope = @import("../runtime/scope.zig");
 const machine = @import("../runtime/machine.zig");
 const compile = @import("compile.zig");
+const compiler = @import("../vm/compiler.zig");
 const eval = @import("eval.zig");
 const V = value.V;
 
-/// Expand x, then run it in e: what happens to each form the REPL, a file or `eval` reads.
+/// Expand x, compile it, then run it in e (the root scope): what happens to each form the REPL, a file or `eval` reads.
 pub fn run(x: V, e: *scope.Env) value.E!V {
-    return eval.exec(.{ .eval = compile.stub(try form(x, true)) }, e);
+    return eval.exec(.{ .vm = .{ .code = try compiler.top(try form(x, true)), .pc = 0 } }, e);
 }
 
 fn sym(name: []const u8) V {
@@ -53,7 +54,7 @@ fn defmacro(items: []const V) value.E!V {
     const code = if (body.len == 1) body[0] else value.list(machine.vs.items[b..], body.len + 1);
     machine.vs.items.len = b;
     const lambda = gc.pin(value.list(&.{ sym("lambda"), value.arg(items, 2), code }, 3));
-    const f = try eval.exec(.{ .eval = compile.stub(try form(lambda, false)) }, scope.root);
+    const f = try eval.exec(.{ .vm = .{ .code = try compiler.top(try form(lambda, false)), .pc = 0 } }, scope.root);
     if (!f.is(.lam)) return value.fail(value.str("TinyLisp: defmacro {s} needs a parameter list and a body", .{text}));
     const entry = scope.macros.getOrPut(value.gpa, text) catch gc.oom();
     if (!entry.found_existing) entry.key_ptr.* = std.mem.span(value.mkstr(text, true));

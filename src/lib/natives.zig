@@ -5,7 +5,7 @@ const gc = @import("../runtime/gc.zig");
 const scope = @import("../runtime/scope.zig");
 const node = @import("../runtime/node.zig");
 const machine = @import("../runtime/machine.zig");
-const compile = @import("../lang/compile.zig");
+const compiler = @import("../vm/compiler.zig");
 const parser = @import("../lang/parser.zig");
 const expand = @import("../lang/expand.zig");
 const source = @import("source.zig");
@@ -162,7 +162,7 @@ fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
     }
     const x = try parser.parseNext(text(a[1]), &k.i) orelse return machine.finish(k, v orelse .nil);
     machine.machines.getLast().e = scope.root; // (the frame keeps the caller's scope and goes back to it)
-    return .{ .eval = compile.stub(try expand.form(x, true)) }; // (expanding runs Lisp: a and k are not used after it)
+    return .{ .vm = .{ .code = try compiler.top(try expand.form(x, true)), .pc = 0 } }; // (expanding runs Lisp: a and k are not used after it)
 }
 
 /// (eval form) runs a form at top level: expanded as a top-level form of its own (so it may be a defmacro; the macros run on a
@@ -172,7 +172,7 @@ fn evalForm(_: *Fn, k: *Frame, v: ?V) E!Go {
     if (v) |r| return machine.finish(k, r);
     const x = try expand.form(machine.frameArgs(k, 1)[0], true);
     machine.machines.getLast().e = scope.root;
-    return .{ .eval = compile.stub(x) };
+    return .{ .vm = .{ .code = try compiler.top(x), .pc = 0 } };
 }
 
 fn def(e: *scope.Env, k: [*:0]const u8, f: value.Native) V {
