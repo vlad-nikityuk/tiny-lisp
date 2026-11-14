@@ -6,6 +6,7 @@ const std = @import("std");
 const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
 const node = @import("../runtime/node.zig");
+const scope = @import("../runtime/scope.zig");
 const compile = @import("../lang/compile.zig");
 const Node = node.Node;
 
@@ -42,6 +43,7 @@ pub const Scan = struct {
                 const sym = d.sym orelse return error.Bail; // (define) and (set!) without a name are errors at run time
                 if (!d.define) return;
                 if (!s.has(sym)) gc.push(node.Key, &s.keys, sym.key);
+                if (sym.inlined and !sym.local) scope.epoch +%= 1; // code compiled with the global (a primitive, each...) is out of date
                 sym.local = true;
             },
             else => return error.Bail,
