@@ -17,7 +17,7 @@ inline fn leaf(n: *Node, e: *scope.Env) value.E!?V {
     if (n.stamp != compile.current()) try compile.force(n);
     return switch (n.code) {
         .val => |v| v,
-        .ref => |*r| scope.fetch(e, r),
+        .ref => |*r| try scope.fetch(e, r),
         else => null,
     };
 }

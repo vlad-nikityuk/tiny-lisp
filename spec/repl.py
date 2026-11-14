@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Drives the REPL and checks each printed result.
 Usage: python3 spec/repl.py <command...>   e.g. python3 spec/repl.py ./tinylisp"""
-import re, subprocess, sys
+import os, re, subprocess, sys
 
 ERROR = object()
+
+
+class Error(str):
+    """An error whose message is this text."""
+
+
 CASES = [
     ("parse: unclosed paren is an error", "(()", ERROR),
     ("define: needs a name", "(define)", ERROR),
@@ -73,6 +79,16 @@ CASES = [
     ("files: loading a missing file is an error", '(load "/nonexistent/file")', ERROR),
     ("partial: a partly applied map", "((partial map '((1 2))) (lambda (x) (+ x 1)))", "(2 3)"),
 ]
+# The scoping rules of function bodies are the bytecode tier's (`make test-tree` sets TIER2=0 and skips them).
+BODY = [
+    ("body: a define in a branch that did not run", "(define body-f (lambda (flag) (begin (if flag (define v 2) 0) v)))", "<function>"),
+    ("body: the branch ran", "(body-f #t)", "2"),
+    ("body: reading the name before its define is an error", "(body-f #f)", Error("TinyLisp: v is used before it is defined")),
+    ("body: set! of a name that exists nowhere is an error", "(set! nowhere-at-all 1)", Error("TinyLisp: set!: nowhere-at-all is not defined")),
+    ("body: set! of a global is fine", "(begin (define body-g 1) (set! body-g 2))", "2"),
+]
+if os.environ.get("TIER2", "1") != "0":
+    CASES += BODY
 
 process = subprocess.run(sys.argv[1:], input="\n".join(src for _, src, _ in CASES) + "\n", capture_output=True, text=True)
 results = re.findall(r"\x1b\[(32|31)m(.*?)\x1b\[39m", process.stdout, re.S)
@@ -85,7 +101,7 @@ if len(results) != len(CASES):
     failed += 1
 passed = 0
 for (name, src, want), (color, got) in zip(CASES, results + [("", "<missing>")] * len(CASES)):
-    ok = color == "31" if want is ERROR else (color == "32" and got == want)
+    ok = color == "31" and (want is ERROR or got == want) if want is ERROR or isinstance(want, Error) else (color == "32" and got == want)
     failed += not ok
     passed += ok
     print(("\x1b[32m✔\x1b[39m" if ok else "\x1b[31m𝕏\x1b[39m"), name, "" if ok else f"-> got {got!r}, want {'error' if want is ERROR else want!r}")

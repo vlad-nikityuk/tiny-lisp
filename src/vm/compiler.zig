@@ -1,7 +1,10 @@
 // Tier 2, the compiler (after scan.zig has found the slots): the body of a function becomes, on its first call, a stack bytecode, and the function's parameters
-// and defines get fixed slots in its scope (scope.bind creates them all up front). exec.zig runs the bytecode. Anything this
-// compiler does not know (a body nested too deep, a define that may not run, an error while compiling a node) leaves the
-// function to the tree evaluator, which stays the reference semantics.
+// and defines get fixed slots in its scope (scope.bind creates them all up front, the defines unbound). exec.zig runs the bytecode.
+// Every function can be compiled whatever its defines do. Only limits that are temporary leave a function to the tree evaluator:
+// a body nested too deep, more than 64 operands of && or ||, an error while compiling a node.
+//
+// A read of a name defined in the function is a plain `local` only where the define has certainly run (`defined`, below), else
+// `local_checked`, which raises the use-before-define error.
 const std = @import("std");
 const value = @import("../runtime/value.zig");
 const gc = @import("../runtime/gc.zig");
@@ -17,7 +20,7 @@ const Op = bytecode.Opcode;
 const Ins = bytecode.Ins;
 const Bytecode = bytecode.Bytecode;
 
-// Limits of what is compiled: past them a function stays with the tree evaluator, or a call is not inlined.
+// Limits of what is compiled: past them a function stays with the tree evaluator (a temporary arrangement), or a call is not inlined.
 const max_short_circuit_operands = 64; // of one && or ||
 const max_plain_depth = 8; // nesting of the value in a vset_ll
 const max_inline_depth = 24; // an inlined body: its nesting,
@@ -40,6 +43,7 @@ const Compiler = struct {
     protos: std.ArrayList(*node.Proto) = .empty,
     bodies: std.ArrayList(?*Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
     keys: std.ArrayList(node.Key) = .empty, // the names of the slots: what the scan found, then the slots of inlined functions
+    defined: std.ArrayList(bool) = .empty, // by slot: has the define (or a parameter's binding) certainly run at the code being generated? Code is generated in evaluation order; a branch or a later operand of && and || starts from what was certain before it and leaves nothing behind
     self: ?*node.Proto = null,
     inline_scope: ?struct { keys: []const node.Key, base: usize } = null, // while an inlined function's body is generated: its names and where its slots start
     inline_sites: usize = 0, // functions inlined so far
@@ -51,7 +55,7 @@ const Compiler = struct {
     }
 
     fn deinit(c: *Compiler) void {
-        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys }) |list| list.deinit(value.gpa);
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.defined }) |list| list.deinit(value.gpa);
     }
 
     fn slotOf(c: *Compiler, sym: *node.Sym) ?usize {
@@ -60,6 +64,19 @@ const Compiler = struct {
         var i = keys.len; // the last of equal names wins, as in a scope search
         while (i > 0) : (i -= 1) if (keys[i - 1] == sym.key) return base + i - 1;
         return null;
+    }
+
+    fn sure(c: *Compiler, slot: usize) bool {
+        return c.defined.items[slot];
+    }
+
+    /// The state of `defined`, to come back to (the caller frees it).
+    fn mark(c: *Compiler) []bool {
+        return value.gpa.dupe(bool, c.defined.items) catch gc.oom();
+    }
+
+    fn restore(c: *Compiler, saved: []const bool) void {
+        @memcpy(c.defined.items[0..saved.len], saved);
     }
 
     fn patch(c: *Compiler, at: usize) void {
@@ -73,12 +90,20 @@ const Compiler = struct {
             // if, begin and calls pass the tail position on
             .@"if" => |k| {
                 try c.gen(k[0], false);
+                const before = c.mark();
+                defer value.gpa.free(before);
                 const jf = c.emit(.jmpf, 0, 0);
                 try c.gen(k[1], tail);
                 const j = if (tail) 0 else c.emit(.jmp, 0, 0);
+                const then_state = if (tail) before else c.mark(); // (in tail position nothing follows the if)
+                defer if (!tail) value.gpa.free(then_state);
+                c.restore(before);
                 c.patch(jf);
                 try c.gen(k[2], tail);
-                if (!tail) c.patch(j);
+                if (!tail) {
+                    c.patch(j);
+                    for (then_state, 0..) |sure_then, i| c.defined.items[i] = c.defined.items[i] and sure_then; // certain after either branch
+                }
                 return;
             },
             .begin => |k| {
@@ -92,16 +117,21 @@ const Compiler = struct {
             // the rest leave a value, which a tail position returns
             .val => |v| _ = c.emit(.konst, add(V, &c.consts, v), 0),
             .ref => |*r| {
-                if (c.slotOf(r.sym)) |i| _ = c.emit(.local, i, 0) else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*node.Ref, &c.refs, r), 0);
+                if (c.slotOf(r.sym)) |i| {
+                    if (c.sure(i)) _ = c.emit(.local, i, 0) else _ = c.emit(.local_checked, i, add(*node.Ref, &c.refs, r));
+                } else _ = c.emit(if (c.inline_scope != null) .global else .outer, add(*node.Ref, &c.refs, r), 0);
             },
             .@"&&", .@"||" => |k| {
                 var jumps: [max_short_circuit_operands]usize = undefined;
                 if (k.len > jumps.len) return error.Bail;
-                for (k[0 .. k.len - 1], 0..) |x, i| {
-                    try c.gen(x, false);
+                try c.gen(k[0], false);
+                const first = c.mark(); // the later operands may not run
+                defer value.gpa.free(first);
+                for (k[0 .. k.len - 1], 0..) |_, i| {
                     jumps[i] = c.emit(if (n.code == .@"&&") .andj else .orj, 0, 0);
+                    try c.gen(k[i + 1], false);
                 }
-                try c.gen(k[k.len - 1], false);
+                c.restore(first);
                 for (jumps[0 .. k.len - 1]) |at| c.patch(at);
             },
             .prim => |p| {
@@ -125,7 +155,10 @@ const Compiler = struct {
             .def => |d| {
                 try c.gen(d.val, false);
                 const slot = if (d.sym) |sym| c.slotOf(sym) else null;
-                if (slot) |i| _ = c.emit(.setlocal, i, 0) else _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*node.Def, &c.defs, d), 0);
+                if (slot) |i| {
+                    _ = c.emit(.setlocal, i, 0);
+                    c.defined.items[i] = true; // (set! of a slot that is still unbound assigns it)
+                } else if (d.define) return error.Bail else _ = c.emit(if (c.inline_scope != null) .setglobal else .setouter, add(*node.Def, &c.defs, d), 0);
             },
             else => return error.Bail,
         }
@@ -207,9 +240,15 @@ const Compiler = struct {
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
         for (k[1..]) |x| try c.gen(x, false);
         const base = c.keys.items.len;
-        for (sub.keys.items) |_| _ = add(node.Key, &c.keys, value.mkstr("(inlined)", true)); // slots no name finds
+        for (sub.keys.items) |_| {
+            _ = add(node.Key, &c.keys, value.mkstr("(inlined)", true)); // slots no name finds
+            _ = add(bool, &c.defined, false); // unbound from the call's start: this site runs once per call
+        }
         var i = k.len - 1;
-        while (i > 0) : (i -= 1) _ = c.emit(.storelocal, base + i - 1, 0);
+        while (i > 0) : (i -= 1) {
+            _ = c.emit(.storelocal, base + i - 1, 0);
+            c.defined.items[base + i - 1] = true;
+        }
         l.proto.inlined = true;
         c.inline_scope = .{ .keys = sub.keys.items, .base = base };
         c.inline_sites += 1;
@@ -257,7 +296,7 @@ const Compiler = struct {
         const native = add(V, &c.consts, g.*);
         const list = if (k[1].code == .ref) c.slotOf(k[1].code.ref.sym) else null;
         const index = if (k[2].code == .ref) c.slotOf(k[2].code.ref.sym) else null;
-        if (list != null and index != null and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
+        if (list != null and index != null and c.sure(list.?) and c.sure(index.?) and plain(k[3], 0)) { // the list and the index are locals: they need not be pushed
             try c.gen(k[3], false);
             _ = c.emit(.vset_ll, native, (list.? << 16) | index.?);
         } else {
@@ -286,6 +325,7 @@ fn build(p: *node.Proto) void {
     defer names.deinit();
     names.function(p) catch return;
     c.keys.appendSlice(value.gpa, names.keys.items) catch gc.oom();
+    for (c.keys.items, 0..) |_, i| _ = add(bool, &c.defined, i < p.params.len); // parameters are bound; the defines are not yet
     c.gen(p.body, true) catch return;
     const code = &node.make(Bytecode, 1)[0];
     code.* = .{

@@ -150,7 +150,7 @@ fn split(_: *Fn, a: []const V) E!V {
     return value.list(parts.items, parts.items.len);
 }
 
-/// (load "file.lisp") runs the file's forms in the caller's scope, one after the other: each is read, expanded and run before the
+/// (load "file.lisp") runs the file's forms at top level (in the global scope, never the caller's), one after the other: each is read, expanded and run before the
 /// next is read. The frame keeps the file's text after its argument and the read position in k.i, and hands on the last value.
 fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
     const a = machine.frameArgs(k, 2);
@@ -161,6 +161,7 @@ fn load(_: *Fn, k: *Frame, v: ?V) E!Go {
         k.i = 0;
     }
     const x = try parser.parseNext(text(a[1]), &k.i) orelse return machine.finish(k, v orelse .nil);
+    machine.machines.getLast().e = scope.root; // (the frame keeps the caller's scope and goes back to it)
     return .{ .eval = compile.stub(try expand.form(x, true)) }; // (expanding runs Lisp: a and k are not used after it)
 }
 

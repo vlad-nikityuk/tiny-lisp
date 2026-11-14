@@ -15,10 +15,13 @@ pub var errv: V = .nil;
 /// 3-bit tag in bits 48-50 and a 48-bit pointer or flag as payload. Numbers that are NaN are stored as one canonical NaN.
 pub const V = enum(u64) {
     _,
-    pub const Tag = enum { n, nil, b, s, lit, l, f, lam }; // s: symbol or runtime string, lit: string literal from source
+    pub const Tag = enum { n, nil, b, s, lit, l, f, lam, unbound }; // s: symbol or runtime string, lit: string literal from source
     const BOX: u64 = 0xFFF8_0000_0000_0000;
     const PAYLOAD: u64 = 0x0000_FFFF_FFFF_FFFF;
     pub const nil: V = @fromBackingInt(@intCast(BOX | 1 << 48));
+    /// The content of a local variable whose define has not run yet (scope slots only: reading one raises an error, so it is never
+    /// a value a program sees). Tag 0 of the box: not a number, not a pointer, and no operation produces it.
+    pub const unbound: V = @fromBackingInt(@intCast(BOX));
 
     inline fn box(t: u64, payload: u64) V {
         return @fromBackingInt(@intCast(BOX | t << 48 | payload));
@@ -60,7 +63,7 @@ pub const V = enum(u64) {
             5 => .l,
             6 => .f,
             7 => .lam,
-            else => .n,
+            else => .unbound,
         };
     }
     pub inline fn isNum(v: V) bool {
@@ -111,6 +114,7 @@ pub const V = enum(u64) {
                     continue;
                 },
                 .f, .lam => try w.writeAll("<function>"),
+                .unbound => @panic("an unbound variable slot reached the printer"),
             } else try w.writeByte(')');
             if (todo.getLastOrNull()) |next| if (next != null) try w.writeByte(' '); // more items of the same list
         }
@@ -138,7 +142,7 @@ pub const gpa = std.heap.c_allocator;
 /// The managed object a value points to, if any (for the collector).
 pub fn ptr(v: V) ?*anyopaque {
     return switch (v.tag()) {
-        .nil, .b, .n => null,
+        .nil, .b, .n, .unbound => null,
         .s, .lit => @ptrCast(@constCast(v.asStr())),
         .l => v.asList(),
         .f => v.asFn(),

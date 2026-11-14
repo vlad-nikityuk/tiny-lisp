@@ -10,13 +10,14 @@ pub const Opcode = enum(u8) {
     // values
     konst,      // push consts[a]
     local,      // push slot a of the scope
+    local_checked, // the same for a name defined in this function where its define may not have run: unbound is an error (refs[b]: the name)
     outer,      // push the variable refs[a], which is in an enclosing scope or global (b: where it was found, see outerSlot in exec.zig)
     global,     // push the global refs[a] (a free name of an inlined function)
     lambda,     // push a closure of protos[a] over the scope
     // assignments (define and set! have a value, so it stays on the stack)
     setlocal,   // slot a = top
-    setouter,   // define or set! defs[a], a name outside this function's slots (b as in outer)
-    setglobal,  // set! the global defs[a]
+    setouter,   // set! defs[a], a name outside this function's slots (b as in outer): an error if no scope and no global has it
+    setglobal,  // set! the global defs[a] (an error if there is none)
     storelocal, // slot a = pop (an argument of an inlined function)
     pop,
     // control

@@ -90,8 +90,19 @@ pub fn globalOf(sym: *Sym) ?*V {
     return if (sym.local) null else slot(root, sym.key, false);
 }
 
-pub fn fetch(env: *Env, r: *node.Ref) V {
-    return if (find(env, r.sym, &r.g)) |p| p.* else .nil;
+/// The value of a variable (nil if no scope binds the name). A slot whose define has not run yet is an error.
+pub fn fetch(env: *Env, r: *node.Ref) E!V {
+    const v = if (find(env, r.sym, &r.g)) |p| p.* else return .nil;
+    return if (v == V.unbound) usedBeforeDefined(r.sym.key) else v;
+}
+
+pub fn usedBeforeDefined(name: Key) E {
+    return value.fail(value.str("TinyLisp: {s} is used before it is defined", .{name}));
+}
+
+/// set! of a name that no scope and no global binds.
+pub fn notDefined(name: Key) E {
+    return value.fail(value.str("TinyLisp: set!: {s} is not defined", .{name}));
 }
 
 /// define or set!.
@@ -101,7 +112,7 @@ pub fn assign(d: *node.Def, e: *Env, v: V) E!void {
         if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
         sym.local = sym.local or e.p != null;
         set(e, sym.key, v);
-    } else if (find(e, sym, &d.g)) |p| replace(p, v);
+    } else replace(find(e, sym, &d.g) orelse return notDefined(sym.key), v);
 }
 
 /// set! of the variable at p. If its old value is compiled into tier-2 code, that code is out of date.
@@ -176,7 +187,7 @@ pub fn bindWith(f: *Lam, a: []const V, code: ?*bytecode.Bytecode) *Env {
     for (ps[0..fixed], e.vars[0..fixed], 0..) |k, *x, i| x.* = .{ .k = k, .v = value.arg(a, i) };
     if (f.proto.rest) e.vars[fixed] = .{ .k = ps[fixed], .v = value.list(if (a.len > fixed) a[fixed..] else &.{}, a.len -| fixed) };
     if (code) |c| for (c.keys[ps.len..], e.vars[ps.len..]) |k, *x| {
-        x.* = .{ .k = k, .v = .nil };
+        x.* = .{ .k = k, .v = V.unbound }; // a define has not run yet
     };
     return e;
 }

@@ -56,6 +56,12 @@ noinline fn outerLook(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
     return g.*;
 }
 
+/// Reading a slot whose define has not run: the stack is published first, as the error unwinds it.
+noinline fn unbound(name: node.Key, sp: usize) E {
+    machine.vs.items.len = sp;
+    return scope.usedBeforeDefined(name);
+}
+
 /// The index of the instruction at ip.
 inline fn pcOf(code: *Bytecode, ip: [*]const Ins) usize {
     return (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(Ins);
@@ -78,6 +84,7 @@ fn slow(m: *machine.Machine, code: *Bytecode, ip: [*]const Ins, arity: usize) E!
     const n = vs.items.len;
     var g: ?*V = null;
     const f = if (scope.find(m.e, p.sym, &g)) |s| s.* else V.nil;
+    if (f == V.unbound) return scope.usedBeforeDefined(p.sym.key);
     if (f == V.nil) return value.undefinedFunction(p.c[0].ast);
     vs.insert(value.gpa, n - arity, f) catch gc.oom();
     return call(m, n - arity, code, pcOf(code, ip) + 1);
@@ -110,7 +117,17 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .outer => {
             const r = code.refs[ip[0].a];
-            st[sp] = if (outerSlot(e, &ip[0], r.sym, &r.g)) |p| p.* else V.nil;
+            const v = if (outerSlot(e, &ip[0], r.sym, &r.g)) |p| p.* else V.nil;
+            if (v == V.unbound) return unbound(r.sym.key, sp);
+            st[sp] = v;
+            sp += 1;
+            ip += 1;
+            continue :sw ip[0].op;
+        },
+        .local_checked => { // a name defined in this function, read where its define may not have run
+            const v = e.vars[ip[0].a].v;
+            if (v == V.unbound) return unbound(code.refs[ip[0].b].sym.key, sp);
+            st[sp] = v;
             sp += 1;
             ip += 1;
             continue :sw ip[0].op;
@@ -127,8 +144,8 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             continue :sw ip[0].op;
         },
         .setouter => {
-            const d = code.defs[ip[0].a];
-            if (d.define) try scope.assign(d, e, st[sp - 1]) else if (outerSlot(e, &ip[0], d.sym.?, &d.g)) |p| scope.replace(p, st[sp - 1]);
+            const d = code.defs[ip[0].a]; // only set!: a define always has a slot of the function
+            scope.replace(outerSlot(e, &ip[0], d.sym.?, &d.g) orelse return scope.notDefined(d.sym.?.key), st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -249,7 +266,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 if (e.proto == l.proto and e.p == l.env and !e.captured and !l.proto.rest) {
                     const np = l.proto.params.len;
                     for (e.vars[0..np], 0..) |*x, i| x.v = if (i < ip[0].a) st[b + 1 + i] else V.nil;
-                    for (e.vars[np..code.keys.len]) |*x| x.v = V.nil; // its defines start unbound
+                    for (e.vars[np..code.keys.len]) |*x| x.v = V.unbound; // its defines start unbound again
                     sp = b;
                     ip = code.ins.ptr;
                     if (gc.due()) {
@@ -312,7 +329,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         .setglobal => {
             const d = code.defs[ip[0].a];
             if (d.g == null) d.g = scope.slotOf(scope.root, d.sym.?.key);
-            if (d.g) |p| scope.replace(p, st[sp - 1]);
+            scope.replace(d.g orelse return scope.notDefined(d.sym.?.key), st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -355,7 +372,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             if (last != null and !last.?.captured and last.?.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
                 e = last.?;
                 e.vars[0].v = item;
-                for (e.vars[1..]) |*v| v.v = V.nil;
+                for (e.vars[1..]) |*v| v.v = V.unbound;
             } else {
                 var lam: value.Lam = .{ .proto = code.protos[ip[0].a], .env = e };
                 e = scope.bindWith(&lam, &.{item}, body);

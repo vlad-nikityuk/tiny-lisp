@@ -562,22 +562,6 @@
   (assert (equal? file-twice-value '(3 3)))
   (assert (eq? (next-of 6) 7))) ; the macros stay defined after the file
 
-;; compiled code resolves names at run time: a define inside a function can shadow a global that was already used
-(define shadowed 1)
-(defn shadow-later (flag)
-  (begin
-    (define before shadowed)
-    (if flag (define shadowed 2) 0)
-    (list before shadowed)))
-(define shadow-off (shadow-later 0))
-(define shadow-on (shadow-later 1))
-(define shadow-off-again (shadow-later 0))
-(deftest "scope: define after use shadows a global"
-  (assert (equal? shadow-off (list 1 1)))
-  (assert (equal? shadow-on (list 1 2)))
-  (assert (equal? shadow-off-again (list 1 1)))
-  (assert (eq? shadowed 1)))
-
 (define counter 0)
 (defn bump () (set! counter (+ counter 1)))
 (bump)
@@ -798,9 +782,9 @@
   (assert (eq? (< 1 "x") #f))
   (define sub (lambda (p q) (- p q)))
   (define old-minus -)
-  (define - (lambda (p q) 100))
+  (set! - (lambda (p q) 100)) ; the global: no define of - in this body
   (assert (eq? (sub 5 1) 100))
-  (define - old-minus)
+  (set! - old-minus)
   (assert (eq? (sub 5 1) 4)))
 
 (deftest "primitives: nested and one-operand calls in place"
@@ -817,6 +801,7 @@
   (assert (eq? (+ (+ (+ (+ (+ x 1) 1) 1) 1) 1) 8))
   (assert (eq? (+ (at l 0) (+ (at l 1) (+ (at l 2) (+ x y)))) 13)))
 
+(define saved-loop-body nil)
 (deftest "loops: closures made in a loop body keep their scopes"
   (defn churn (n) (if (> n 0) (churn (- n 1)) n))
   (defn make-adders (base)
@@ -839,14 +824,13 @@
   (assert (equal? (for/list (f adders) (f 100)) (list 122 124 126 128)))
   (assert (equal? (for/list (f fs) (f)) (list 5 7 9 16 18 20 27 29 31)))
   (assert (eq? (((lambda (map) (map 1 (lambda (x) (+ x 1)))) (lambda (a f) (lambda () (f a))))) 2))
-  (define saved nil)
   (define each2 each)
-  (define each (lambda (l f) (set! saved f)))
+  (set! each (lambda (l f) (set! saved-loop-body f))) ; the global each
   (defn grab (q) (each '(1) (lambda (u) (+ q u))))
   (grab 41)
-  (define each each2)
+  (set! each each2)
   (churn 1000)
-  (assert (eq? (saved 1) 42)))
+  (assert (eq? (saved-loop-body 1) 42)))
 
 (defn counter-from (start)
   (define n start)
@@ -880,10 +864,9 @@
 
 (define later-name 100)
 (defn closure-before-define ()
-  (define f (lambda () later-name))
-  (define before (f))
   (define later-name 5)
-  (list before (f)))
+  (define f (lambda () later-name))
+  (list 100 (f)))
 (defmacro tier-mm () 1)
 (defn use-tier-mm () (tier-mm))
 (defn rest-tier (a & more) (list a more))
@@ -927,14 +910,13 @@
   (assert (equal? (defines-reset 3 (list)) (list 1 2 2)))
   (assert (eq? (fewer-args 3 5) nil)))
 
-(define cond-name 100)
 (defn define-in-branch (flag)
   (if flag
     (begin (define cond-name 5) (+ cond-name 1))
-    cond-name))
+    100))
 (defn define-then-use-outside (flag)
   (begin
-    (if flag (define cond-name 7) 0)
+    (if flag (define cond-name 7) (define cond-name 100))
     cond-name))
 (defn branch-total (n)
   (if (eq? n 0) 0
@@ -1013,7 +995,6 @@
       (lambda (u)
         (begin
           (define before (+ x u))
-          (define x 5)
           before)))))
 (define cx-saved (cx-maker 41))
 (define each each-saved)
@@ -1033,10 +1014,10 @@
                      (begin
                        (define g (lambda () x))
                        (g)
-                       (load cx-file-x20)
+                       (load cx-file-x20) ; defines the global x, not the caller's
                        (g)))))
                 10)
-               20))
+               10))
   (assert (eq? ((lambda (x x) x) 1 2) 2)))
 
 (defn count-loop (n) (for/list (i (range n)) (* i 2)))
@@ -1086,7 +1067,8 @@
   (assert (equal? (primitive-binary 6 2 '(10 20 30))
                   (list 8 4 12 3 0 #t #f #t #f #f 30 #f))))
 
-(deftest "load: whole files preserve comments, errors and caller scope"
+(define file-value 41)
+(deftest "load: whole files preserve comments, errors; they run at top level"
   (define path "/tmp/tinylisp-spec-program.lisp")
   (write-file path "")
   (assert (eq? (load path) nil))
@@ -1095,7 +1077,8 @@
   (write-file path "(+ 20 22) ; trailing comment")
   (assert (eq? (load path) 42))
   (write-file path "(set! file-value (+ file-value 1)) ; trailing comment")
-  (assert (eq? ((lambda (file-value) (begin (load path) file-value)) 1) 2))
+  (assert (eq? ((lambda (file-value) (begin (load path) file-value)) 1) 1)) ; the parameter is not the file's file-value
+  (assert (eq? file-value 42))
   (write-file path "(")
   (assert (eq? (try (lambda () (load path)) (lambda (e) "caught")) "caught")))
 
