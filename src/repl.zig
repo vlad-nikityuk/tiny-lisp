@@ -3,6 +3,7 @@ const std = @import("std");
 const value = @import("runtime/value.zig");
 const scope = @import("runtime/scope.zig");
 const machine = @import("runtime/machine.zig");
+const continuation = @import("runtime/continuation.zig");
 const primitives = @import("runtime/primitives.zig");
 const parser = @import("lang/parser.zig");
 const expand = @import("lang/expand.zig");
@@ -25,6 +26,7 @@ pub fn main(init: std.process.Init) !void {
     const e = scope.init();
     primitives.install(e);
     machine.install(e);
+    continuation.install(e);
     var file: ?[]const u8 = null;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     for (args, 0..) |a, i| {

@@ -108,15 +108,20 @@ fn compiledInto(v: V) bool {
 
 // closures and recycling
 // ----------------------------------------------------------------
-/// A closure of p over e. It holds the scope and, through it, the enclosing ones: none can be recycled when its call ends.
-/// Except the body of a loop (the lambda given to the native each or map, see node.Guard): it is dead once the loop is over.
-pub fn lambda(p: *Proto, e: *Env) V {
-    const loop_body = if (p.guard) |d| !d.sym.local and d.g.* == d.f else false;
-    var s: ?*Env = if (loop_body) null else e;
+/// A continuation or closure captured these scopes: keep them and do not recycle them for loops or self tail calls.
+pub fn hold(e: ?*Env) void {
+    var s = e;
     while (s) |x| : (s = x.p) {
         x.recyclable = false;
         x.captured = true;
     }
+}
+
+/// A closure of p over e. It holds the scope and, through it, the enclosing ones: none can be recycled when its call ends.
+/// Except the body of a loop (the lambda given to the native each or map, see node.Guard): it is dead once the loop is over.
+pub fn lambda(p: *Proto, e: *Env) V {
+    const loop_body = if (p.guard) |d| !d.sym.local and d.g.* == d.f else false;
+    if (!loop_body) hold(e);
     return V.lamOf(gc.new(Lam, 0, .lam, .{ .proto = p, .env = e }));
 }
 

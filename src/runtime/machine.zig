@@ -27,8 +27,8 @@ pub const Frame = struct {
     code: *Bytecode = undefined, // vm, loop: the bytecode to resume
     iter_env: ?*Env = null, // loop: the scope of the iteration that is running, which the next one reuses if nothing captured it
 };
-/// A running machine loop (lang/eval.zig): its scope is a root for the collector. ks[base..] are its frames.
-pub const Machine = struct { e: *Env, base: usize };
+/// A running machine loop (lang/eval.zig): its scope is a root for the collector. ks[base..] are its frames; vs[vbase..] is this run's suffix.
+pub const Machine = struct { e: *Env, base: usize, vbase: usize = 0 };
 pub var machines: std.ArrayList(*Machine) = .empty;
 /// What the machine does next. ret: hand a value to the innermost frame; vm: run bytecode from pc;
 /// apply: call the function at vs[apply] with the arguments after it.

@@ -11,8 +11,9 @@ const V = value.V;
 
 /// Run from go until its first step has a value; an error goes to the innermost `try`.
 pub fn exec(go: machine.Go, env: *scope.Env) value.E!V {
-    var m: machine.Machine = .{ .e = env, .base = machine.ks.items.len }; // ks[base..] are this run's frames
     const vbase = machine.vs.items.len;
+    // vbase lets call/cc capture the value suffix belonging to this run (continuation.zig).
+    var m: machine.Machine = .{ .e = env, .base = machine.ks.items.len, .vbase = vbase };
     gc.push(*machine.Machine, &machine.machines, &m); // its scope is a collector root
     defer machine.machines.items.len -= 1;
     errdefer machine.ks.items.len, machine.vs.items.len = .{ m.base, vbase };

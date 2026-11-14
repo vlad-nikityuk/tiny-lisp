@@ -9,6 +9,7 @@ const std = @import("std");
 const value = @import("value.zig");
 const scope = @import("scope.zig");
 const machine = @import("machine.zig");
+const continuation = @import("continuation.zig");
 const V = value.V;
 
 pub const Kind = enum(u3) { perm, str, list, func, lam, env };
@@ -111,14 +112,14 @@ pub fn due() bool {
     return allocated > limit;
 }
 
-fn markPtr(p: ?*anyopaque) void {
+pub fn markPtr(p: ?*anyopaque) void {
     const h = header(p orelse return);
     if (kindOf(h) == .perm or isMarked(h)) return;
     h.link |= 1;
     if (kindOf(h) != .str) push(*H, &gray, h);
 }
 
-fn markV(v: V) void {
+pub fn markV(v: V) void {
     markPtr(value.ptr(v));
 }
 
@@ -131,6 +132,7 @@ fn drain() void {
                 const f: *value.Fn = @ptrCast(@alignCast(p));
                 markV(f.d0);
                 markV(f.d1);
+                continuation.markCont(f);
             },
             .lam => {
                 markPtr(@as(*value.Lam, @ptrCast(@alignCast(p))).env);
@@ -153,7 +155,7 @@ fn bytesOf(h: *H) usize {
     const n: usize = switch (kindOf(h)) {
         .str => std.mem.len(@as([*:0]const u8, @ptrCast(p))) + 1,
         .list => @sizeOf(value.Lst) + @as(*value.Lst, @ptrCast(@alignCast(p))).len * @sizeOf(V),
-        .func => @sizeOf(value.Fn),
+        .func => @sizeOf(value.Fn) + continuation.contExtraBytes(@as(*value.Fn, @ptrCast(@alignCast(p)))),
         .lam => @sizeOf(value.Lam),
         .env => @sizeOf(scope.Env) + @as(*scope.Env, @ptrCast(@alignCast(p))).cap * @sizeOf(scope.Var),
         .perm => 0,
