@@ -31,6 +31,7 @@ define run-tests
 	"$(1)" -f spec/ffi-libuv.lisp
 	"$(1)" -f spec/uv-integration.lisp
 	"$(1)" -f spec/node.lisp
+	"$(1)" -f examples/node-tour.lisp >/dev/null
 	"$(1)" -f examples/microgpt.lisp | cmp -s - spec/microgpt.expected
 endef
 

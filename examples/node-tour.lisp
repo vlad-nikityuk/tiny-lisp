@@ -10,7 +10,7 @@
 (print (+ "cwd: " (process-cwd)))
 (print (+ "pid: " process-pid))
 (print (+ "hostname: " (os-hostname)))
-(print (+ "entries: " (list (fs-read-dir tour-root)))))
+(print (+ "entries: " (fs-read-dir tour-root)))
 
 (fs-unlink demo-file)
 (fs-rmdir tour-root)
