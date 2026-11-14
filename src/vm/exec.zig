@@ -72,6 +72,21 @@ inline fn pcOf(code: *Bytecode, ip: [*]const Ins) usize {
     return (@intFromPtr(ip) - @intFromPtr(code.ins.ptr)) / @sizeOf(Ins);
 }
 
+/// A top-level loop: still the natives it was compiled with, or jump to the ordinary call saved at compile time.
+inline fn loopGuardOk(e: *scope.Env, code: *Bytecode, b: u32) bool {
+    if (b & bytecode.loop_guard_flag == 0) return true;
+    const g = code.loops[(b >> 1) & 0x7fff];
+    var slot: ?*V = null;
+    const cur = if (scope.find(e, g.sym, &slot)) |p| p.* else V.nil;
+    if (cur != g.expect_loop) return false;
+    if (g.range_sym) |rs| {
+        var rslot: ?*V = null;
+        const rcur = if (scope.find(e, rs, &rslot)) |p| p.* else V.nil;
+        if (rcur != g.expect_range) return false;
+    }
+    return true;
+}
+
 /// Store v at index i of the list l, if they are a list and an index in range.
 inline fn storeAt(l: V, i: V, v: V) bool {
     if (!l.is(.l) or !i.isNum()) return false;
@@ -315,6 +330,11 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             return .{ .ret = st[sp - 1] };
         },
         .each => { // the list is on the stack: add the index and a place for the body's value
+            if (!loopGuardOk(e, code, ip[0].b)) {
+                sp -= 1; // drop the list or n the fast path would have used
+                ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+                continue :sw ip[0].op;
+            }
             st[sp] = V.num(-1);
             st[sp + 1] = V.nil;
             sp += 2;
@@ -322,8 +342,14 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             continue :sw ip[0].op;
         },
         .map => { // as each, with the list of results (the body's values) between the index and that place
+            if (!loopGuardOk(e, code, ip[0].b)) {
+                sp -= 1; // drop the list or n the fast path would have used
+                ip = code.ins.ptr + code.loops[(ip[0].b >> 1) & 0x7fff].fail_pc;
+                continue :sw ip[0].op;
+            }
+            const counted = ip[0].b & 1;
             st[sp] = V.num(-1);
-            st[sp + 1] = value.list(&.{}, if (ip[0].b != 0) node.rangeLen(st[sp - 1]) else value.items(st[sp - 1]).len);
+            st[sp + 1] = value.list(&.{}, if (counted != 0) node.rangeLen(st[sp - 1]) else value.items(st[sp - 1]).len);
             st[sp + 2] = V.nil;
             sp += 3;
             ip += 1;

@@ -50,6 +50,7 @@ const Compiler = struct {
     defs: std.ArrayList(*node.Def) = .empty,
     protos: std.ArrayList(*node.Proto) = .empty,
     bodies: std.ArrayList(?*Bytecode) = .empty, // by the same index: the compiled body of a loop lambda
+    loops: std.ArrayList(bytecode.LoopGuard) = .empty, // top-level loop guards only
     keys: std.ArrayList(node.Key) = .empty, // the names of the slots: what the scan found, then the slots of inlined functions
     defined: std.ArrayList(bool) = .empty, // by slot: has the define (or a parameter's binding) certainly run at the code being generated? Code is generated in evaluation order; a branch or a later operand of && and || starts from what was certain before it and leaves nothing behind
     self: ?*node.Proto = null,
@@ -64,7 +65,7 @@ const Compiler = struct {
     }
 
     fn deinit(c: *Compiler) void {
-        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.keys, &c.defined }) |list| list.deinit(value.gpa);
+        inline for (.{ &c.ins, &c.consts, &c.refs, &c.prims, &c.defs, &c.protos, &c.bodies, &c.loops, &c.keys, &c.defined }) |list| list.deinit(value.gpa);
     }
 
     fn slotOf(c: *Compiler, sym: *node.Sym) ?usize {
@@ -254,7 +255,8 @@ const Compiler = struct {
     }
 
     /// (each list (lambda (x) ...)) or (map list (lambda (x) ...)), while the name is the native: a loop of the bytecode, with
-    /// the lambda's body compiled on its own. Over (range n) it counts to n and builds no list.
+    /// the lambda's body compiled on its own. Over (range n) it counts to n and builds no list. Top-level code may still use the loop,
+    /// but checks the names when it runs and falls back to an ordinary call if they were rebound earlier in the same form.
     fn genLoop(c: *Compiler, k: []const *Node) bool {
         if (k.len != 3 or k[0].code != .ref or k[2].code != .lambda) return false;
         const sym = k[0].code.ref.sym;
@@ -266,17 +268,40 @@ const Compiler = struct {
         sym.inlined = true; // rebinding each or map makes epoch change, so this code is compiled again
         var counted: usize = 0;
         var source = k[1];
+        var range_sym: ?*node.Sym = null;
         if (k[1].code == .call and k[1].code.call.len == 2 and k[1].code.call[0].code == .ref) {
             const range = k[1].code.call[0].code.ref.sym;
             if (scope.globalOf(range)) |rg| if (rg.* == node.range_v) {
                 counted = 1;
                 source = k[1].code.call[1];
+                range_sym = range;
                 range.inlined = true; // rebinding range makes epoch change
             };
         }
-        c.gen(source, false);
         const at = add(*node.Proto, &c.protos, lp);
         _ = add(?*Bytecode, &c.bodies, body);
+        if (c.top) {
+            const gidx = add(bytecode.LoopGuard, &c.loops, .{
+                .sym = sym,
+                .expect_loop = gc.pin(g.*),
+                .range_sym = range_sym,
+                .expect_range = if (counted != 0) gc.pin(node.range_v) else V.nil,
+                .fail_pc = 0,
+            });
+            c.gen(source, false);
+            const flags: u32 = bytecode.loop_guard_flag | @as(u32, @intCast(counted)) | (@as(u32, @intCast(gidx)) << 1);
+            _ = c.emit(if (is_map) .map else .each, at, @intCast(flags));
+            _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
+            const over = c.emit(.jmp, 0, 0);
+            c.loops.items[gidx].fail_pc = c.ins.items.len;
+            c.gen(k[0], false);
+            c.gen(k[1], false);
+            _ = c.emit(.lambda, at, 0);
+            _ = c.emit(.call, k.len - 1, add(V, &c.consts, k[0].ast));
+            c.ins.items[over].b = @intCast(c.ins.items.len);
+            return true;
+        }
+        c.gen(source, false);
         _ = c.emit(if (is_map) .map else .each, at, counted);
         _ = c.emit(if (is_map) .mapnext else .eachnext, at, counted);
         return true;
@@ -334,15 +359,15 @@ const Compiler = struct {
     fn genCall(c: *Compiler, k: []const *Node, tail: bool) void {
         if (c.genInline(k, tail)) return;
         guardLoopBody(k);
-        if (c.genLoop(k) or c.genVset(k)) {
+        if (c.genLoop(k) or (!c.top and c.genVset(k))) {
             if (tail) _ = c.emit(.ret, 0, 0);
             return;
         }
-        if (primitiveOf(k)) |op| {
+        if (!c.top) if (primitiveOf(k)) |op| {
             c.genPrim(k, op);
             if (tail) _ = c.emit(.ret, 0, 0);
             return;
-        }
+        };
         for (k) |x| c.gen(x, false);
         _ = c.emit(if (tail) .tailcall else .call, k.len - 1, add(V, &c.consts, k[0].ast));
     }
@@ -360,6 +385,7 @@ fn finish(c: *const Compiler) *Bytecode {
         .protos = dup(*node.Proto, c.protos.items),
         .bodies = dup(?*Bytecode, c.bodies.items),
         .keys = dup(node.Key, c.keys.items),
+        .loops = dup(bytecode.LoopGuard, c.loops.items),
         .stamp = scope.epoch,
         .room = room(c.ins.items),
     };

@@ -83,6 +83,17 @@ pub fn secondIsConst(comptime op: Opcode) bool {
 /// A call of a primitive that became an instruction (the ordinary call it falls back to is made through the name, `slow` in exec.zig).
 pub const PrimCall = struct { op: primitives.Op, sym: *node.Sym, head: V };
 
+/// A top-level each/map loop: if the name is still the native it was at compile time, the bytecode loop runs; else execution jumps to fail_pc and uses an ordinary call.
+pub const LoopGuard = struct {
+    sym: *node.Sym,
+    expect_loop: V,
+    range_sym: ?*node.Sym = null, // when the loop is over (range n)
+    expect_range: V, // node.range_v then, or nil
+    fail_pc: usize,
+};
+
+pub const loop_guard_flag: u32 = 0x8000_0000;
+
 /// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b.
 pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
 /// The compiled body of a function, or of a top-level form (a function without parameters, run in the root scope).
@@ -96,6 +107,7 @@ pub const Bytecode = struct {
     protos: []const *node.Proto, // lambdas
     bodies: []const ?*Bytecode, // by the same index as protos: the compiled body of a loop lambda
     keys: []const node.Key, // the names of the scope's slots: parameters, then defines, then the slots of inlined functions
+    loops: []const LoopGuard, // top-level each/map loops that check their names when they run
     stamp: u32, // scope.epoch when it was compiled: out of date after a rebound primitive or inlined function
     room: usize, // the most values it can have on the stack
 };
