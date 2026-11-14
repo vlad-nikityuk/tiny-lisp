@@ -22,7 +22,6 @@ pub const Def = struct { sym: ?*Sym, g: ?*V = null, val: *Node, define: bool }; 
 pub const Proto = struct {
     params: []const Key,
     body: *Node,
-    cap: usize = 0, // room for the scope of a call, grown by defines
     rest: bool = false, // the last parameter takes the extra arguments as a list
     guard: ?*Guard = null, // set by the bytecode compiler on the lambda operand of each/map
     code: ?*Bytecode = null, // the bytecode of the body, compiled on the first call (vm/compiler.zig `ready`)

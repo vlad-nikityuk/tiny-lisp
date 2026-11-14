@@ -1,4 +1,4 @@
-;; The scoping rules of function bodies, which only the bytecode tier implements (`make test-tree` does not run this file).
+;; The scoping rules of function bodies.
 ;; A body's local names are its parameters and every name defined anywhere in it (not inside a nested lambda); a defined name is
 ;; local to the whole body and unbound until its define runs, and reading it while unbound is an error.
 

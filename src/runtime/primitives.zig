@@ -1,6 +1,6 @@
 // The primitives: + - * / < > eq? car cons list at vset! ... Each is a plain native, all built from one function (`prim`)
 // that is specialised per operation at compile time. `fast` and `fast1` are the same operations for the common case (numbers,
-// or a list and an index) that needs no allocation and cannot fail: the evaluator and the bytecode use them to compute a
+// or a list and an index) that needs no allocation and cannot fail: the bytecode uses them to compute a
 // primitive call in place.
 const std = @import("std");
 const value = @import("value.zig");
@@ -126,7 +126,7 @@ pub fn install(e: *scope.Env) void {
     inline for (comptime std.enums.values(Op)) |op| scope.set(e, @tagName(op), V.fnOf(value.nf(.{ .plain = primFor(op) }, .nil, .nil)));
 }
 
-/// Is v the native vset!? (tier 2 has an instruction for it)
+/// Is v the native vset!? (the bytecode has an instruction for it)
 pub fn isVset(v: V) bool {
     return v.is(.f) and v.asFn().f == .plain and v.asFn().f.plain == primFor(.@"vset!");
 }

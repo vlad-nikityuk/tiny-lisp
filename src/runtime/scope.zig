@@ -14,8 +14,8 @@ const Lam = value.Lam;
 /// A scope: the variables of one call. The root scope has none: its names are in the global table.
 pub const Env = struct {
     p: ?*Env, // the enclosing scope
-    vars: []Var, // stored inline, right after the Env, until they outgrow cap
-    cap: usize,
+    vars: []Var, // stored inline, right after the Env: the slots of the function's bytecode (parameters, then defined names)
+    cap: usize, // room for vars (a pooled size)
     proto: ?*Proto = null, // the function whose call this is
     recyclable: bool = false, // `release` may hand it to a free list: it has a pooled size, no closure holds it or an inner scope, and it is not on a list yet
     captured: bool = false, // a closure holds it or an inner scope: a loop or a self tail call must not use it again
@@ -36,41 +36,23 @@ pub fn init() *Env {
     return root;
 }
 
-// Two counters say when compiled code is out of date.
 /// Bumped when a value that compiled code was compiled with (a native, an inlined function) is replaced: all code compiles
 /// again (`ready` in vm/compiler.zig).
 pub var epoch: u32 = 0;
-/// Bumped when a name is added to a scope whose layout compiled code relies on (by load, say): remembered lookups are void.
-pub var shape: u32 = 1;
 
 // lookup and assignment
 // ----------------------------------------------------------------
-/// The variable k of e itself (enclosing scopes are not searched).
-pub fn slotOf(e: *Env, k: Key) ?*V {
-    return slot(e, k, false);
+/// The global slot of k, created if `create`. (A function's scope has a fixed layout: its names are the slots the compiler gave it.)
+fn global(k: Key, create: bool) ?*V {
+    var i: usize = std.hash.Fnv1a_32.hash(std.mem.span(k)) & (gk.len - 1);
+    while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (value.streq(key, k)) return &gv[i];
+    if (create) gk[i] = k;
+    return if (create) &gv[i] else null;
 }
 
-fn slot(e: *Env, k: Key, create: bool) ?*V {
-    if (e.p == null) {
-        var i: usize = std.hash.Fnv1a_32.hash(std.mem.span(k)) & (gk.len - 1);
-        while (gk[i]) |key| : (i = (i + 1) & (gk.len - 1)) if (value.streq(key, k)) return &gv[i];
-        if (create) gk[i] = k;
-        return if (create) &gv[i] else null;
-    }
-    var i = e.vars.len; // the latest binding of a name wins
-    while (i > 0) : (i -= 1) if (e.vars[i - 1].k == k) return &e.vars[i - 1].v;
-    if (!create) return null;
-    if (e.vars.len == e.cap) {
-        const more = value.gpa.alloc(Var, e.cap * 2) catch gc.oom();
-        @memcpy(more[0..e.cap], e.vars);
-        if (e.vars.ptr != gc.after(Var, e)) value.gpa.free(e.vars);
-        e.vars.ptr, e.cap = .{ more.ptr, more.len };
-        if (e.proto) |p| p.cap = e.cap; // the next call of this function gets a scope that is big enough
-    }
-    if (e.proto != null and e.proto.?.code != null) shape +%= 1;
-    e.vars.len += 1;
-    e.vars[e.vars.len - 1] = .{ .k = k, .v = .nil };
-    return &e.vars[e.vars.len - 1].v;
+/// The slot of the global k, if there is one.
+pub fn slotOf(k: Key) ?*V {
+    return global(k, false);
 }
 
 /// The innermost binding of the name: scope keys are interned, so they are compared by address. A name that no scope binds
@@ -81,13 +63,13 @@ pub fn find(env: *Env, sym: *Sym, g: *?*V) ?*V {
         var i = e.vars.len;
         while (i > 0) : (i -= 1) if (e.vars[i - 1].k == sym.key) return &e.vars[i - 1].v;
     }
-    if (g.* == null) g.* = slot(root, sym.key, false);
+    if (g.* == null) g.* = global(sym.key, false);
     return g.*;
 }
 
 /// The global slot of a name that no scope binds: only then does the name always mean the global.
 pub fn globalOf(sym: *Sym) ?*V {
-    return if (sym.local) null else slot(root, sym.key, false);
+    return if (sym.local) null else global(sym.key, false);
 }
 
 pub fn usedBeforeDefined(name: Key) E {
@@ -99,14 +81,10 @@ pub fn notDefined(name: Key) E {
     return value.fail(value.str("TinyLisp: set!: {s} is not defined", .{name}));
 }
 
-/// define or set!.
-pub fn assign(d: *node.Def, e: *Env, v: V) E!void {
+/// A define the compiler has no slot for: a global define (top-level code). A define or set! without a name is an error.
+pub fn assign(d: *node.Def, v: V) E!void {
     const sym = d.sym orelse return value.fail(value.str("TinyLisp: {s} needs a name", .{if (d.define) "define" else "set!"}));
-    if (d.define) {
-        if (sym.inlined and !sym.local and e.p != null) epoch +%= 1;
-        sym.local = sym.local or e.p != null;
-        set(e, sym.key, v);
-    } else replace(find(e, sym, &d.g) orelse return notDefined(sym.key), v);
+    set(root, sym.key, v);
 }
 
 /// set! of the variable at p. If its old value is compiled into compiled code, that code is out of date.
@@ -115,10 +93,11 @@ pub inline fn replace(p: *V, v: V) void {
     p.* = v;
 }
 
-/// Root keys are copied to permanent memory; scope keys are interned already.
+/// Define the global key in the root scope e, copying the key to permanent memory.
 pub fn set(e: *Env, key: Key, v: V) void {
-    const s = slot(e, key, false) orelse slot(e, if (e.p != null) key else value.mkstr(std.mem.span(key), true), true).?;
-    if (e.p == null and compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that compiled code inlines) or an inlined function is replaced
+    std.debug.assert(e.p == null);
+    const s = global(key, false) orelse global(value.mkstr(std.mem.span(key), true), true).?;
+    if (compiledInto(s.*)) epoch +%= 1; // a native (maybe a primitive that compiled code inlines) or an inlined function is replaced
     s.* = v;
 }
 
@@ -170,7 +149,7 @@ pub fn bind(f: *Lam, a: []const V) *Env {
 pub fn bindWith(f: *Lam, a: []const V, code: *bytecode.Bytecode) *Env {
     const ps = f.proto.params;
     const n = code.keys.len;
-    const cap = capFor(@max(f.proto.cap, n));
+    const cap = capFor(n);
     const pool = poolOf(cap);
     const e = if (pool != null and env_pools[pool.?] != null) blk: {
         const e = env_pools[pool.?].?;

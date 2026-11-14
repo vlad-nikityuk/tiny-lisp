@@ -56,13 +56,13 @@ Interpreter start is 0.021 s for Python and 0.003 s for tinylisp, and is include
 | nqueens | 0.397 s | 0.421 s | 1.06x |
 | fannkuch | 0.408 s | 0.467 s | 1.14x |
 
-Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before the second tier below).
+Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before the bytecode below).
 
 ## What the numbers say
 
-- **The evaluator has two tiers.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
-  parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); the tree evaluator in `src/lang/` still runs everything else and defines the
-  semantics. Macros are expanded eagerly for a whole top-level form before it runs; the bytecode is compiled lazily at the first call (from the expanded code), and sees primitive rebinding only on subsequent calls,
+- **Everything runs as bytecode.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
+  parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); a top-level form is compiled the same way, as a function without
+  parameters whose names are globals. (There used to be a tree evaluator for top-level code and the functions the compiler rejected; it is gone.) Macros are expanded eagerly for a whole top-level form before it runs; the bytecode is compiled lazily at the first call (from the expanded code), and sees primitive rebinding only on subsequent calls,
   as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
   and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.
 - **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,
@@ -71,5 +71,5 @@ Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before
 - **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, measured then at about 2 ns each (240M of them), and about
   7M calls that are not inlined (a call builds a scope and a frame, measured then at about 25 ns).
 - **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
-  the place of a variable in the tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
+  the place of a variable in the old tree evaluator (no gain), three-operand forms of `+`, running calls between compiled functions
   without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.

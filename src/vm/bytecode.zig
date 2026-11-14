@@ -83,9 +83,8 @@ pub fn secondIsConst(comptime op: Opcode) bool {
 /// A call of a primitive that became an instruction (the ordinary call it falls back to is made through the name, `slow` in exec.zig).
 pub const PrimCall = struct { op: primitives.Op, sym: *node.Sym, head: V };
 
-/// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b, and the
-/// `scope.shape` that was valid for in c.
-pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0, c: u32 = 0 };
+/// One instruction. a, b: its operands (see Opcode). An outer lookup also notes where it found the name in b.
+pub const Ins = struct { op: Opcode, a: u16 = 0, b: u32 = 0 };
 /// The compiled body of a function, or of a top-level form (a function without parameters, run in the root scope).
 /// Instructions refer to the tables by index.
 pub const Bytecode = struct {

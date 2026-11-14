@@ -848,7 +848,7 @@
 (defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
 (defn boom (x) (begin (define y (+ x 1)) (error "boom") y))
 (defn uses-minus (a b) (- a b))
-(deftest "tier 2: compiled function bodies behave like the tree evaluator"
+(deftest "vm: compiled function bodies"
   (define c1 (counter-from 10))
   (define c2 (counter-from 100))
   (c1)
@@ -867,25 +867,25 @@
   (define later-name 5)
   (define f (lambda () later-name))
   (list 100 (f)))
-(defmacro tier-mm () 1)
-(defn use-tier-mm () (tier-mm))
-(defn rest-tier (a & more) (list a more))
+(defmacro vm-mm () 1)
+(defn use-vm-mm () (vm-mm))
+(defn rest-vm (a & more) (list a more))
 (defn mut-param (a) (begin (set! a (+ a 1)) (define b (* a 2)) (list a b)))
-(define use-tier-first (use-tier-mm))
-(defmacro tier-mm () 2)
-(defn use-tier-mm-later () (tier-mm))
-(deftest "tier 2: names, macros and arguments"
+(define use-vm-first (use-vm-mm))
+(defmacro vm-mm () 2)
+(defn use-vm-mm-later () (vm-mm))
+(deftest "vm: names, macros and arguments"
   (assert (equal? (closure-before-define) (list 100 5)))
-  (assert (eq? use-tier-first 1))
-  (assert (eq? (use-tier-mm) 1)) ; compiled from the code expanded when it was defined
-  (assert (eq? (use-tier-mm-later) 2))
-  (assert (equal? (rest-tier 1 2 3) (list 1 (list 2 3))))
-  (assert (equal? (rest-tier 1) (list 1 (list))))
+  (assert (eq? use-vm-first 1))
+  (assert (eq? (use-vm-mm) 1)) ; compiled from the code expanded when it was defined
+  (assert (eq? (use-vm-mm-later) 2))
+  (assert (equal? (rest-vm 1 2 3) (list 1 (list 2 3))))
+  (assert (equal? (rest-vm 1) (list 1 (list))))
   (assert (equal? (mut-param 5) (list 6 12))))
 
 (defn store (l i x) (vset! l i x))
 (defn store-twice (l) (begin (vset! l 0 (vset! l 1 9)) l))
-(deftest "tier 2: vset! in a compiled function"
+(deftest "vm: vset! in a compiled function"
   (define l (list 1 2 3))
   (assert (eq? (store l 1 20) 20))
   (assert (equal? l (list 1 20 3)))
@@ -904,7 +904,7 @@
     (define fresh (if (eq? n 3) 1 2))
     (if (eq? n 0) seen (defines-reset (- n 1) (concat seen (list fresh))))))
 (defn fewer-args (a b) (if (eq? a 0) b (fewer-args (- a 1))))
-(deftest "tier 2: a function calling itself in tail position"
+(deftest "vm: a function calling itself in tail position"
   (assert (eq? (count-up 1000000 0) 1000000))
   (assert (equal? (for/list (f (collect-closures 3 (list))) (f)) (list 103 102 101)))
   (assert (equal? (defines-reset 3 (list)) (list 1 2 2)))
@@ -924,7 +924,7 @@
       (define total 0)
       (for (i (range n)) (set! total (+ total i)))
       total)))
-(deftest "tier 2: defines inside a branch"
+(deftest "vm: defines inside a branch"
   (assert (eq? (define-in-branch 1) 6))
   (assert (eq? (define-in-branch 0) 100))
   (assert (eq? (define-then-use-outside 1) 7))
@@ -945,7 +945,7 @@
   (list s (at seen 0)))
 (defn failing-loop (xs) (for/list (x xs) (if (eq? x 2) (error "bad") x)))
 (defn nested-return (n) (for/list (i (range n)) (if (eq? i 1) (for/list (j (range 2)) j) i)))
-(deftest "tier 2: loops run by the bytecode"
+(deftest "vm: loops run by the bytecode"
   (assert (equal? (squares 5) (list 0 1 4 9 16)))
   (assert (equal? (squares 0) (list)))
   (assert (equal? (table 3) (list (list 0 1 2) (list 10 11 12) (list 20 21 22))))
@@ -959,12 +959,12 @@
   (assert (equal? (squares 100000) (squares 100000))))
 
 (defn arith-ops (a b) (list (mod a b) (/ a b) (not a) (not (< a b)) (- a b) (* a b)))
-(deftest "tier 2: mod, / and not in a compiled function"
+(deftest "vm: mod, / and not in a compiled function"
   (assert (equal? (arith-ops 7 2) (list 1 3.5 #f #t 5 14)))
   (assert (equal? (arith-ops -1 5) (list 4 -0.2 #f #f -6 -5)))
   (assert (equal? (arith-ops 0 3) (list 0 0 #t #f -3 0)))
   (assert (eq? (/ 1 0) (/ 1 0)))
-  (assert (eq? (len (arith-ops "x" 2)) 6))) ; text is not a number: the arithmetic gives nan, like the tree evaluator
+  (assert (eq? (len (arith-ops "x" 2)) 6))) ; text is not a number: the arithmetic gives nan
 
 (define inl-counter 100)
 (defn inl-read-counter () inl-counter)
@@ -978,7 +978,7 @@
 (defn inl-b (n acc) (inl-a (- n 1) (+ acc 1)))
 (define inl-first (inl-use 10))
 (defn inl-inc (x) (+ x 1000))
-(deftest "tier 2: small functions inlined into their callers"
+(deftest "vm: small functions inlined into their callers"
   (assert (equal? (inl-caller 7) (list 100 7 15 105)))
   (assert (eq? inl-counter 105))
   (assert (eq? inl-first 23))
@@ -1024,7 +1024,7 @@
 (defn count-each (n) (begin (define s 0) (for (i (range n)) (set! s (+ s i))) s))
 (defn count-with-range-arg (n) (for/list (i (range (+ n 1))) i))
 (defn count-shadowed (range) (for/list (i (range 3)) i))
-(deftest "tier 2: loops over (range n) count"
+(deftest "vm: loops over (range n) count"
   (assert (equal? (count-loop 3) (list 0 2 4)))
   (assert (equal? (count-loop 0) (list)))
   (assert (equal? (count-loop -2) (list)))
@@ -1038,7 +1038,7 @@
 (defn store-ll (l i) (vset! l i (+ i 100)))
 (defn mixed (l i) (list (+ (at l i) 1) (< (at l i) 3) (eq? (at l i) 2) (- (at l i) i) (* (at l i) 2)))
 (defn mixed-k (x) (list (+ x 1) (- x 1) (* x 2) (< x 2) (>= x 2) (eq? x 2) (at x 0)))
-(deftest "tier 2: operands taken from a local or a constant"
+(deftest "vm: operands taken from a local or a constant"
   (define l (list 1 2 3))
   (assert (eq? (store-ll l 1) 101))
   (assert (equal? l (list 1 101 3)))
@@ -1061,7 +1061,7 @@
 (defn primitive-binary (x y xs)
   (list (+ x y) (- x y) (* x y) (/ x y) (mod x y)
         (> x y) (< x y) (>= x y) (<= x y) (eq? x y) (at xs y) (not x)))
-(deftest "tier 2: every primitive opcode and unary coercion fallback"
+(deftest "vm: every primitive opcode and unary coercion fallback"
   (assert (equal? (primitive-math 0 1) '(0 0 0 1 0 1)))
   (assert (equal? (primitive-math #f #t) '(0 0 0 1 0 1)))
   (assert (equal? (primitive-binary 6 2 '(10 20 30))
@@ -1081,5 +1081,41 @@
   (assert (eq? file-value 42))
   (write-file path "(")
   (assert (eq? (try (lambda () (load path)) (lambda (e) "caught")) "caught")))
+
+;; the compiler has no limit but the nesting of the code: any number of operands, any form, at top level too
+(defn operands (n) (for/list (i (range n)) 1))
+(eval (list 'defn 'many-and '(x) (concat (list '&&) (operands 200) '(x))))
+(eval (list 'defn 'many-or '(x) (concat (list '||) (map (operands 200) (lambda (o) 0)) '(x))))
+(defn nameless-define (flag) (if flag (define) 7))
+(defn nameless-set (flag) (if flag (set!) 7))
+(defn empty-form (flag) (if flag () 7))
+(deftest "vm: no function is left out"
+  (assert (eq? 5 (many-and 5)))
+  (assert (eq? 0 (many-or 0)))
+  (assert (eq? 5 (many-or 5)))
+  (assert (eq? #f (many-and #f)))
+  (assert (eq? 7 (nameless-define #f)))
+  (assert (eq? 7 (nameless-set #f)))
+  (assert (eq? 7 (empty-form #f)))
+  (assert (eq? "TinyLisp: define needs a name" (message-of (lambda () (nameless-define #t)))))
+  (assert (eq? "TinyLisp: set! needs a name" (message-of (lambda () (nameless-set #t)))))
+  (assert (eq? "TinyLisp: cannot evaluate an empty list" (message-of (lambda () (empty-form #t))))))
+
+(begin (define top-a 1) (define top-b (+ top-a 1)) (if #t (define top-c (+ top-b 1)) 0))
+(define top-total 0)
+(for (i (range 100)) (set! top-total (+ top-total i)))
+(define top-list (for/list (i (range 5)) (* i i)))
+(deftest "vm: top-level code runs on the bytecode, defines are global"
+  (assert (equal? (list 1 2 3) (list top-a top-b top-c)))
+  (assert (eq? 4950 top-total))
+  (assert (equal? '(0 1 4 9 16) top-list))
+  (assert (eq? 3 (eval '(begin (define top-d 3) top-d))))
+  (assert (eq? 3 top-d)))
+
+(defn nested-code (n) (reduce (range n) (lambda (a i) (list '+ 1 a)) 0))
+(deftest "compile: code nested too deeply is refused with an error, deep data is not"
+  (assert (eq? 4000 (eval (nested-code 4000))))
+  (assert (eq? "TinyLisp: expression is nested too deeply to compile (limit 5000)" (message-of (lambda () (eval (nested-code 6000))))))
+  (assert (eq? 3 (len (nested-code 100000)))))
 
 (run-tests)

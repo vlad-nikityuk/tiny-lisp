@@ -26,7 +26,7 @@ inline fn arith(comptime op: Op, st: [*]V, sp: *usize) bool {
 /// (hops << 16 | index in b); the scopes it passed must have a fixed layout (a function's scope), so later lookups go straight there
 /// and only check the key.
 inline fn outerSlot(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
-    if (ins.b != 0 and ins.c == scope.shape) {
+    if (ins.b != 0) {
         var s = e;
         var hops = ins.b >> 16;
         while (hops > 0) : (hops -= 1) s = s.p.?;
@@ -45,14 +45,13 @@ noinline fn outerLook(e: *scope.Env, ins: *Ins, sym: *node.Sym, g: *?*V) ?*V {
         while (i > 0) : (i -= 1) if (s.vars[i - 1].k == sym.key) {
             if (fixed and hops < 0x7fff and i - 1 < 0x10000) {
                 ins.b = (hops << 16) | @as(u32, @intCast(i - 1));
-                ins.c = scope.shape;
             }
             return &s.vars[i - 1].v;
         };
         fixed = fixed and s.proto != null and s.proto.?.code != null;
         hops += 1;
     }
-    if (g.* == null) g.* = scope.slotOf(scope.root, sym.key);
+    if (g.* == null) g.* = scope.slotOf(sym.key);
     return g.*;
 }
 
@@ -156,7 +155,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
             continue :sw ip[0].op;
         },
         .assign => { // define of a global (top-level code), or define/set! without a name
-            try scope.assign(code.defs[ip[0].a], e, st[sp - 1]);
+            try scope.assign(code.defs[ip[0].a], st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;
         },
@@ -332,7 +331,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .global => { // a name of an inlined function's body: only the global scope is looked at
             const r = code.refs[ip[0].a];
-            if (r.g == null) r.g = scope.slotOf(scope.root, r.sym.key);
+            if (r.g == null) r.g = scope.slotOf(r.sym.key);
             st[sp] = if (r.g) |p| p.* else V.nil;
             sp += 1;
             ip += 1;
@@ -340,7 +339,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
         },
         .setglobal => {
             const d = code.defs[ip[0].a];
-            if (d.g == null) d.g = scope.slotOf(scope.root, d.sym.?.key);
+            if (d.g == null) d.g = scope.slotOf(d.sym.?.key);
             scope.replace(d.g orelse return scope.notDefined(d.sym.?.key), st[sp - 1]);
             ip += 1;
             continue :sw ip[0].op;

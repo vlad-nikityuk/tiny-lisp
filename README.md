@@ -13,11 +13,11 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 ```
 
 - It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
-- It is small: the parser, compiler and evaluator are about 400 lines (`src/lang/`) and the whole interpreter, with its bytecode tier and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
+- It is small: the parser, expander, compiler and machine loop are about 400 lines (`src/lang/`) and the whole interpreter, with its bytecode VM and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
 - It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
 - It has macros: `defmacro` defines one, and every form is expanded before it runs.
 - It has tail-call optimization and is stack safe: recursion is limited only by memory.
-- It has a small mark-sweep GC that runs at a few safe points of the evaluator. Reference cycles are collected.
+- It has a small mark-sweep GC that runs at a few safe points of the machine. Reference cycles are collected.
 
 ## Stack safety
 
@@ -167,13 +167,13 @@ Run from the repository root.
 |---|---|
 | `src/repl.zig` | the entry point: command line, REPL, setting up the root scope |
 | `src/lang/parser.zig` | parser: text to AST |
-| `src/lang/expand.zig`, `src/lang/compile.zig`, `src/lang/eval.zig` | the tree tier, the reference semantics: macro expansion of a top-level form (and `defmacro`), the expanded AST to nodes, and the evaluator that runs them |
-| `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (compiled code as data), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
-| `src/vm/` | the second tier, the fast path: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body to bytecode), `exec.zig` (the executor) |
+| `src/lang/expand.zig`, `src/lang/compile.zig`, `src/lang/eval.zig` | the front end and the machine loop: macro expansion of a top-level form (and `defmacro`), the expanded AST to typed nodes, and the loop that runs the bytecode, applies functions and returns into frames |
+| `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (the typed AST), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
+| `src/vm/` | the one execution engine: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body or top-level form to bytecode), `exec.zig` (the executor) |
 | `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
 | `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
 
-The evaluator keeps `if` waiting for its condition, `begin` mid-sequence, arguments being evaluated and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Each node of the expanded code is compiled once, the first time it is evaluated: names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
+Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps the code waiting for a call to return and a `map` or `try` waiting for its callback as frames on a heap stack, and tail calls replace the current state. The parser, printer and freeing are iterative too. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Each node of the expanded code is compiled once, the first time it is evaluated: names are resolved to interned symbols with cached global slots, and later visits only dispatch on the node. Scopes of finished calls are recycled unless a closure captured them, and values are 8 bytes (NaN-boxed). A function's body is compiled to a stack bytecode on its first call when the second tier can handle it; the tree evaluator runs everything else and defines the semantics.
 
 ## History
 

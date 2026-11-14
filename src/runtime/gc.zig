@@ -1,7 +1,7 @@
 // Mark-sweep memory manager.
 //
 // Every managed object is malloc'd with a header and linked into one list. Nothing is counted and nothing is swept per
-// call: the evaluator and VM collect at rooted transitions and backedges, publishing the VM stack length first.
+// call: the machine loop and the VM collect at rooted transitions and backedges, publishing the VM stack length first.
 // Every live managed value must be reachable from roots, even if also held in a Zig local. Marking uses a
 // worklist, never recursion; sweeping frees what stayed unmarked. Cycles (a closure stored in the scope it captures) are
 // collected like anything else. Permanent objects (parser symbols and literals, the root scope) are never collected.
@@ -193,10 +193,6 @@ pub fn collect() void {
             continue;
         }
         if (prev) |q| setNext(q, next) else all = next;
-        if (kindOf(h) == .env) {
-            const e: *scope.Env = @ptrCast(@alignCast(body(h)));
-            if (e.vars.ptr != after(scope.Var, e)) std.heap.c_allocator.free(e.vars.ptr[0..e.cap]);
-        }
         std.c.free(h);
     }
     limit = @max(2 << 20, live / 2); // the heap grows to about 1.5x its live size between collections
