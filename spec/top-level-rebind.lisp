@@ -1,9 +1,23 @@
 (define save-each each)
 (define +save +)
+(define map-save map)
 (define range-save range)
 
 (defmacro rebind-plus-99 ()
   '(define + (lambda (a b) 99)))
+
+(defn rebind-plus-99! ()
+  (set! + (lambda (a b) 99)))
+
+(defn function-body-loop-rebind-demo ()
+  (define a (for/list (i (list 1)) (+ i 0)))
+  (rebind-plus-99!)
+  (define b (for/list (i (list 1)) (+ i 0)))
+  (define c (+ 0 1))
+  (list a b c))
+
+(defn function-body-loop-in-list-operand-demo ()
+  (for/list (i (begin (rebind-plus-99!) (list 1 2))) (+ i 0)))
 
 (deftest "vm: top-level loop body uses a rebound + from define in the same form"
   (assert (eq? #t (eval '(begin (define + (lambda (a b) 99)) (equal? (list 99 99) (for/list (i (list 1 2)) (+ i 0)))))))
@@ -69,6 +83,18 @@
 
 (deftest "vm: top-level loop fallback evaluates a range count once"
   (assert (eq? 1 (eval '(begin (define n 0) (set! each (lambda (l f) nil)) (each (begin (set! n (+ n 1)) (range 3)) (lambda (i) i)) n)))))
+
+(deftest "vm: function-body loop keeps + inlined in the body after set! in the same call"
+  (set! + +save)
+  (set! map map-save)
+  (assert (equal? '((1) (1) 1) (function-body-loop-rebind-demo)))
+  (set! + +save))
+
+(deftest "vm: function-body loop keeps + inlined in the body after set! in the list operand"
+  (set! + +save)
+  (set! map map-save)
+  (assert (equal? '(1 2) (function-body-loop-in-list-operand-demo)))
+  (set! + +save))
 
 (run-tests)
 

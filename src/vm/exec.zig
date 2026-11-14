@@ -412,7 +412,7 @@ pub noinline fn exec(m: *machine.Machine, code0: *Bytecode, pc0: usize) E!machin
                 vs.items.len = sp;
                 gc.collect();
             }
-            const body = compiler.ready(code.protos[ip[0].a]);
+            const body = code.bodies[ip[0].a] orelse compiler.ready(code.protos[ip[0].a]);
             const item = if (counted) V.num(idx) else items[@intFromFloat(idx)];
             const last = k.iter_env;
             if (last != null and !last.?.captured and last.?.vars.len == body.keys.len) { // nothing holds the scope of the last iteration: use it again
