@@ -2,12 +2,9 @@
 ;; use (ffi-cstr "name") for dlsym so the Lisp function name can differ from the C symbol.
 ;; In this dialect use nil for an empty list value; bare () in argument position is invalid.
 
-;; Top-level FFI wrappers must not be VM-inlined into callers (genInline); a one-value closure keeps env off root.
-(defn ffi-no-inline (fn)
-  ((lambda (_) fn) 0))
-
 (defn cadr (x) (car (cdr x)))
 (defn caddr (x) (car (cdr (cdr x))))
+(defn cadddr (x) (car (cdr (cdr (cdr x)))))
 
 (defn ffi-sign-extend32 (x)
   (if (>= x 2147483648) (- x 4294967296) x))
@@ -36,8 +33,6 @@
       (if (eq? ret 'float) (ffi-marshal-out 'float (ffi-call-f64 ptr ints floats))
         (ffi-marshal-out ret (ffi-call-i64 ptr ints floats))))))
 
-(define *ffi-acc* nil)
-
 (defn ffi-free-temps (ts)
   (if (eq? ts nil) nil
     (begin (ffi-free (car ts)) (ffi-free-temps (cdr ts)))))
@@ -55,9 +50,96 @@
 
 (defn ffi-build-call-impl (ptr ret tagged)
   (begin
-    (set! *ffi-acc* (ffi-build-call-accum (if (eq? tagged nil) nil tagged) nil nil nil))
-    (define r (ffi-call-typed ptr ret (car *ffi-acc*) (car (cdr *ffi-acc*))))
-    (ffi-free-temps (car (cdr (cdr *ffi-acc*))))
+    (define acc (ffi-build-call-accum (if (eq? tagged nil) nil tagged) nil nil nil))
+    (define r (ffi-call-typed ptr ret (car acc) (car (cdr acc))))
+    (ffi-free-temps (car (cdr (cdr acc))))
     r))
 
-(define ffi-build-call (ffi-no-inline ffi-build-call-impl))
+(define ffi-build-call ffi-build-call-impl)
+
+;; define-library DSL (single-level expansion: library-expand builds lists with cons, no nested quasiquote).
+;; (define-library libc self (function strlen ((s string)) int) ...)
+;; (define-library uv ("libuv.dylib" "libuv.so.1") (function uv_run ((loop pointer) (mode int)) int) ...)
+
+(defn ffi-try-dlopen (paths)
+  (if (eq? paths nil) nil
+    (try (lambda () (ffi-dlopen (car paths)))
+         (lambda (e) (ffi-try-dlopen (cdr paths))))))
+
+(defn ffi-open-library (paths)
+  (if (eq? paths 'self) (ffi-dlopen-self)
+    (if (list? paths) (ffi-try-dlopen paths)
+      (if (eq? paths nil) nil (ffi-dlopen paths)))))
+
+(defn ffi-type-known? (ty)
+  (if (list? ty) (eq? (car ty) 'callback)
+    (if (eq? ty 'int) #t
+      (if (eq? ty 'uint) #t
+        (if (eq? ty 'int32) #t
+          (if (eq? ty 'uint32) #t
+            (if (eq? ty 'long) #t
+              (if (eq? ty 'ulong) #t
+                (if (eq? ty 'size_t) #t
+                  (if (eq? ty 'pointer) #t
+                    (if (eq? ty 'string) #t
+                      (if (eq? ty 'double) #t
+                        (if (eq? ty 'float) #t
+                          (if (eq? ty 'bool) #t
+                            (eq? ty 'void)))))))))))))))
+
+(defn ffi-type-marshal (ty)
+  (if (list? ty) (if (eq? (car ty) 'callback) 'callback (error "TinyLisp: unknown FFI type in DSL"))
+    (if (eq? ty 'uint) 'uint32 ty)))
+
+(defn ffi-type-ret (ty)
+  (ffi-type-marshal ty))
+
+(defn ffi-check-type (ty ctx)
+  (if (not (ffi-type-known? ty)) (error (concat "TinyLisp: unknown FFI type " (list ctx)))))
+
+(defn ffi-param-names (params)
+  (if (eq? params nil) (list)
+    (cons (car (car params)) (ffi-param-names (cdr params)))))
+
+(defn ffi-tag-ast (param)
+  (list "list" (car param) (list "quote" (ffi-type-marshal (cadr param)))))
+
+(defn ffi-tags-ast (params)
+  (if (eq? params nil) nil
+    (if (eq? (cdr params) nil)
+      (list "list" (ffi-tag-ast (car params)))
+      (list "concat" (list "list" (ffi-tag-ast (car params))) (ffi-tags-ast (cdr params))))))
+
+(defn ffi-expand-function (lib-var sym lisp-name ret params)
+  (begin
+    (ffi-check-type ret (concat lisp-name " return type"))
+    (for (p params)
+      (ffi-check-type (cadr p) (car p)))
+    (list "define" lisp-name
+          (list "lambda" (ffi-param-names params)
+                (list "ffi-build-call"
+                      (list "ffi-dlsym" lib-var (list "quote" sym))
+                      (list "quote" (ffi-type-ret ret))
+                      (ffi-tags-ast params))))))
+
+(defn ffi-expand-constant (name val)
+  (list "define" name val))
+
+(defn ffi-expand-decl (lib-var decl)
+  (if (not (list? decl)) (error "TinyLisp: library declaration must be a list")
+    (if (eq? (car decl) "function")
+      (ffi-expand-function lib-var (cadr decl) (cadr decl) (cadddr decl) (caddr decl))
+      (if (eq? (car decl) "constant")
+        (ffi-expand-constant (cadr decl) (caddr decl))
+        (error (concat "TinyLisp: unknown library form " (list (car decl))))))))
+
+(defn ffi-expand-library (lib-name paths decls)
+  (begin
+    (define lib-var (+ (if (list? lib-name) (car lib-name) lib-name) "-lib"))
+    (define forms (list (list "define" lib-var (list "ffi-open-library" (list "quote" paths)))))
+    (for (d decls)
+      (set! forms (concat forms (list (ffi-expand-decl lib-var d)))))
+    (cons "begin" forms)))
+
+(defmacro define-library (lib-name paths & decls)
+  (ffi-expand-library lib-name paths decls))

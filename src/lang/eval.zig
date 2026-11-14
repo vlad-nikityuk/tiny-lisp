@@ -59,7 +59,7 @@ fn run(m: *machine.Machine, go: machine.Go) value.E!V {
             switch (f.tag()) {
                 .lam => { // a tail call: only the new scope stays live
                     const l = f.asLam();
-                    const code = compiler.ready(l.proto); // (compiling a body does not run Lisp; the arguments are still taken after it)
+                    const code = try compiler.ready(l.proto); // (compiling a body does not run Lisp; the arguments are still taken after it)
                     if (ks.items.len == m.base or ks.items[ks.items.len - 1].e != m.e) scope.release(m.e); // no frame needs the old one
                     m.e = scope.bind(l, args);
                     vs.items.len = b;

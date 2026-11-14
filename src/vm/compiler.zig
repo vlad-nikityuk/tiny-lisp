@@ -27,6 +27,8 @@ const max_inline_depth = 24; // an inlined body: its nesting,
 const max_inline_nodes = 48; // its size,
 const max_inline_slots = 8; // and its parameters and defines
 const max_inline_sites = 8; // calls inlined into one function
+const max_function_slots = 256; // scope slots (parameters, defines, inlined sites); over this refuses inlining and build fails clearly
+const max_table_index = std.math.maxInt(u16);
 
 fn add(comptime T: type, list: *std.ArrayList(T), x: T) usize {
     list.append(value.gpa, x) catch gc.oom();
@@ -188,6 +190,22 @@ const Compiler = struct {
         return true;
     }
 
+    /// Calls ffi-build-call (marshaling runs Lisp and allocates; do not inline callers or callees of this).
+    fn callsBuildCall(n: *Node) bool {
+        return switch (n.code) {
+            .call => |k| blk: {
+                if (k[0].code == .ref and std.mem.eql(u8, std.mem.span(k[0].code.ref.sym.key), "ffi-build-call")) break :blk true;
+                for (k) |x| if (callsBuildCall(x)) break :blk true;
+                break :blk false;
+            },
+            .@"if", .begin, .@"&&", .@"||" => |kids| for (kids) |x| {
+                if (callsBuildCall(x)) return true;
+            } else false,
+            .def => |d| callsBuildCall(d.val),
+            else => false,
+        };
+    }
+
     /// Does evaluating this change nothing and call nothing (constants, names, primitives on those)?
     fn plain(n: *Node, depth: usize) bool {
         if (depth > max_plain_depth) return false;
@@ -235,6 +253,8 @@ const Compiler = struct {
         sub.function(l.proto);
         var count: usize = 0;
         if (!inlinable(l.proto.body, 0, &count) or sub.keys.items.len > max_inline_slots) return false;
+        if (c.keys.items.len + sub.keys.items.len > max_function_slots) return false;
+        if (callsBuildCall(l.proto.body)) return false;
         for (k[1..]) |x| c.gen(x, false);
         const base = c.keys.items.len;
         for (sub.keys.items) |_| {
@@ -301,7 +321,7 @@ const Compiler = struct {
             c.ins.items[over].b = @intCast(c.ins.items.len);
             return true;
         }
-        const body = ready(lp);
+        const body = ready(lp) catch return false;
         _ = add(?*Bytecode, &c.bodies, body);
         c.gen(source, false);
         _ = c.emit(if (is_map) .map else .each, at, counted);
@@ -375,8 +395,18 @@ const Compiler = struct {
     }
 };
 
+fn checkLimits(c: *const Compiler) value.E!void {
+    if (c.keys.items.len > max_function_slots)
+        return value.fail(value.str("TinyLisp: function has too many local slots (limit {d})", .{max_function_slots}));
+    for (c.ins.items) |i| {
+        if (i.a > max_table_index)
+            return value.fail(value.str("TinyLisp: compiled function is too large for the bytecode format (limit {d})", .{max_table_index}));
+    }
+}
+
 /// The bytecode with the tables of c.
-fn finish(c: *const Compiler) *Bytecode {
+fn finish(c: *const Compiler) value.E!*Bytecode {
+    try checkLimits(c);
     const code = &node.make(Bytecode, 1)[0];
     code.* = .{
         .ins = @constCast(dup(Ins, c.ins.items)),
@@ -396,7 +426,7 @@ fn finish(c: *const Compiler) *Bytecode {
 }
 
 /// The body of p compiled.
-fn build(p: *node.Proto) *Bytecode {
+fn build(p: *node.Proto) value.E!*Bytecode {
     var c: Compiler = .{ .self = p };
     defer c.deinit();
     var names: Scan = .{};
@@ -405,7 +435,7 @@ fn build(p: *node.Proto) *Bytecode {
     c.keys.appendSlice(value.gpa, names.keys.items) catch gc.oom();
     for (c.keys.items, 0..) |_, i| _ = add(bool, &c.defined, i < p.params.len); // parameters are bound; the defines are not yet
     c.gen(p.body, true);
-    const code = finish(&c);
+    const code = try finish(&c);
     p.code = code; // (the epoch may have changed while the body was scanned and compiled: the stamp is the one at the end)
     return code;
 }
@@ -438,7 +468,7 @@ fn dup(comptime T: type, xs: []const T) []const T {
 }
 
 /// The bytecode of p, compiled on first use and again after a rebound primitive made it out of date.
-pub fn ready(p: *node.Proto) *Bytecode {
+pub fn ready(p: *node.Proto) value.E!*Bytecode {
     if (p.code) |c| if (c.stamp == scope.epoch) return c;
     return build(p);
 }
