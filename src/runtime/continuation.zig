@@ -128,7 +128,7 @@ pub fn contExtraBytes(f: *Fn) usize {
     };
     if (step != invokeCont) return 0;
     const s = snap(f);
-    return 2 * @sizeOf(usize) + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
+    return hdr + s.nframes * @sizeOf(Frame) + s.nvalues * @sizeOf(V);
 }
 
 pub fn install(e: *scope.Env) void {

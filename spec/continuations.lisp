@@ -32,6 +32,10 @@
   (define go (lambda (n k) (if (eq? n 0) (k 0) (go (- n 1) k))))
   (assert (equal? (call/cc (lambda (k) (go 200 k))) 0)))
 
+(deftest "call/cc: deep non-tail capture"
+  (define go (lambda (n k) (if (eq? n 0) (k 7) (+ 1 (go (- n 1) k)))))
+  (assert (equal? (call/cc (lambda (k) (go 100000 k))) 7)))
+
 (deftest "call/cc: non-function"
   (assert (equal? "TinyLisp: call-with-current-continuation needs a function"
                   (try (lambda () (call/cc 1)) (lambda (e) e)))))

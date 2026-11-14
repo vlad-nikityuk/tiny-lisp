@@ -172,7 +172,7 @@ Run from the repository root.
 | `src/runtime/` | what all of the above share: `value.zig` (values, printer), `node.zig` (the typed AST), `scope.zig` (scopes, globals, recycling), `machine.zig` (the stacks, natives that call back into Lisp), `continuation.zig` (`call/cc`), `primitives.zig` (`+ - car cons ...`), `gc.zig` (mark-sweep) |
 | `src/vm/` | the one execution engine: `bytecode.zig` (the format), `scan.zig` and `compiler.zig` (function body or top-level form to bytecode), `exec.zig` (the executor) |
 | `src/lib/natives.zig`, `src/lib/source.zig`, `src/lib/stdlib.lisp` | the standard library: native part, file loading, Lisp part |
-| `spec/specs.lisp`, `spec/repl.py` | Lisp test suite, REPL tests |
+| `spec/specs.lisp`, `spec/continuations.lisp`, `spec/repl.py` | Lisp test suite, continuation tests, REPL tests |
 
 Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps bytecode resuming after a call and a `map` or `try` waiting for its callback as frames on a heap stack; tail calls replace the current state. The parser, printer and freeing are iterative. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Names become interned symbols with cached slots when the typed AST is built; scopes of finished calls are recycled unless a closure captured them; values are 8 bytes (NaN-boxed).
 
