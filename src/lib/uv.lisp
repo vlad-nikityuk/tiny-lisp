@@ -1,56 +1,46 @@
-;; libuv bindings (hand marshaled). Load after src/lib/ffi.lisp.
+;; libuv binding table (define-library). Load after src/lib/ffi.lisp.
 (load "src/lib/ffi.lisp")
 
-(define uv-lib
-  (try (lambda () (ffi-dlopen "/opt/homebrew/lib/libuv.dylib"))
-       (lambda (e) (try (lambda () (ffi-dlopen "libuv.so.1")) (lambda (e2) nil)))))
+(define-library uv ("/opt/homebrew/lib/libuv.dylib" "libuv.dylib" "libuv.so.1")
+  (constant UV_RUN_DEFAULT 0)
+  (constant UV_TCP 6)
+  (constant UV_CONNECT 3)
+  (constant UV_WRITE 2)
+  (function uv_default_loop () pointer)
+  (function uv_loop_size () int)
+  (function uv_version () int)
+  (function uv_run ((loop pointer) (mode int)) int)
+  (function uv_handle_size ((klass int)) int)
+  (function uv_req_size ((klass int)) int)
+  (function uv_strerror ((err int)) string)
+  (function uv_tcp_init ((loop pointer) (tcp pointer)) int)
+  (function uv_tcp_bind ((tcp pointer) (addr pointer) (flags uint)) int)
+  (function uv_listen ((handle pointer) (backlog int) (cb pointer)) int)
+  (function uv_accept ((server pointer) (client pointer)) int)
+  (function uv_read_start ((stream pointer) (alloc pointer) (read pointer)) int)
+  (function uv_write ((req pointer) (stream pointer) (bufs pointer) (nbuf uint) (cb pointer)) int)
+  (function uv_tcp_connect ((req pointer) (tcp pointer) (addr pointer) (cb pointer)) int)
+  (function uv_close ((handle pointer) (cb pointer)) void)
+  (function uv_ip4_addr ((ip string) (port int) (addr pointer)) int))
 
-(define UV_TCP 6)
-(define UV_CONNECT 3)
-(define UV_WRITE 2)
-(define UV_RUN_DEFAULT 0)
+;; Sizes from the linked libuv (not hardcoded); zero when the library did not open.
+(define UV_LOOP_BYTES (if uv-lib (uv_loop_size) 0))
+(define UV_TCP_BYTES (if uv-lib (uv_handle_size UV_TCP) 0))
+(define UV_CONNECT_BYTES (if uv-lib (uv_req_size UV_CONNECT) 0))
+(define UV_WRITE_BYTES (if uv-lib (uv_req_size UV_WRITE) 0))
 
-(define uv-sym (lambda (n) (ffi-dlsym uv-lib n)))
+(defn uv-buf-fill (buf-ptr base len)
+  (begin (ffi-poke buf-ptr 8 base) (ffi-poke (+ buf-ptr 8) 8 len)))
 
-(define uv_default_loop (ffi-no-inline (lambda () (ffi-build-call (uv-sym "uv_default_loop") 'pointer nil))))
-(define uv_run (ffi-no-inline (lambda (loop mode) (ffi-build-call (uv-sym "uv_run") 'int (list (list loop 'pointer) (list mode 'int))))))
-(define uv_handle_size (ffi-no-inline (lambda (k) (ffi-build-call (uv-sym "uv_handle_size") 'size_t (list (list k 'int))))))
-(define uv_req_size (ffi-no-inline (lambda (k) (ffi-build-call (uv-sym "uv_req_size") 'size_t (list (list k 'int))))))
-(define uv_tcp_init (ffi-no-inline (lambda (loop tcp) (ffi-build-call (uv-sym "uv_tcp_init") 'int (list (list loop 'pointer) (list tcp 'pointer))))))
-(define uv_tcp_bind (ffi-no-inline (lambda (tcp addr flags) (ffi-build-call (uv-sym "uv_tcp_bind") 'int (list (list tcp 'pointer) (list addr 'pointer) (list flags 'uint32))))))
-(define uv_listen (ffi-no-inline (lambda (s backlog cb) (ffi-build-call (uv-sym "uv_listen") 'int (list (list s 'pointer) (list backlog 'int) (list cb 'pointer))))))
-(define uv_accept (ffi-no-inline (lambda (server client) (ffi-build-call (uv-sym "uv_accept") 'int (list (list server 'pointer) (list client 'pointer))))))
-(define uv_read_start (ffi-no-inline (lambda (s alloc read) (ffi-build-call (uv-sym "uv_read_start") 'int (list (list s 'pointer) (list alloc 'pointer) (list read 'pointer))))))
-(define uv_write (ffi-no-inline (lambda (req stream bufs n cb) (ffi-build-call (uv-sym "uv_write") 'int (list (list req 'pointer) (list stream 'pointer) (list bufs 'pointer) (list n 'uint32) (list cb 'pointer))))))
-(define uv_tcp_connect (ffi-no-inline (lambda (req tcp addr cb) (ffi-build-call (uv-sym "uv_tcp_connect") 'int (list (list req 'pointer) (list tcp 'pointer) (list addr 'pointer) (list cb 'pointer))))))
-(define uv_close (ffi-no-inline (lambda (h cb) (ffi-build-call (uv-sym "uv_close") 'void (list (list h 'pointer) (list cb 'pointer))))))
-(define uv_ip4_addr (ffi-no-inline (lambda (ip port addr) (ffi-build-call (uv-sym "uv_ip4_addr") 'int (list (list ip 'string) (list port 'int) (list addr 'pointer))))))
+(defn uv-sockaddr (ip port)
+  (begin
+    (define p (ffi-malloc 16))
+    (uv_ip4_addr ip port p)
+    p))
 
-;; Handle/request sizes for libuv 1.x on macOS arm64 (check with uv_*_size if your libuv differs).
-(define UV_TCP_BYTES 120)
-(define UV_CONNECT_BYTES 192)
-(define UV_WRITE_BYTES 96)
+(defn uv-make-tcp (loop)
+  (begin (define p (ffi-malloc UV_TCP_BYTES)) (uv_tcp_init loop p) p))
 
-(define uv-buf-fill
-  (ffi-no-inline
-    (lambda (buf-ptr base len)
-      (begin (ffi-poke buf-ptr 8 base) (ffi-poke (+ buf-ptr 8) 8 len)))))
+(defn uv-make-connect-req () (ffi-malloc UV_CONNECT_BYTES))
 
-(define uv-sockaddr
-  (ffi-no-inline
-    (lambda (ip port)
-      (begin
-        (define p (ffi-malloc 16))
-        (uv_ip4_addr ip port p)
-        p))))
-
-(define uv-make-tcp
-  (ffi-no-inline
-    (lambda (loop)
-      (begin (define p (ffi-malloc UV_TCP_BYTES)) (uv_tcp_init loop p) p))))
-
-(define uv-make-connect-req
-  (ffi-no-inline (lambda () (ffi-malloc UV_CONNECT_BYTES))))
-
-(define uv-make-write-req
-  (ffi-no-inline (lambda () (ffi-malloc UV_WRITE_BYTES))))
+(defn uv-make-write-req () (ffi-malloc UV_WRITE_BYTES))

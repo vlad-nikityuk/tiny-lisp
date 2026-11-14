@@ -14,10 +14,8 @@
   (if *have-uv*
     (begin
       (load "src/lib/uv.lisp")
-      (assert (> (ffi-build-call (uv-sym "uv_version") 'int nil) 0))
+      (assert (> (uv_version) 0))
       (assert (> (uv_handle_size UV_TCP) 0)))
     (assert #t)))
-
-;; Full HTTP loopback: load examples/uv-loopback.lisp and run (uv-loopback-run) by hand (many callbacks).
 
 (run-tests)

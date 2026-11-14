@@ -8,7 +8,7 @@
 (define *server* (uv-make-tcp *loop*))
 (define *client* (uv-make-tcp *loop*))
 (define *addr* (uv-sockaddr "127.0.0.1" PORT))
-(define *done* #f)
+(define done #f)
 
 (define REQ (ffi-cstr "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"))
 (define REQ-LEN 52)
@@ -44,7 +44,7 @@
 
 (defn on-client-read (s nread buf)
   (if (>= nread 12)
-    (begin (set! *done* #t) (uv_close s noop-cb) (uv_close *server* noop-cb))))
+    (begin (set! done #t) (uv_close s noop-cb) (uv_close *server* noop-cb))))
 
 (define client-read-cb (ffi-callback-ptr (ffi-register-callback on-client-read)))
 
@@ -67,4 +67,4 @@
     (assert (eq? 0 (uv_listen *server* 4 accept-cb)))
     (assert (eq? 0 (uv_tcp_connect (uv-make-connect-req) *client* *addr* connect-cb)))
     (uv_run *loop* UV_RUN_DEFAULT)
-    (assert *done*)))
+    (assert done)))
