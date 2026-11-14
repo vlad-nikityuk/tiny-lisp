@@ -18,6 +18,7 @@ define run-tests
 	python3 spec/tools.py "$(1)"
 	python3 spec/repl.py "$(1)"
 	"$(1)" -f spec/specs.lisp
+	"$(1)" -f spec/top-level-rebind.lisp
 	"$(1)" -f spec/body-scope.lisp
 	"$(1)" -f examples/microgpt.lisp | cmp -s - spec/microgpt.expected
 endef
