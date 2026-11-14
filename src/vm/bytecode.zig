@@ -40,8 +40,9 @@ pub const Opcode = enum(u8) {
     add_sk, add_sl, sub_sk, sub_sl, mul_sk, mul_sl, lt_sk, lt_sl, gt_sk, gt_sl, le_sk, le_sl, ge_sk, ge_sl, eq_sk, eq_sl, at_sk, at_sl,
     vset,       // (vset! list index value) on the three top values; consts[a]: the native, which does all but an in-range store
     vset_ll,    // the same with the list in slot b >> 16 and the index in slot b & 0xffff: top stays, as the value
-    // loops: (each list (lambda (x) ...)) and (map ...); protos[a] is the lambda, bodies[a] its bytecode.
-    // b != 0: the list is (range n) and only n is on the stack, the loop counts.
+    // loops: (each list (lambda (x) ...)) and (map ...); protos[a] is the lambda, bodies[a] its bytecode when known at compile time.
+    // each/map in a top-level thunk: bit 31 is the guard (check the names before the list is evaluated); bit 0 is counted (range n).
+    // eachnext/mapnext: b != 0 means the list was (range n) and only n is on the stack.
     each, map,         // the list is on top: push the rest of the loop's state
     eachnext, mapnext, // run the body with the next item (it comes back here with `ret`), or end with the loop's value
 };
