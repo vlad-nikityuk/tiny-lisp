@@ -23,8 +23,10 @@ define run-tests
 	"$(1)" -f spec/continuations.lisp
 	"$(1)" -f spec/ffi.lisp
 	"$(1)" -f spec/vm-ffi-compile.lisp
+	"$(1)" -f spec/vm-scope-macro.lisp
 	"$(1)" -f spec/ffi-dsl.lisp
 	"$(1)" -f spec/ffi-libuv.lisp
+	"$(1)" -f spec/uv-integration.lisp
 	"$(1)" -f examples/microgpt.lisp | cmp -s - spec/microgpt.expected
 endef
 

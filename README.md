@@ -178,17 +178,16 @@ Everything runs as bytecode: a top-level form is compiled when it is read, a fun
 
 ## Foreign libraries (FFI)
 
-Load `src/lib/ffi.lisp` for marshaling helpers, then bind a library by resolving symbols and wrapping calls:
+Load `src/lib/ffi.lisp` for `ffi-build-call` and the `define-library` DSL:
 
 ```lisp
 (load "src/lib/ffi.lisp")
-(define libc (ffi-dlopen-self))
-(define strlen (lambda (s)
-  (ffi-build-call (ffi-dlsym libc (ffi-cstr "strlen")) 'int
-    (list (list s 'string))))
+(define-library libc self
+  (function strlen ((s string)) int))
+(strlen "hi")                                 ; 2
 ```
 
-See `spec/ffi.lisp` for libc/libm tests and `src/lib/uv.lisp` / `examples/uv-loopback.lisp` for a libuv-oriented example (optional; needs libuv installed).
+`src/lib/uv.lisp` is a libuv binding written the same way (optional; needs libuv installed). With libuv loaded, `examples/uv-loopback.lisp` runs a one-process HTTP loopback test (`uv-loopback-run`); `examples/uv-server.lisp` and `examples/uv-client.lisp` show the bind and connect steps separately. `spec/ffi.lisp` and `spec/uv-integration.lisp` exercise libc and the loopback when the library is present.
 
 ## History
 
