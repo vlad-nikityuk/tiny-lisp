@@ -1,0 +1,12 @@
+;; Teaching: connect to 127.0.0.1:19877 (start a listener elsewhere first).
+(load "src/lib/uv.lisp")
+(if (not uv-lib) (error "libuv not found"))
+(define *loop* (uv_default_loop))
+(define *tcp* (uv-make-tcp *loop*))
+(defn on-close (h) 0)
+(define close-cb (ffi-callback-ptr (ffi-register-callback on-close)))
+(defn on-connect (req st)
+  (if (eq? st 0) (uv_close *tcp* close-cb)))
+(define connect-cb (ffi-callback-ptr (ffi-register-callback on-connect)))
+(assert (eq? 0 (uv_tcp_connect (uv-make-connect-req) *tcp* (uv-sockaddr "127.0.0.1" 19877) connect-cb)))
+(uv_run *loop* UV_RUN_DEFAULT)

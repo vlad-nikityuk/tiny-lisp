@@ -176,6 +176,20 @@ Run from the repository root.
 
 Everything runs as bytecode: a top-level form is compiled when it is read, a function on its first call. The machine keeps bytecode resuming after a call and a `map` or `try` waiting for its callback as frames on a heap stack; tail calls replace the current state. The parser, printer and freeing are iterative. Macros are expanded before a top-level form runs (the expander runs macro bodies on a nested machine; running a form never nests one). Names become interned symbols with cached slots when the typed AST is built; scopes of finished calls are recycled unless a closure captured them; values are 8 bytes (NaN-boxed).
 
+## Foreign libraries (FFI)
+
+Load `src/lib/ffi.lisp` for marshaling helpers, then bind a library by resolving symbols and wrapping calls:
+
+```lisp
+(load "src/lib/ffi.lisp")
+(define libc (ffi-dlopen-self))
+(define strlen (lambda (s)
+  (ffi-build-call (ffi-dlsym libc (ffi-cstr "strlen")) 'int
+    (list (list s 'string))))
+```
+
+See `spec/ffi.lisp` for libc/libm tests and `src/lib/uv.lisp` / `examples/uv-loopback.lisp` for a libuv-oriented example (optional; needs libuv installed).
+
 ## History
 
 1. **CoffeeScript** (2015): the project started here, with the first version.

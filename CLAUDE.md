@@ -45,6 +45,8 @@ src/vm/                   the one execution engine
 src/lib/                  the standard library
     natives.zig           map each reduce apply range zip print partial concat, the file natives read-file write-file split, load and eval
     ffi.zig               dlopen/dlsym, register-split C calls, memory peek/poke, FFI callback pool
+    ffi.lisp              marshaling helpers (ffi-build-call); bind libraries by hand or generate
+    uv.lisp               example libuv bindings (hand marshaled; load on demand)
     source.zig            a file's text, and running a file form by form (for the REPL's -f and the stdlib)
     stdlib.lisp           the Lisp part, loaded at start (path relative to the repo root)
 ```
@@ -55,6 +57,15 @@ src/lib/                  the standard library
 - `lang/expand` -> `lang/eval` (a macro is a Lisp function: `eval.exec` runs it on a nested machine) and `lang/expand` -> `vm/compiler` (`top` compiles the expanded form); `lang/eval` never calls the expander.
 - `lang/eval` -> `vm/` (`compiler.ready`, `exec.exec`: it hands functions over) while `vm/` -> `lang/compile` (`top`: the nodes of a top-level form). `vm/` never imports `lang/eval`: the executor runs on the machine's stacks and returns to the machine loop.
 - `lib/natives.zig` -> `lang/expand`, `vm/compiler`, `lang/parser` (`load` expands a form, compiles it with `compiler.top` and returns it as a `.vm` step to the machine, in the global scope (like `eval`); `eval` expands its form, sets the running machine's scope to the root and returns it the same way).
+- `lib/ffi.zig` -> `lang/eval` (C→Lisp callbacks run a nested `eval.exec`, like macro expansion).
+
+## Foreign function interface (FFI)
+
+Design: no libffi. On AArch64 AAPCS64 and x86-64 SysV, integer/pointer and floating-point arguments use independent register banks, so a cast to `fn(i64×8, f64×8) callconv(.c)` reaches any non-variadic C function with up to eight of each. Limits: no struct-by-value, no variadic functions, f32 widened to f64; int32 returns narrowed in Lisp. Pointers are Lisp numbers (`double` exact up to 2^53; larger use bitcast). `ffi-dlopen-self` opens `/usr/lib/libSystem.B.dylib` or `libc.so.6`.
+
+Natives in `lib/ffi.zig` (installed always; zero VM cost if unused): `ffi-dlopen`, `ffi-dlopen-self`, `ffi-dlsym`, `ffi-call-{i64,f64,void}`, `ffi-malloc`/`ffi-free`, `ffi-peek`/`ffi-poke`, `ffi-cstr`/`ffi-string-at`, callback pool (`ffi-register-callback`, …). Errors inside callbacks are stored in `ffi-take-error` after the C call returns; they must not unwind through C. Callback Lisp functions live in `machine.ffi_roots` until released. `call/cc` is forbidden while `machine.callback_depth > 0`.
+
+Lisp layer: `src/lib/ffi.lisp` provides `ffi-build-call` with tagged `(value type)` argument lists; use `nil` for empty arg lists (not bare `()`). `ffi-dlsym` takes a Lisp string symbol name. Wrap exported FFI thunks in `ffi-no-inline` so the VM does not inline them into top-level code (which can blow the compiler on nested `ffi-build-call`). `src/lib/uv.lisp` is a hand-taught libuv binding (libuv present: `spec/ffi-libuv.lisp`; optional). `examples/uv-loopback.lisp` defines `(uv-loopback-run)` for a one-process HTTP demo — run manually after `(load …)` when libuv is installed.
 
 Keep names meaningful and the total source small; keep the machine's control flow visible in `eval.run` and `exec.exec` rather than hidden behind helpers. All Zig sources are `zig fmt` clean. Errors are Zig error unions (`error.Lisp`); the raised Lisp value is in `value.errv`.
 

@@ -41,14 +41,16 @@ fn ensurePool() void {
 }
 
 fn ptrNum(p: usize) V {
-    return V.num(@floatFromInt(p));
+    if (p < (1 << 53)) return V.num(@floatFromInt(p));
+    return V.num(@bitCast(@as(u64, @intCast(p))));
 }
 
 fn numPtr(v: V) E!usize {
     if (!v.isNum()) return value.fail(value.str("TinyLisp: FFI pointer must be a number", .{}));
     const x = v.asNum();
-    if (x != @floor(x)) return value.fail(value.str("TinyLisp: FFI pointer must be an integer", .{}));
-    return @intFromFloat(x);
+    if (x == @floor(x) and x >= 0 and x < 9007199254740992.0) // 2^53
+        return @intFromFloat(x);
+    return @intCast(@as(u64, @bitCast(x)));
 }
 
 fn fillRegs(a: []const V, comptime n: usize, out: *[n]i64) E!void {
@@ -56,7 +58,9 @@ fn fillRegs(a: []const V, comptime n: usize, out: *[n]i64) E!void {
     for (out, 0..) |*r, i| r.* = if (i < a.len) blk: {
         const v = a[i];
         if (!v.isNum()) return value.fail(value.str("TinyLisp: FFI integer argument must be a number", .{}));
-        break :blk @intFromFloat(v.asNum());
+        const x = v.asNum();
+        if (x == @floor(x) and x >= 0 and x < 9007199254740992.0) break :blk @intFromFloat(x);
+        break :blk @bitCast(@as(u64, @bitCast(x)));
     } else 0;
 }
 
@@ -111,9 +115,11 @@ fn dlopenNative(_: *Fn, a: []const V) E!V {
 }
 
 fn dlopenSelf(_: *Fn, _: []const V) E!V {
-    const h = dlopen(null, RTLD_LAZY);
-    if (h == null) return value.fail(value.str("TinyLisp: dlopen self failed", .{}));
-    return ptrNum(@intFromPtr(h));
+    const paths = [_][*:0]const u8{ "/usr/lib/libSystem.B.dylib", "libc.so.6", "/lib/x86_64-linux-gnu/libc.so.6" };
+    for (paths) |path| {
+        if (dlopen(path, RTLD_LAZY)) |h| return ptrNum(@intFromPtr(h));
+    }
+    return value.fail(value.str("TinyLisp: dlopen self failed", .{}));
 }
 
 fn dlsymNative(_: *Fn, a: []const V) E!V {
