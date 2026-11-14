@@ -10,14 +10,11 @@ The owner's plan for tiny-lisp, in order. Status as of 2026-11-14. PR: #38 (`per
 - **Stage 2**: function bodies have hoisted local names (`define` anywhere in a body makes the name local to the whole body); reading a local before it is defined is the error `x is used before it is defined`; `set!` of an unknown name is an error; `load` and `eval` run at top level.
 - **Stage 3**: the tree interpreter is removed. One engine: the bytecode VM. Top-level forms compile to bytecode too. Makefile targets: `make test`, `make lint`, `make check-all`, `make fmt`, `make bench`.
 - **call/cc**: full re-entrant continuations (`call/cc`, `call-with-current-continuation`); see `src/runtime/continuation.zig`, `spec/continuations.lisp`, `examples/continuations.lisp`.
+- **CFFI + libuv**: register-split C calls, callback pool, `define-library`, libuv bindings with load-time type-id checks; stable `uv-loopback-run` and `spec/uv-integration.lisp` (three HTTP requests on one loop); teaching `examples/uv-server.lisp` / `uv-client.lisp`.
 
 ## In progress
 
-- **CFFI + libuv web server and client** (local commits on `perf-vm`, NOT pushed, not stable yet):
-  - done: `dlopen`/`dlsym`, register-split C calls (8 integer + 8 double args), a pool of 64 C-to-Lisp callback stubs, `define-library` DSL, hand-written libuv bindings (sizes from `uv_*_size`), portable libc specs;
-  - blocked: intermittent failures (about 1 run in 3) of `make test` under the collector-stress build, a panic in `setglobal` (`d.sym == null`) while loading `examples/uv-loopback.lisp`, and a Bus error when first-time bytecode compilation runs inside an FFI callback during `uv_run`. A Grok root-cause diagnosis is running;
-  - workaround to undo once the cause is fixed: commit `6abe7d2` disables scope recycling (bench geomean 0.55x to 0.62x); `callsBuildCall` stops the inliner from inlining `ffi-build-call` callers (suspect);
-  - missing: an automated test in which a libuv server and client talk in one process on one loop (3 or more requests); `examples/uv-server.lisp` and `uv-client.lisp` are stubs.
+(nothing)
 
 ## Next
 
@@ -33,6 +30,7 @@ The owner's plan for tiny-lisp, in order. Status as of 2026-11-14. PR: #38 (`per
 - `Proto.tried` is never reset for a body whose compile failed once.
 - The microgpt table in `README.md` was not re-measured after the performance work.
 - Unverified on Linux: the CI workflow, the `sed -i.bak` in the Makefile, the libuv bindings (sockaddr layout differs from macOS).
+- libuv `define-library` constants are handwritten; `uv.lisp` checks sizes at load but does not read enums from C headers.
 
 ## Process notes
 
