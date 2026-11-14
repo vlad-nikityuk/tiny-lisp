@@ -12,7 +12,7 @@ A tiny Lisp interpreter in Zig, written for fun and inspired by Peter Norvig's [
 (map '(1 2 3) (lambda (x) (* x x)))            ; (1 4 9)
 ```
 
-- It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`.
+- It is a Lisp: numbers, strings, lists, closures, `define`, `lambda`, `if`, `quote`, errors caught with `try`, and full re-entrant `call/cc`.
 - It is small: the parser, expander, compiler and machine loop are about 400 lines (`src/lang/`) and the whole interpreter, with its bytecode VM and collector, is about 2,600 lines of Zig, with no dependencies beyond libc.
 - It is fast: a small GPT trained with scalar autograd runs as fast as under CPython, in the same memory (see Performance).
 - It has macros: `defmacro` defines one, and every form is expanded before it runs.
@@ -32,7 +32,7 @@ Pending work lives in heap frames, not on the native stack, so recursion is limi
 
 Memory is managed by a stop-the-world mark-sweep collector that runs once about as much as is live (at least 2 MB) has been allocated, so a program that churns through garbage stays small.
 
-`examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
+`examples/continuations.lisp` saves a continuation in one top-level form and invokes it in the next. `examples/microgpt.lisp` trains a one-layer GPT with a scalar autograd engine (10 steps, then 5 samples; about 4,200 parameters) and prints the same losses and names as Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) run with the same random numbers and names. The Lisp port builds the same graph as the gist's `Value` class, and macros keep its code close to the gist's: `(val a * b + c)` is infix arithmetic on values, `for/list` and `for` are comprehensions and loops, and the model is built from blocks, `(chain rmsnorm (Residual (chain rmsnorm (Attention keys values) (Linear attn-wo))) …)`.
 
 | microgpt, 10 steps + 5 samples | Python 3.14 | tinylisp |
 |---|---|---|

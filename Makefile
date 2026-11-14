@@ -20,6 +20,7 @@ define run-tests
 	"$(1)" -f spec/specs.lisp
 	"$(1)" -f spec/top-level-rebind.lisp
 	"$(1)" -f spec/body-scope.lisp
+	"$(1)" -f spec/continuations.lisp
 	"$(1)" -f examples/microgpt.lisp | cmp -s - spec/microgpt.expected
 endef
 
