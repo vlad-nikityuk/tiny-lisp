@@ -49,6 +49,8 @@ fn holdFrames(frames: []const Frame) void {
 }
 
 fn macroBoundary() E!void {
+    if (machine.callback_depth > 0)
+        return value.fail(value.str("TinyLisp: a continuation cannot cross an FFI callback", .{}));
     if (machine.machines.items.len > 1 or machine.macro_depth > 0)
         return value.fail(value.str("TinyLisp: a continuation cannot cross a macro expansion", .{}));
 }

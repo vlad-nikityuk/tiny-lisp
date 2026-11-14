@@ -44,6 +44,7 @@ src/vm/                   the one execution engine
     exec.zig              the executor
 src/lib/                  the standard library
     natives.zig           map each reduce apply range zip print partial concat, the file natives read-file write-file split, load and eval
+    ffi.zig               dlopen/dlsym, register-split C calls, memory peek/poke, FFI callback pool
     source.zig            a file's text, and running a file form by form (for the REPL's -f and the stdlib)
     stdlib.lisp           the Lisp part, loaded at start (path relative to the repo root)
 ```

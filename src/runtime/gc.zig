@@ -174,6 +174,7 @@ fn markRoots() void {
     for (machine.machines.items) |m| markPtr(m.e);
     for (scope.gk, scope.gv) |k, v| if (k != null) markV(v);
     for (pins.items) |v| markV(v);
+    for (machine.ffi_roots.items) |v| markV(v);
     var macros = scope.macros.valueIterator();
     while (macros.next()) |f| markV(f.*);
     markV(value.errv);

@@ -16,6 +16,7 @@ EXCEPTIONS = {
     ("lib/natives", "lang/expand"),
     ("lib/natives", "vm/compiler"),
     ("lib/natives", "lang/parser"),
+    ("lib/ffi", "lang/eval"),
 }
 
 # Layers increase toward the entry point; a file may import same layer (internal), lower layers, and EXCEPTIONS.
@@ -31,6 +32,7 @@ LAYER = {
     "lang/expand": 4,
     "lib/source": 5,
     "lib/natives": 5,
+    "lib/ffi": 5,
     "repl": 6,
 }
 

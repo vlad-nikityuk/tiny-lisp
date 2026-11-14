@@ -38,6 +38,10 @@ pub var ks: std.ArrayList(Frame) = .empty; // the frames
 pub var vs: std.ArrayList(V) = .empty; // the values: functions and arguments being collected, native frames' state, the bytecode's stack
 /// Non-zero while expand.call is running a macro body (top-level expansion uses a single machine; continuation.zig).
 pub var macro_depth: usize = 0;
+/// Non-zero while a C→Lisp FFI callback is running (continuation.zig, lib/ffi.zig).
+pub var callback_depth: usize = 0;
+/// Lisp functions registered for FFI C callbacks (lib/ffi.zig); the collector traces them.
+pub var ffi_roots: std.ArrayList(V) = .empty;
 
 pub fn frame(kind: Kind, e: *Env) *Frame {
     gc.push(Frame, &ks, .{ .kind = kind, .i = 0, .base = vs.items.len, .e = e });

@@ -9,6 +9,7 @@ const compiler = @import("../vm/compiler.zig");
 const parser = @import("../lang/parser.zig");
 const expand = @import("../lang/expand.zig");
 const source = @import("source.zig");
+const ffi = @import("ffi.zig");
 const V = value.V;
 const Fn = value.Fn;
 const Frame = machine.Frame;
@@ -198,4 +199,5 @@ pub fn install(e: *scope.Env) void {
     _ = def(e, "split", .{ .plain = split });
     _ = def(e, "load", .{ .step = load });
     _ = def(e, "eval", .{ .step = evalForm });
+    ffi.install(e);
 }
