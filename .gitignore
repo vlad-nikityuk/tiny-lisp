@@ -2,6 +2,7 @@ tinylisp
 tinylisp-fast
 *.o
 .zig-cache/
+.variants/
 .idea/
 *~
 target/

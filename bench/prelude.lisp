@@ -1,16 +1,7 @@
 ;; Python builtins and operators for the benchmark ports, so each .lisp reads like the .py next to it.
 ;; Run from the repo root: ./tinylisp -f bench/NAME.lisp
 
-(defn abs (x) (if (< x 0) (- 0 x) x))
-(defn mod (a b) (- a (* b (floor (/ a b))))) ; a % b, also for negative a
 (defn sum (l) (reduce l + 0))
-(defn items-of (args) (if (&& (eq? (len args) 1) (list? (first args))) (first args) args))
-(defn min (& args)
-  (define l (items-of args))
-  (reduce (rest l) (lambda (m x) (if (< x m) x m)) (first l)))
-(defn max (& args)
-  (define l (items-of args))
-  (reduce (rest l) (lambda (m x) (if (> x m) x m)) (first l)))
 
 ;; l[start:end]
 (defn slice (l start end) (for/list (i (range (max 0 (- end start)))) (at l (+ start i))))

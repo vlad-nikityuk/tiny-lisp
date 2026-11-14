@@ -5,8 +5,8 @@ description: Good practices for writing tinylisp (this repo's Lisp) code, from i
 
 # Writing good tinylisp
 
-Run from the repo root: `./tinylisp -f file.lisp`, `make test`. Measure with `time`, and check a refactor with a
-`diff` of the program's output against the output before the change.
+Run from the repo root: `./tinylisp -f file.lisp`, `make test` (or `make check-all` before a push). Measure with `time`;
+`make test` already compares `examples/microgpt.lisp` to `spec/microgpt.expected`.
 
 ## Performance: what is cheap and what is not
 
@@ -24,13 +24,17 @@ or grows it with `cons` is quadratic. A `range` written as `(cons i acc)` over 5
 each and stops at the shortest. `(for/list ((a b) (zip xs ys)) body)` expands to exactly that. Destructuring a list of
 pairs (`(for/list ((a b) pairs) …)`) works but costs two `define`s and two `at`s per item; use it off the hot path.
 
-**Loops are calls.** `for` and `for/list` are `map` with a lambda, so each iteration is a call with its own scope; there is
-  no `while`. CPython runs tight index loops 3x-7x faster (bench/README.md); keep inner loops flat, avoid creating a
-  quoted list or a closure per iteration, and prefer `reduce`/`sum` over a loop that updates a variable.
+**Loops.** `for` and `for/list` over one list are loops that the VM (`src/vm/exec.zig`) runs inside the bytecode, reusing the
+  scope of an iteration unless the body creates a closure: about 10 ns an iteration, about as fast as CPython's `for`. A loop at
+  top level of a file is bytecode too and costs the same (a top-level name is a global, a little slower than a local, so hot
+  loops are still better in a `defn`). Keep inner bodies flat: a closure created in an iteration, or a body that calls a function that is not
+  inlined (about 25 ns a call), costs more than the loop does. There is no `while`: write a tail-recursive function, which
+  runs as a loop when it calls itself in tail position. Small global functions without closures (`swap!`) are inlined into the
+  functions that call them; recursive ones are called. A `define` may sit anywhere in a function body (a branch, an operand): the name is local to the whole body and unbound until the define runs, so reading it before that (early, or after a branch that did not define it) is an error, never nil and never the global of that name. Code nested deeper than 5000 levels is refused (data is not limited).
 
 **Function calls are the main cost** (in the autograd engine, a small function call plus its allocation was about 0.2 µs). In a hot path:
 - do not wrap field access in a function; write the accessors as `defmacro`s (`(defmacro data (v) `(at ~v 0))`). `(data v)` as a function made autograd's `v*` about 5× slower; as a macro that
-  expands to `(at v 0)` it costs nothing. Macros run once per node at compile time, so sugar made of macros is free;
+  expands to `(at v 0)` it costs nothing. Macros run when the form is expanded, before it runs, so sugar made of macros is free;
 - do not call a helper per element when a primitive does it (`+` is variadic, `concat` is variadic);
 - hoist work out of loops: build `chain` blocks and other closures once, not per item;
 - avoid building strings in a loop (`(+ "layer" i ".attn_wq")` allocates, and `dict-get` is a linear search): look a
@@ -46,9 +50,8 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 ## Language features and traps
 
 - `0`, `""`, `nil` and `#f` are false; `'()` is true. `eq?` treats `'()` as `nil`.
-- **`&&` and `||` do not short-circuit**: every operand is evaluated (they return one of their operands). A guard like
-  `(&& (< i n) (at v i))` still evaluates `(at v i)`, and in a hot loop the extra operands cost real time (a three-way
-  `&&` in n-queens doubled the run time). Use nested `if` for guards and in hot paths.
+- `&&` and `||` short-circuit and return the operand that decided (`(|| 0 "x")` is `"x"`). They are special forms when called, ordinary functions when passed (`(reduce l && 1)`: no short-circuit there).
+- `mod`, `abs`, `min`, `max` (several numbers or one list) and `not` are natives.
 - `eq?` on lists is identity; `equal?` compares element-wise at any depth (and lengths). Elements are compared with `eq?`, so see the literal trap below.
 - Symbols and strings are the same type, **but a string literal inside quoted data does not `eq?` a string made at run
   time**: `'("a")` holds a literal, `'(a)` a symbol. In a spec, expect `(list 'a "")` rather than `'(a "")`. Compare AST names against symbols (`'(data grad)`) or `(list "data" …)`.
@@ -60,7 +63,7 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
   inside `for` bodies, which are lambdas).
 - Lenient primitives: `(first atom)` is `nil`, `(len atom)` is `0`, `(at l i)` out of range is `nil`. Do not rely on an error.
 - No `let`, `when`, `cond`: use `define` in a `defn`/`fn` body, `if`, `begin`.
-- Name clash: a `defmacro` named like an existing function rewrites every call of that name, in every file loaded later.
+- Name clash: a `defmacro` named like an existing function rewrites every call of that name in the forms expanded after it (every file loaded later).
 
 ## Macros (`defmacro`, backquote)
 
@@ -68,14 +71,15 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
 (defmacro unless (test & body)
   `(if ~test nil (begin ~@body)))
 ```
-`~x` inserts the value of `x`, `~@xs` splices the items of the list `xs`, `'x` quotes. Templates cannot nest.
-- **Macro bodies are not macro-expanded.** While a macro runs, no macro applies to the code it runs (expansion does not
-  nest). So a macro body and the helper functions it calls may use only functions, special forms and backquote
-  (`defmacro` rewrites that for you): no `defn`, `for`, `->`, `val` inside them. Helpers are written with `define` or
-  `defn`, and are fine to define with a macro because the *definition* expands normally; it is their *body* that is not.
+`~x` inserts the value of `x`, `~@xs` splices the items of the list `xs`, `'x` quotes. A template inside a template is an error.
+- **Macro bodies are macro-expanded**, with the macros defined before the `defmacro`, so a macro body and the helper
+  functions it calls may use `defn`, `for`, `->`, backquote. The helpers a macro calls must be defined by an earlier
+  top-level form (they run when the macro is expanded, and a top-level `begin` is expanded whole before it runs).
+- **`defmacro` is a top-level form**: directly in the file or in a top-level `begin`; inside a function, an `if` or a
+  call it is an error. Redefining a macro affects only the code expanded after it.
 - Use `begin-of` to wrap a body (`(begin-of body)` is the body itself if there is one expression).
-- A macro that must match more than a head symbol (like autograd's `slots`) is a plain `(define macro/name (lambda (ast) …))`
-  that returns `ast` unchanged when it does not apply.
+- A macro is called for forms `(name ...)` only, with the parts as arguments; to rewrite other shapes, expand to a call
+  of a macro that takes the whole form apart (see `val` in autograd).
 - Macros cost nothing at runtime, so prefer one to a function in hot code when all it does is rearrange syntax.
 
 ## Idioms that read well
@@ -92,6 +96,6 @@ allocate and keep scopes alive. Natives may allocate freely; the collector runs 
   (`deftest` adds that when it expands, via `patch-asserts`), so write plain `(assert …)`.
 - Beware assertions that cannot fail: before trusting an `equal?` on a result, check that a wrong value would be caught.
 - REPL-visible behaviour goes in `spec/repl.py`. Add a case for every change.
-- After changing a native or the evaluator, stress the collector: build with a tiny `limit` in `src/gc.zig` (2048)
-  and run both suites and the microgpt example, then put the limit back.
+- After changing a native or the machine, run `make test`: it already builds a copy with a tiny `limit` in `src/runtime/gc.zig` (2048)
+  and runs both suites and the microgpt example.
 - Do not name a test helper like a macro the specs define (`twice`, …): the macro rewrites it.

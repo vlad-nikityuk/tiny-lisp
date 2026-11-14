@@ -29,42 +29,47 @@ Where the Lisp cannot copy the Python line for line: a `while` is a tail-recursi
 `sieve`, `bigram` sampling); `bpe` fills a preallocated vector where Python appends; `levenshtein` splits a name into a
 list of characters where Python indexes the string.
 
-## Results
+## Historical results
 
+Historical snapshot (revision and exact Zig version were not recorded; the project uses Zig 0.17).
 Apple M2 Max, Python 3.14.5 (no JIT), tinylisp built with `make` (ReleaseSafe), best of 3 whole-process times.
 Interpreter start is 0.021 s for Python and 0.003 s for tinylisp, and is included.
 
 | benchmark | python | tinylisp | tinylisp / python |
 |---|---|---|---|
-| mlp_xor (scalar autograd) | 0.303 s | 0.334 s | 1.10x |
-| linreg (scalar autograd) | 0.309 s | 0.352 s | 1.14x |
-| logreg | 0.351 s | 0.400 s | 1.14x |
-| matmul | 0.368 s | 0.433 s | 1.18x |
-| kmeans | 0.297 s | 0.374 s | 1.26x |
-| sieve | 0.384 s | 0.624 s | 1.63x |
-| bpe | 0.307 s | 0.512 s | 1.67x |
-| spectral_norm | 0.278 s | 0.519 s | 1.87x |
-| dijkstra | 0.347 s | 0.651 s | 1.88x |
-| bigram | 0.142 s | 0.303 s | 2.13x |
-| knapsack | 0.402 s | 1.055 s | 2.62x |
-| mandelbrot | 0.327 s | 0.975 s | 2.98x |
-| quicksort | 0.194 s | 0.656 s | 3.37x |
-| nbody | 0.359 s | 1.265 s | 3.53x |
-| fannkuch | 0.409 s | 1.915 s | 4.68x |
-| levenshtein | 0.200 s | 1.185 s | 5.93x |
-| nqueens | 0.399 s | 2.852 s | 7.16x |
-| life | 0.337 s | 2.516 s | 7.46x |
+| kmeans | 0.295 s | 0.077 s | 0.26x |
+| logreg | 0.360 s | 0.117 s | 0.33x |
+| dijkstra | 0.344 s | 0.112 s | 0.33x |
+| matmul | 0.352 s | 0.124 s | 0.35x |
+| knapsack | 0.394 s | 0.138 s | 0.35x |
+| mlp_xor (scalar autograd) | 0.301 s | 0.136 s | 0.45x |
+| linreg (scalar autograd) | 0.308 s | 0.141 s | 0.46x |
+| mandelbrot | 0.324 s | 0.148 s | 0.46x |
+| bpe | 0.307 s | 0.175 s | 0.57x |
+| nbody | 0.364 s | 0.261 s | 0.72x |
+| spectral_norm | 0.266 s | 0.206 s | 0.77x |
+| sieve | 0.336 s | 0.283 s | 0.84x |
+| quicksort | 0.191 s | 0.171 s | 0.89x |
+| levenshtein | 0.197 s | 0.176 s | 0.89x |
+| bigram | 0.141 s | 0.141 s | 1.00x |
+| life | 0.344 s | 0.352 s | 1.02x |
+| nqueens | 0.397 s | 0.421 s | 1.06x |
+| fannkuch | 0.408 s | 0.467 s | 1.14x |
 
-Geometric mean: tinylisp takes 2.4x as long as CPython 3.14.
+Geometric mean: tinylisp takes 0.59x as long as CPython 3.14 (it was 2.4x before the bytecode below).
 
 ## What the numbers say
 
-- **Allocation-heavy, call-heavy code is on par** (1.1x-1.3x): the autograd programs build thousands of small lists
-  and call small functions, which is what microgpt does, and what the evaluator and the collector are tuned for.
-- **Tight loops over indices are where CPython wins** (3x-7x): `nqueens`, `life`, `levenshtein`, `fannkuch`, `nbody`.
-  Python's `for` and `while` are bytecode; here `for` is a `map` with a lambda, so every iteration is a call with a
-  scope, and there is no `while`.
-- **`&&` and `||` evaluate all their operands.** `nqueens` with the three-way `&&` replaced by nested `if`s takes
-  1.5 s instead of 2.85 s (checked). Python's `and` stops at the first false operand. Making `&&`/`||` short-circuit
-  (a macro) is the cheapest likely win for `nqueens`, `life`, `dijkstra` and `levenshtein`.
-- **Arithmetic on numbers is not the problem**: the float programs (`logreg`, `matmul`, `kmeans`) are within 1.3x.
+- **Everything runs as bytecode.** The first call of a function compiles its body to a stack bytecode with fixed slots for its
+  parameters and defines (`src/vm/compiler.zig`, run by `src/vm/exec.zig`); a top-level form is compiled the same way, as a function without
+  parameters whose names are globals. Macros are expanded eagerly for a whole top-level form before it runs; a function's bytecode is compiled on its first call and sees primitive rebinding only on subsequent calls,
+  as documented in CLAUDE.md. Fixed slots, fused arithmetic, cached outer lookups, scope reuse, counted loops,
+  and small-function inlining contributed to the recorded improvement from 2.4x to 0.59x.
+- **Most programs are now faster than CPython**: 0.3x-0.6x for the autograd programs, `matmul`, `kmeans`, `logreg`, `dijkstra`,
+  `knapsack`, `bpe` and `mandelbrot`; 0.7x-0.9x for `nbody`, `spectral_norm`, `sieve`, `levenshtein`, `quicksort`; on par for
+  `bigram`, `life`, `nqueens`.
+- **What is left** is `fannkuch` (1.14x): almost all of its time is bytecode instructions, measured then at about 2 ns each (240M of them), and about
+  7M calls that are not inlined (a call builds a scope and a frame, measured then at about 25 ns).
+- **Things that did not help, so are not there**: a size-class allocator in the collector (slower than macOS `malloc`), caching
+  outer lookups beyond the bytecode's `(hops, index)` pair (no gain), three-operand forms of `+`, running calls between compiled functions
+  without leaving `vm.exec` (no gain), a bytecode step for statement sequences, a fused compare-and-branch.

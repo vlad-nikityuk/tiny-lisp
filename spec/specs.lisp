@@ -278,11 +278,7 @@
   (assert (eq? 3 (+ 1 2))))
 
 ;; macros
-(define macro/unless
-  (lambda (ast)
-    (if (eq? (first ast) "unless")
-      (list "if" (first (rest ast)) nil (first (rest (rest ast))))
-      ast)))
+(defmacro unless (test body) (list "if" test nil body))
 
 (deftest "macros: user defined"
   (assert (eq? 1 (unless #f 1)))
@@ -421,33 +417,150 @@
   (assert (eq? "caught" (try (lambda () (read-file "/nonexistent/file")) (lambda (e) "caught"))))
   (assert (eq? "caught" (try (lambda () (load "/nonexistent/file")) (lambda (e) "caught")))))
 
-;; macro expansions are cached per node; redefining a macro must invalidate them
-(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "+" (first (rest ast)) (first (rest ast))) ast)))
+;; A macro is expanded once, when the top-level form that contains it is read: redefining it changes the forms after that only.
+(defmacro probe (x) (list "+" x x))
 (defn use-twice () (probe 4))
 (define twice-before (use-twice))
 (define twice-again (use-twice))
-(define macro/probe (lambda (ast) (if (eq? (first ast) "probe") (list "*" (first (rest ast)) 10) ast)))
+(defmacro probe (x) (list "*" x 10))
+(defn use-ten-times () (probe 4))
 (define twice-after (use-twice))
-(deftest "macros: cache is cleared when a macro changes"
+(deftest "macros: redefining a macro changes only the code expanded after it"
   (assert (eq? twice-before 8))
   (assert (eq? twice-again 8))
-  (assert (eq? twice-after 40)))
+  (assert (eq? twice-after 8)) ; use-twice was expanded before: it keeps the old expansion
+  (assert (eq? (use-ten-times) 40)))
 
-;; compiled code resolves names at run time: a define inside a function can shadow a global that was already used
-(define shadowed 1)
-(defn shadow-later (flag)
-  (begin
-    (define before shadowed)
-    (if flag (define shadowed 2) 0)
-    (list before shadowed)))
-(define shadow-off (shadow-later 0))
-(define shadow-on (shadow-later 1))
-(define shadow-off-again (shadow-later 0))
-(deftest "scope: define after use shadows a global"
-  (assert (equal? shadow-off (list 1 1)))
-  (assert (equal? shadow-on (list 1 2)))
-  (assert (equal? shadow-off-again (list 1 1)))
-  (assert (eq? shadowed 1)))
+;; a macro body may use macros (and so may the functions it calls), the ones defined before it
+(defn macro-squares-of (xs) (for/list (x xs) `(* ~x ~x)))
+(defmacro macro-squares (& xs) `(list ~@(macro-squares-of xs)))
+(defmacro sum-squares (& xs) `(+ ~@(for/list (x (macro-squares-of xs)) x)))
+(deftest "macros: macro bodies are macro-expanded"
+  (assert (equal? (macro-squares 1 2 3) '(1 4 9)))
+  (assert (eq? (sum-squares 1 2 3) 14)))
+
+;; defmacro is a top-level form: directly in the file, in a begin at top level, or made by a macro
+(begin
+  (defmacro in-begin () 11)
+  (begin (defmacro in-nested-begin () 12))
+  (define in-begin-value (in-begin)))
+(defmacro def-constant (name v) `(defmacro ~name () ~v))
+(def-constant seven 7)
+(deftest "macros: defmacro at top level"
+  (assert (eq? in-begin-value 11))
+  (assert (eq? (in-nested-begin) 12))
+  (assert (eq? (seven) 7)))
+
+(define ran-before-error 0)
+(define defmacro-top-level-message "TinyLisp: defmacro is only allowed at top level")
+(defn message-of (thunk) (try thunk (lambda (e) e)))
+(deftest "macros: defmacro anywhere else is an error, found before any of the form runs"
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(define f (lambda () (defmacro m () 1))))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(if #t (defmacro m () 1) 0))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(+ 1 (defmacro m () 1)))))))
+  (assert (eq? defmacro-top-level-message (message-of (lambda () (eval '(define v (defmacro m () 1)))))))
+  (assert (eq? defmacro-top-level-message
+    (message-of (lambda () (eval '(begin (set! ran-before-error 1) (define f (lambda () (defmacro m () 1)))))))))
+  (assert (eq? ran-before-error 0)))
+
+;; eval runs its form at top level (the global scope), whatever scope calls it
+(define eval-x 7)
+(define eval-in-function (lambda () (list (eval 'eval-x) (define eval-x 2) (eval 'eval-x))))
+(deftest "macros: eval runs in the global scope"
+  (assert (equal? (eval-in-function) (list 7 2 7)))
+  (assert (equal? ((lambda (eval-x) (eval 'eval-x)) 5) 7)))
+
+;; expansion is eager: it happens when the top-level form is read, not when the code first runs
+(defmacro eager-m () 1)
+(defn defined-before-redefinition () (eager-m))
+(defmacro eager-m () 2)
+(define expansions 0)
+(defmacro count-expansion () (begin (set! expansions (+ expansions 1)) 0))
+(define never-called (lambda () (count-expansion)))
+(define expansions-after-lambda expansions)
+(define untaken-branch (lambda (flag) (if flag 1 (count-expansion))))
+(define expansions-after-branch expansions)
+(deftest "macros: expansion is eager, not at the first call"
+  (assert (eq? (defined-before-redefinition) 1)) ; first called after the redefinition
+  (assert (eq? expansions-after-lambda 1))
+  (assert (eq? expansions-after-branch 2))
+  (assert (eq? (untaken-branch #t) 1))
+  (assert (eq? expansions 2)))
+
+;; the operator of a form is expanded too: if that makes a macro name, the whole form is expanded again
+(defmacro name-of-target () 'macro-target)
+(defmacro macro-target () 7)
+(deftest "macros: an operator that expands to a macro name"
+  (assert (eq? ((name-of-target)) 7)))
+
+;; an operator that is a form is expanded first, alone; if it changes, the form is dispatched again before any operand is seen
+(defmacro quote-name () 'quote)
+(defmacro begin-name () 'begin)
+(defmacro m-seven () 7)
+(deftest "macros: an operator that becomes quote protects its operands"
+  (assert (equal? ((quote-name) (m-seven)) '(m-seven))))
+((begin-name) (defmacro generated-seven () 7) (define generated-seven-value (generated-seven)))
+(deftest "macros: an operator that becomes begin keeps the top-level status of its parts"
+  (assert (eq? generated-seven-value 7)))
+
+;; eval's run is on the explicit machine: deep recursion through it is fine
+(define descend (lambda (n) (if (eq? n 0) 42 (eval (list 'descend (- n 1))))))
+(deftest "macros: 100000-deep recursion through eval"
+  (assert (eq? (descend 100000) 42)))
+
+;; the operator is compared with what it was before its macro ran, even if that macro overwrites it in the list
+(define mutable-hits 0)
+(define mutable-ast '((mutable-q) (mutable-m)))
+(defmacro mutable-m () (begin (set! mutable-hits (+ mutable-hits 1)) 7))
+(defmacro mutable-q () (vset! mutable-ast 0 'quote))
+(define mutable-result (eval mutable-ast))
+(deftest "macros: an operator macro that overwrites the operator in the list"
+  (assert (equal? mutable-result '(mutable-m)))
+  (assert (eq? mutable-hits 0)))
+
+;; a defmacro form whose name a macro in its body detaches from the form (and a collection follows): the name is kept
+(defmacro zap-name () (begin (vset! zapdef-ast 1 nil) (range 1000000) ((lambda () 7))))
+(define zapdef-ast (list 'defmacro (+ "zapped" "-defmacro") '() '(zap-name)))
+(define zapdef-result (eval zapdef-ast))
+(deftest "macros: defmacro keeps its name when a macro in its body overwrites it"
+  (assert (eq? zapdef-result 'zapped-defmacro))
+  (assert (eq? (eval '(zapped-defmacro)) 7)))
+
+;; a macro may change the form around it, and the collector may run meanwhile: what the expander walks must stay alive
+(define zapped-ast '(list (list (zap) (+ 2 3))))
+(defmacro zap () (begin (vset! zapped-ast 1 nil) (range 1000000) ((lambda (x) x) 1)))
+(deftest "macros: a form being expanded stays alive when a macro detaches it"
+  (assert (equal? (eval zapped-ast) '((1 5)))))
+
+(deftest "macros: eval takes its form as a top-level form"
+  (eval '(defmacro from-eval (x) `(+ ~x 1)))
+  (assert (eq? (eval '(from-eval 4)) 5))
+  (assert (eq? (eval '(begin (defmacro from-eval-begin () 6) (from-eval-begin))) 6)))
+
+(deftest "macros: a special form cannot be a macro"
+  (assert (eq? "TinyLisp: if is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro if (a) a))))))
+  (assert (eq? "TinyLisp: defmacro is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro defmacro (a) a))))))
+  (assert (eq? "TinyLisp: lambda is a special form, it cannot be a macro" (message-of (lambda () (eval '(defmacro lambda (a) a)))))))
+
+(deftest "macros: a template inside a template is an error"
+  (assert (eq? "TinyLisp: nested quasiquote is not supported" (message-of (lambda () (eval '(define g (lambda (x) `(a `(b ~x)))))))))
+  (assert (eq? "TinyLisp: nested quasiquote is not supported" (message-of (lambda () (eval '``a)))))
+  (assert (equal? '(a (b 1)) (let-nested 1))) ; a template inside an unquote is fine
+  (assert (equal? '(a b) (eval '`(a ~(first '(b)))))))
+(defn let-nested (x) `(a ~(first `((b ~x)))))
+
+;; a file is read, expanded and run form by form: a macro defined by one form is in effect for the next, and a macro body may
+;; call the functions that the earlier forms defined
+(write-file "/tmp/tinylisp-spec-macros.lisp" "(define add-one (lambda (x) (+ x 1)))
+(defmacro next-of (x) (list 'quote (add-one x)))
+(define from-file-value (next-of 41))
+(defmacro file-twice (x) `(list ~x ~x))
+(define file-twice-value (file-twice 3))")
+(load "/tmp/tinylisp-spec-macros.lisp")
+(deftest "macros: a loaded file is expanded form by form"
+  (assert (eq? from-file-value 42))
+  (assert (equal? file-twice-value '(3 3)))
+  (assert (eq? (next-of 6) 7))) ; the macros stay defined after the file
 
 (define counter 0)
 (defn bump () (set! counter (+ counter 1)))
@@ -614,5 +727,395 @@
   (assert (eq? 1 (registered "registered-under-a-symbol-name")))
   (assert (eq? 1 (registered "registered: names are plain strings")))
   (assert (eq? 0 (registered "no such test"))))
+
+(deftest "numbers: mod, abs, min and max are native"
+  (assert (eq? (mod 7 3) 1))
+  (assert (eq? (mod -1 5) 4))
+  (assert (eq? (mod 7 -3) -2))
+  (assert (eq? (abs -2.5) 2.5))
+  (assert (eq? (min 3 1 2) 1))
+  (assert (eq? (max 3 1 2) 3))
+  (assert (eq? (min '(4 2 9)) 2))
+  (assert (eq? (max '(4 2 9)) 9))
+  (assert (eq? (max 5) 5)))
+
+(deftest "&&, ||: short-circuit and return the deciding operand"
+  (define hits 0)
+  (defn hit (x) (begin (set! hits (+ hits 1)) x))
+  (assert (eq? (&& 0 (hit 1)) 0))
+  (assert (eq? (|| 5 (hit 1)) 5))
+  (assert (eq? hits 0))
+  (assert (eq? (&& 1 2 3) 3))
+  (assert (eq? (&& 1 0 (hit 3)) 0))
+  (assert (eq? (|| 0 "" 7) 7))
+  (assert (eq? (|| 0 nil) nil))
+  (assert (eq? (&&) nil))
+  (assert (eq? (reduce '(1 2 0) && 1) 0))
+  (assert (eq? hits 0)))
+
+(deftest "each: map without a result list"
+  (define sum 0)
+  (assert (eq? (each '(1 2 3) (lambda (x) (set! sum (+ sum x)))) nil))
+  (assert (eq? sum 6))
+  (each '(1 2) '(10 20) (lambda (a b) (set! sum (+ sum (* a b)))))
+  (assert (eq? sum 56))
+  (assert (eq? (each '() (lambda (x) x)) nil)))
+
+(deftest "primitives: calls computed in place keep the general behaviour"
+  (define a 7)
+  (define l '(10 20 30))
+  (defn add (x y) (+ x y))
+  (defn at-of (v i) (at v i))
+  (assert (eq? (add 1 2) 3))
+  (assert (eq? (add "a" "b") "ab"))
+  (assert (eq? (add 1 "b") "1b"))
+  (assert (eq? (at-of l 1) 20))
+  (assert (eq? (at-of l 5) nil))
+  (assert (eq? (at-of l -1) nil))
+  (assert (eq? (at-of nil 0) nil))
+  (assert (eq? ((lambda (+) (+ 1 2)) (lambda (x y) (* x y))) 2))
+  (assert (eq? (add 1 2) 3))
+  (assert (eq? (- a 2) 5))
+  (assert (eq? (mod -1 5) 4))
+  (assert (eq? (eq? a 7) #t))
+  (assert (eq? (eq? "x" "x") #t))
+  (assert (eq? (< 1 "x") #f))
+  (define sub (lambda (p q) (- p q)))
+  (define old-minus -)
+  (set! - (lambda (p q) 100)) ; the global: no define of - in this body
+  (assert (eq? (sub 5 1) 100))
+  (set! - old-minus)
+  (assert (eq? (sub 5 1) 4)))
+
+(deftest "primitives: nested and one-operand calls in place"
+  (define x 3)
+  (define y 4)
+  (define l '(1 2 3))
+  (assert (eq? (sqrt (+ (* x x) (* y y))) 5))
+  (assert (eq? (- (* (+ x 1) (+ y 1)) (mod (+ x y) 4)) 17))
+  (assert (eq? (at l (- (at l 2) 1)) 3))
+  (assert (eq? (not (< x y)) #f))
+  (assert (eq? (not (at l 7)) #t))
+  (assert (eq? (abs (- x y)) 1))
+  (assert (eq? (floor (/ 7 2)) 3))
+  (assert (eq? (+ (+ (+ (+ (+ x 1) 1) 1) 1) 1) 8))
+  (assert (eq? (+ (at l 0) (+ (at l 1) (+ (at l 2) (+ x y)))) 13)))
+
+(define saved-loop-body nil)
+(deftest "loops: closures made in a loop body keep their scopes"
+  (defn churn (n) (if (> n 0) (churn (- n 1)) n))
+  (defn make-adders (base)
+    (define local (* base 10))
+    (for/list (x (range 4))
+      (define y (+ x local))
+      (lambda (z) (+ x y z base))))
+  (defn nested (k)
+    (define out (list 0))
+    (for (i (range 3))
+      (define a (* i k))
+      (for (j (range 3))
+        (define b (+ a j))
+        (vset! out 0 (concat (at out 0) (list (lambda () (+ a b i j k)))))))
+    (at out 0))
+  (define adders (make-adders 2))
+  (churn 1000)
+  (define fs (nested 5))
+  (churn 1000)
+  (assert (equal? (for/list (f adders) (f 100)) (list 122 124 126 128)))
+  (assert (equal? (for/list (f fs) (f)) (list 5 7 9 16 18 20 27 29 31)))
+  (assert (eq? (((lambda (map) (map 1 (lambda (x) (+ x 1)))) (lambda (a f) (lambda () (f a))))) 2))
+  (define each2 each)
+  (set! each (lambda (l f) (set! saved-loop-body f))) ; the global each
+  (defn grab (q) (each '(1) (lambda (u) (+ q u))))
+  (grab 41)
+  (set! each each2)
+  (churn 1000)
+  (assert (eq? (saved-loop-body 1) 42)))
+
+(defn counter-from (start)
+  (define n start)
+  (lambda () (begin (set! n (+ n 1)) n)))
+(defn sum-to (n)
+  (define total 0)
+  (for (i (range n))
+    (for (j (range 3))
+      (set! total (+ total (* i j)))))
+  total)
+(defn shadow-param (x)
+  (define f (lambda (x) (+ x 1)))
+  (list (f 10) x))
+(defn fact-acc (n) (if (< n 2) 1 (* n (fact-acc (- n 1)))))
+(defn deep (n) (if (eq? n 0) 0 (+ 1 (deep (- n 1)))))
+(defn boom (x) (begin (define y (+ x 1)) (error "boom") y))
+(defn uses-minus (a b) (- a b))
+(deftest "vm: compiled function bodies"
+  (define c1 (counter-from 10))
+  (define c2 (counter-from 100))
+  (c1)
+  (c2)
+  (assert (equal? (list (c1) (c2)) (list 12 102)))
+  (assert (eq? (sum-to 10) 135))
+  (assert (equal? (shadow-param 5) (list 11 5)))
+  (assert (eq? (fact-acc 10) 3628800))
+  (assert (eq? (deep 100000) 100000))
+  (assert (equal? (try (lambda () (boom 1)) (lambda (e) "caught")) "caught"))
+  (assert (eq? (uses-minus 5 3) 2))
+  (assert (eq? (uses-minus 5 3) 2)))
+
+(define later-name 100)
+(defn closure-before-define ()
+  (define later-name 5)
+  (define f (lambda () later-name))
+  (list 100 (f)))
+(defmacro vm-mm () 1)
+(defn use-vm-mm () (vm-mm))
+(defn rest-vm (a & more) (list a more))
+(defn mut-param (a) (begin (set! a (+ a 1)) (define b (* a 2)) (list a b)))
+(define use-vm-first (use-vm-mm))
+(defmacro vm-mm () 2)
+(defn use-vm-mm-later () (vm-mm))
+(deftest "vm: names, macros and arguments"
+  (assert (equal? (closure-before-define) (list 100 5)))
+  (assert (eq? use-vm-first 1))
+  (assert (eq? (use-vm-mm) 1)) ; compiled from the code expanded when it was defined
+  (assert (eq? (use-vm-mm-later) 2))
+  (assert (equal? (rest-vm 1 2 3) (list 1 (list 2 3))))
+  (assert (equal? (rest-vm 1) (list 1 (list))))
+  (assert (equal? (mut-param 5) (list 6 12))))
+
+(defn store (l i x) (vset! l i x))
+(defn store-twice (l) (begin (vset! l 0 (vset! l 1 9)) l))
+(deftest "vm: vset! in a compiled function"
+  (define l (list 1 2 3))
+  (assert (eq? (store l 1 20) 20))
+  (assert (equal? l (list 1 20 3)))
+  (assert (equal? (store-twice l) (list 9 9 3)))
+  (assert (equal? (try (lambda () (store l 3 0)) (lambda (e) "range")) "range"))
+  (assert (equal? (try (lambda () (store nil 0 0)) (lambda (e) "list")) "list"))
+  (assert (equal? l (list 9 9 3))))
+
+(defn count-up (n acc) (if (eq? n 0) acc (count-up (- n 1) (+ acc 1))))
+(defn collect-closures (n acc)
+  (begin
+    (define tmp (+ n 100))
+    (if (eq? n 0) acc (collect-closures (- n 1) (concat acc (list (lambda () tmp)))))))
+(defn defines-reset (n seen)
+  (begin
+    (define fresh (if (eq? n 3) 1 2))
+    (if (eq? n 0) seen (defines-reset (- n 1) (concat seen (list fresh))))))
+(defn fewer-args (a b) (if (eq? a 0) b (fewer-args (- a 1))))
+(deftest "vm: a function calling itself in tail position"
+  (assert (eq? (count-up 1000000 0) 1000000))
+  (assert (equal? (for/list (f (collect-closures 3 (list))) (f)) (list 103 102 101)))
+  (assert (equal? (defines-reset 3 (list)) (list 1 2 2)))
+  (assert (eq? (fewer-args 3 5) nil)))
+
+(defn define-in-branch (flag)
+  (if flag
+    (begin (define cond-name 5) (+ cond-name 1))
+    100))
+(defn define-then-use-outside (flag)
+  (begin
+    (if flag (define cond-name 7) (define cond-name 100))
+    cond-name))
+(defn branch-total (n)
+  (if (eq? n 0) 0
+    (begin
+      (define total 0)
+      (for (i (range n)) (set! total (+ total i)))
+      total)))
+(deftest "vm: defines inside a branch"
+  (assert (eq? (define-in-branch 1) 6))
+  (assert (eq? (define-in-branch 0) 100))
+  (assert (eq? (define-then-use-outside 1) 7))
+  (assert (eq? (define-then-use-outside 0) 100))
+  (assert (eq? (branch-total 5) 10))
+  (assert (eq? (branch-total 0) 0)))
+
+(defn squares (n) (for/list (i (range n)) (* i i)))
+(defn table (n) (for/list (i (range n)) (for/list (j (range n)) (+ (* i 10) j))))
+(defn adders (n) (for/list (i (range n)) (lambda (x) (+ x i))))
+(defn calls-out (xs) (for/list (x xs) (+ (len (list x x)) (len (squares x)))))
+(defn sum-with-effects (xs)
+  (define s 0)
+  (define seen (list 0))
+  (for (x xs)
+    (set! s (+ s x))
+    (vset! seen 0 (+ (at seen 0) 1)))
+  (list s (at seen 0)))
+(defn failing-loop (xs) (for/list (x xs) (if (eq? x 2) (error "bad") x)))
+(defn nested-return (n) (for/list (i (range n)) (if (eq? i 1) (for/list (j (range 2)) j) i)))
+(deftest "vm: loops run by the bytecode"
+  (assert (equal? (squares 5) (list 0 1 4 9 16)))
+  (assert (equal? (squares 0) (list)))
+  (assert (equal? (table 3) (list (list 0 1 2) (list 10 11 12) (list 20 21 22))))
+  (assert (equal? (for/list (f (adders 3)) (f 100)) (list 100 101 102)))
+  (assert (equal? (sum-with-effects (list 1 2 3 4)) (list 10 4)))
+  (assert (equal? (sum-with-effects (list)) (list 0 0)))
+  (assert (equal? (try (lambda () (failing-loop (list 1 2 3))) (lambda (e) "caught")) "caught"))
+  (assert (equal? (failing-loop (list 1 3)) (list 1 3)))
+  (assert (equal? (nested-return 3) (list 0 (list 0 1) 2)))
+  (assert (equal? (calls-out (list 1)) (list 3)))
+  (assert (equal? (squares 100000) (squares 100000))))
+
+(defn arith-ops (a b) (list (mod a b) (/ a b) (not a) (not (< a b)) (- a b) (* a b)))
+(deftest "vm: mod, / and not in a compiled function"
+  (assert (equal? (arith-ops 7 2) (list 1 3.5 #f #t 5 14)))
+  (assert (equal? (arith-ops -1 5) (list 4 -0.2 #f #f -6 -5)))
+  (assert (equal? (arith-ops 0 3) (list 0 0 #t #f -3 0)))
+  (assert (eq? (/ 1 0) (/ 1 0)))
+  (assert (eq? (len (arith-ops "x" 2)) 6))) ; text is not a number: the arithmetic gives nan
+
+(define inl-counter 100)
+(defn inl-read-counter () inl-counter)
+(defn inl-bump (n) (begin (set! inl-counter (+ inl-counter n)) inl-counter))
+(defn inl-with-def (x) (begin (define y (* x 2)) (+ y 1)))
+(defn inl-caller (inl-counter) (list (inl-read-counter) inl-counter (inl-with-def inl-counter) (inl-bump 5)))
+(defn inl-inc (x) (+ x 1))
+(defn inl-use (n) (+ (inl-inc n) (inl-inc (inl-inc n))))
+(defn inl-clash (x y) (list (inl-with-def y) x y))
+(defn inl-a (n acc) (if (eq? n 0) acc (inl-b n acc)))
+(defn inl-b (n acc) (inl-a (- n 1) (+ acc 1)))
+(define inl-first (inl-use 10))
+(defn inl-inc (x) (+ x 1000))
+(deftest "vm: small functions inlined into their callers"
+  (assert (equal? (inl-caller 7) (list 100 7 15 105)))
+  (assert (eq? inl-counter 105))
+  (assert (eq? inl-first 23))
+  (assert (eq? (inl-use 10) 3020))
+  (assert (equal? (inl-clash 1 2) (list 5 1 2)))
+  (assert (eq? (inl-a 1000000 0) 1000000)))
+
+(define cx-each (partial (lambda (l f) f) '()))
+(define each-saved each)
+(define each cx-each)
+(define cx-maker
+  (lambda (x)
+    (each '(1)
+      (lambda (u)
+        (begin
+          (define before (+ x u))
+          before)))))
+(define cx-saved (cx-maker 41))
+(define each each-saved)
+((lambda (z) z) 999)
+(define cx-map each)
+(define cx-file-x9 "/tmp/tinylisp-spec-x9.lisp")
+(define cx-file-x20 "/tmp/tinylisp-spec-x20.lisp")
+(write-file cx-file-x9 "(define x 9)")
+(write-file cx-file-x20 "(define x 20)")
+(define cx-load-helper (lambda () (load cx-file-x9)))
+(deftest "review: names that merely look like the loop natives, load in compiled code, duplicate parameters"
+  (assert (eq? (cx-saved 1) 42))
+  (assert (eq? ((lambda () (cx-map '(1 2) (lambda (x) x)))) nil))
+  (assert (eq? ((lambda (x) (begin (cx-load-helper) x)) 1) 1))
+  (assert (eq? ((lambda (x)
+                  ((lambda ()
+                     (begin
+                       (define g (lambda () x))
+                       (g)
+                       (load cx-file-x20) ; defines the global x, not the caller's
+                       (g)))))
+                10)
+               10))
+  (assert (eq? ((lambda (x x) x) 1 2) 2)))
+
+(defn count-loop (n) (for/list (i (range n)) (* i 2)))
+(defn count-each (n) (begin (define s 0) (for (i (range n)) (set! s (+ s i))) s))
+(defn count-with-range-arg (n) (for/list (i (range (+ n 1))) i))
+(defn count-shadowed (range) (for/list (i (range 3)) i))
+(deftest "vm: loops over (range n) count"
+  (assert (equal? (count-loop 3) (list 0 2 4)))
+  (assert (equal? (count-loop 0) (list)))
+  (assert (equal? (count-loop -2) (list)))
+  (assert (equal? (count-loop 2.7) (list 0 2)))
+  (assert (equal? (count-loop "x") (list)))
+  (assert (equal? (count-loop nil) (list)))
+  (assert (eq? (count-each 100) 4950))
+  (assert (equal? (count-with-range-arg 2) (list 0 1 2)))
+  (assert (equal? (count-shadowed (lambda (n) (list 7 8))) (list 7 8))))
+
+(defn store-ll (l i) (vset! l i (+ i 100)))
+(defn mixed (l i) (list (+ (at l i) 1) (< (at l i) 3) (eq? (at l i) 2) (- (at l i) i) (* (at l i) 2)))
+(defn mixed-k (x) (list (+ x 1) (- x 1) (* x 2) (< x 2) (>= x 2) (eq? x 2) (at x 0)))
+(deftest "vm: operands taken from a local or a constant"
+  (define l (list 1 2 3))
+  (assert (eq? (store-ll l 1) 101))
+  (assert (equal? l (list 1 101 3)))
+  (assert (equal? (try (lambda () (store-ll l 5)) (lambda (e) "range")) "range"))
+  (assert (equal? (try (lambda () (store-ll nil 0)) (lambda (e) "list")) "list"))
+  (assert (equal? (mixed (list 1 2 3) 1) (list 3 #t #t 1 4)))
+  (assert (equal? (mixed (list 1 2 3) 5) (list 1 #t #f -5 0)))
+  (assert (equal? (mixed-k 2) (list 3 1 4 #f #t #t nil)))
+  (assert (equal? (at (mixed-k "a") 0) "a1"))
+  (assert (equal? (at (mixed-k "a") 3) #f))
+  (assert (equal? (at (mixed-k "a") 4) #f)))
+
+(write-file "/tmp/tinylisp-spec-x9b.lisp" "(define x 9)")
+(define cx-call-arg (lambda (f) (f "/tmp/tinylisp-spec-x9b.lisp")))
+(deftest "review: a helper that calls a function it is given is not inlined"
+  (assert (eq? ((lambda (x) (begin (cx-call-arg load) x)) 1) 1)))
+
+(defn primitive-math (x y)
+  (list (abs x) (floor x) (sqrt x) (exp x) (log y) (cos x)))
+(defn primitive-binary (x y xs)
+  (list (+ x y) (- x y) (* x y) (/ x y) (mod x y)
+        (> x y) (< x y) (>= x y) (<= x y) (eq? x y) (at xs y) (not x)))
+(deftest "vm: every primitive opcode and unary coercion fallback"
+  (assert (equal? (primitive-math 0 1) '(0 0 0 1 0 1)))
+  (assert (equal? (primitive-math #f #t) '(0 0 0 1 0 1)))
+  (assert (equal? (primitive-binary 6 2 '(10 20 30))
+                  (list 8 4 12 3 0 #t #f #t #f #f 30 #f))))
+
+(define file-value 41)
+(deftest "load: whole files preserve comments, errors; they run at top level"
+  (define path "/tmp/tinylisp-spec-program.lisp")
+  (write-file path "")
+  (assert (eq? (load path) nil))
+  (write-file path "; comment only")
+  (assert (eq? (load path) nil))
+  (write-file path "(+ 20 22) ; trailing comment")
+  (assert (eq? (load path) 42))
+  (write-file path "(set! file-value (+ file-value 1)) ; trailing comment")
+  (assert (eq? ((lambda (file-value) (begin (load path) file-value)) 1) 1)) ; the parameter is not the file's file-value
+  (assert (eq? file-value 42))
+  (write-file path "(")
+  (assert (eq? (try (lambda () (load path)) (lambda (e) "caught")) "caught")))
+
+;; the compiler has no limit but the nesting of the code: any number of operands, any form, at top level too
+(defn operands (n) (for/list (i (range n)) 1))
+(eval (list 'defn 'many-and '(x) (concat (list '&&) (operands 200) '(x))))
+(eval (list 'defn 'many-or '(x) (concat (list '||) (map (operands 200) (lambda (o) 0)) '(x))))
+(defn nameless-define (flag) (if flag (define) 7))
+(defn nameless-set (flag) (if flag (set!) 7))
+(defn empty-form (flag) (if flag () 7))
+(deftest "vm: no function is left out"
+  (assert (eq? 5 (many-and 5)))
+  (assert (eq? 0 (many-or 0)))
+  (assert (eq? 5 (many-or 5)))
+  (assert (eq? #f (many-and #f)))
+  (assert (eq? 7 (nameless-define #f)))
+  (assert (eq? 7 (nameless-set #f)))
+  (assert (eq? 7 (empty-form #f)))
+  (assert (eq? "TinyLisp: define needs a name" (message-of (lambda () (nameless-define #t)))))
+  (assert (eq? "TinyLisp: set! needs a name" (message-of (lambda () (nameless-set #t)))))
+  (assert (eq? "TinyLisp: cannot evaluate an empty list" (message-of (lambda () (empty-form #t))))))
+
+(begin (define top-a 1) (define top-b (+ top-a 1)) (if #t (define top-c (+ top-b 1)) 0))
+(define top-total 0)
+(for (i (range 100)) (set! top-total (+ top-total i)))
+(define top-list (for/list (i (range 5)) (* i i)))
+(deftest "vm: top-level code runs on the bytecode, defines are global"
+  (assert (equal? (list 1 2 3) (list top-a top-b top-c)))
+  (assert (eq? 4950 top-total))
+  (assert (equal? '(0 1 4 9 16) top-list))
+  (assert (eq? 3 (eval '(begin (define top-d 3) top-d))))
+  (assert (eq? 3 top-d)))
+
+(defn nested-code (n) (reduce (range n) (lambda (a i) (list '+ 1 a)) 0))
+(deftest "compile: code nested too deeply is refused with an error, deep data is not"
+  (assert (eq? 4000 (eval (nested-code 4000))))
+  (assert (eq? "TinyLisp: expression is nested too deeply to compile (limit 5000)" (message-of (lambda () (eval (nested-code 6000))))))
+  (assert (eq? 3 (len (nested-code 100000)))))
 
 (run-tests)
